@@ -113,6 +113,7 @@ class GraphBuilderOrt {
   void AddElementWiseUnaryOperation(
       const mojom::ElementWiseUnary& element_wise_unary);
   void AddCastOperation(const mojom::ElementWiseUnary& cast);
+  void AddConv2dOperation(const mojom::Conv2d& conv2d);
   void AddGemmOperation(const mojom::Gemm& gemm);
   void AddLogicalNotOperation(const mojom::ElementWiseUnary& logical_not);
   void AddReshapeOperation(const mojom::Reshape& reshape);

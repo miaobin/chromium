@@ -56,6 +56,7 @@ constexpr char kOpTypeErf[] = "Erf";
 constexpr char kOpTypeReciprocal[] = "Reciprocal";
 constexpr char kOpTypeCast[] = "Cast";
 
+constexpr char kOpTypeConv2d[] = "Conv";
 constexpr char kOpTypeGemm[] = "Gemm";
 constexpr char kOpTypeRelu[] = "Relu";
 constexpr char kOpTypeReshape[] = "Reshape";
@@ -466,6 +467,48 @@ void GraphBuilderOrt::AddCastOperation(const mojom::ElementWiseUnary& cast) {
       static_cast<int64_t>(OperandTypeToOnnxDataType(output_data_type)));
 }
 
+void GraphBuilderOrt::AddConv2dOperation(const mojom::Conv2d& conv2d) {
+  onnx::NodeProto& node = *(model_.mutable_graph()->add_node());
+  node.set_name(GetNodeName(conv2d.label));
+  node.set_op_type(kOpTypeConv2d);
+
+  node.add_input(GetOperandName(conv2d.input_operand_id));
+  node.add_input(GetOperandName(conv2d.filter_operand_id));
+  if (conv2d.bias_operand_id) {
+    node.add_input(GetOperandName(conv2d.bias_operand_id.value()));
+  }
+  node.add_output(GetOperandName(conv2d.output_operand_id));
+
+  onnx::AttributeProto& attr_dilations = *node.add_attribute();
+  attr_dilations.set_name("dilations");
+  attr_dilations.set_type(
+      onnx::AttributeProto::AttributeType::AttributeProto_AttributeType_INTS);
+  attr_dilations.add_ints(base::checked_cast<int64_t>(conv2d.dilations->height));
+  attr_dilations.add_ints(base::checked_cast<int64_t>(conv2d.dilations->width));
+
+  onnx::AttributeProto& attr_group = *node.add_attribute();
+  attr_group.set_name("group");
+  attr_group.set_type(
+      onnx::AttributeProto::AttributeType::AttributeProto_AttributeType_INT);
+  attr_group.set_i(base::checked_cast<int64_t>(conv2d.groups));
+
+  onnx::AttributeProto& attr_pads = *node.add_attribute();
+  attr_pads.set_name("pads");
+  attr_pads.set_type(
+      onnx::AttributeProto::AttributeType::AttributeProto_AttributeType_INTS);
+  attr_pads.add_ints(base::checked_cast<int64_t>(conv2d.padding->beginning->height));
+  attr_pads.add_ints(base::checked_cast<int64_t>(conv2d.padding->beginning->width));
+  attr_pads.add_ints(base::checked_cast<int64_t>(conv2d.padding->ending->height));
+  attr_pads.add_ints(base::checked_cast<int64_t>(conv2d.padding->ending->width));
+
+  onnx::AttributeProto& attr_strides = *node.add_attribute();
+  attr_strides.set_name("strides");
+  attr_strides.set_type(
+      onnx::AttributeProto::AttributeType::AttributeProto_AttributeType_INTS);
+  attr_strides.add_ints(base::checked_cast<int64_t>(conv2d.strides->height));
+  attr_strides.add_ints(base::checked_cast<int64_t>(conv2d.strides->width));
+}
+
 void GraphBuilderOrt::AddGemmOperation(const mojom::Gemm& gemm) {
   onnx::NodeProto& node = *(model_.mutable_graph()->add_node());
   node.set_name(GetNodeName(gemm.label));
@@ -589,6 +632,10 @@ GraphBuilderOrt::BuildModel() {
         AddElementWiseUnaryOperation(*operation->get_element_wise_unary());
         break;
       }
+      case mojom::Operation::Tag::kConv2d: {
+        AddConv2dOperation(*operation->get_conv2d());
+        break;
+      }
       case mojom::Operation::Tag::kGemm: {
         AddGemmOperation(*operation->get_gemm());
         break;
@@ -609,7 +656,6 @@ GraphBuilderOrt::BuildModel() {
       case mojom::Operation::Tag::kBatchNormalization:
       case mojom::Operation::Tag::kClamp:
       case mojom::Operation::Tag::kConcat:
-      case mojom::Operation::Tag::kConv2d:
       case mojom::Operation::Tag::kCumulativeSum:
       case mojom::Operation::Tag::kDequantizeLinear:
       case mojom::Operation::Tag::kElu:
@@ -664,7 +710,7 @@ base::expected<void, mojom::ErrorPtr> GraphBuilderOrt::SerializeModel() {
   bool result = model_.SerializeToString(&result_->model_data_);
 
   if (!result) {
-    LOG(ERROR) << "[WebNN] Failed to serialize model to stream.";
+    LOG(ERROR) << "[WebNN] Failed to serialize model to string.";
     return NewUnknownError(kBuildGraphError);
   }
 

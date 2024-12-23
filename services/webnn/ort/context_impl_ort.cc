@@ -60,7 +60,7 @@ ContextProperties ContextImplOrt::GetContextProperties() {
        /*cast_input=*/DataTypeConstraint::kAllDataTypesAtLeast8bits,
        /*clamp_input=*/{},
        /*concat_inputs=*/{},
-       /*conv2d_input=*/{},
+       /*conv2d_input=*/DataTypeConstraint::kFloat16To32,
        /*conv_transpose2d_input=*/{},
        /*cumulative_sum_input=*/{},
        /*dequantize_linear_input=*/{},

@@ -115,6 +115,7 @@ const kMaximumIndexToValidate = 1000;
 
 const kContextOptionsForVariant = {
   cpu: {
+    powerPreference: 'low-power',
     deviceType: 'cpu',
   },
   gpu: {
