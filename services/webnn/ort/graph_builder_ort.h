@@ -129,6 +129,7 @@ class GraphBuilderOrt {
   void AddCastOperation(const mojom::ElementWiseUnary& cast);
   void AddClampOperation(const mojom::Clamp& clamp);
   void AddConv2dOperation(const mojom::Conv2d& conv2d);
+  void AddExpandOperation(const mojom::Expand& expand);
   void AddGemmOperation(const mojom::Gemm& gemm);
   [[nodiscard]] base::expected<void, mojom::ErrorPtr>
   AddInstanceNormalizationOperation(
@@ -138,6 +139,7 @@ class GraphBuilderOrt {
   void AddPool2dOperation(const mojom::Pool2d& pool2d);
   void AddReduceOperation(const mojom::Reduce& reduce);
   void AddReshapeOperation(const mojom::Reshape& reshape);
+  void AddSliceOperation(const mojom::Slice& slice);
   void AddSoftmaxOperation(const mojom::Softmax& softmax);
   void AddTransposeOperation(const mojom::Transpose& transpose);
   void AddWhereOperation(const mojom::Where& where);

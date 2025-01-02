@@ -9,6 +9,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/types/expected_macros.h"
+#include "base/types/fixed_array.h"
 #include "services/webnn/ort/error_ort.h"
 #include "services/webnn/ort/utils_ort.h"
 #include "services/webnn/public/cpp/graph_validation_utils.h"
@@ -57,6 +58,7 @@ constexpr char kOpTypeCast[] = "Cast";
 
 constexpr char kOpTypeClamp[] = "Clip";
 constexpr char kOpTypeConv2d[] = "Conv";
+constexpr char kOpTypeExpand[] = "Expand";
 constexpr char kOpTypeGemm[] = "Gemm";
 constexpr char kOpTypeInstanceNormalization[] = "InstanceNormalization";
 constexpr char kOpTypeMatMul[] = "MatMul";
@@ -80,6 +82,7 @@ constexpr char kOpTypeReduceSumSquare[] = "ReduceSumSquare";
 
 constexpr char kOpTypeRelu[] = "Relu";
 constexpr char kOpTypeReshape[] = "Reshape";
+constexpr char kOpTypeSlice[] = "Slice";
 constexpr char kOpTypeSoftmax[] = "Softmax";
 constexpr char kOpTypeTranspose[] = "Transpose";
 constexpr char kOpTypeWhere[] = "Where";
@@ -570,6 +573,35 @@ void GraphBuilderOrt::AddConv2dOperation(const mojom::Conv2d& conv2d) {
                          attributes);
 }
 
+void GraphBuilderOrt::AddExpandOperation(const mojom::Expand& expand) {
+  const std::string node_name = GetNodeName(expand.label);
+  const std::string input_name = GetOperandName(expand.input_operand_id);
+  const std::string output_name = GetOperandName(expand.output_operand_id);
+
+  const OperandDescriptor& output_descriptor =
+      GetOperand(expand.output_operand_id).descriptor;
+  const std::vector<uint32_t>& output_shape = output_descriptor.shape();
+  // Shape is an operand with data type int64, not an attribute.
+  std::vector<uint32_t> shape_dims = {
+      base::checked_cast<uint32_t>(output_shape.size())};
+  std::vector<int64_t> shape_values;
+  base::ranges::transform(
+      output_shape, std::back_inserter(shape_values),
+      [](uint32_t dim) { return static_cast<int64_t>(dim); });
+  uint64_t shape_id = NewInitializerAsRawData(
+      shape_dims,
+      base::span(reinterpret_cast<const uint8_t*>(shape_values.data()),
+                 sizeof(int64_t) * shape_values.size()),
+      OperandDataType::kInt64);
+  const std::string shape_name = GetInsertedOperandName(shape_id);
+
+  std::array<const char*, 2> input_names = {input_name.c_str(),
+                                            shape_name.c_str()};
+  std::array<const char*, 1> output_names = {output_name.c_str()};
+
+  model_builder_.AddNode(kOpTypeExpand, node_name, input_names, output_names);
+}
+
 void GraphBuilderOrt::AddGemmOperation(const mojom::Gemm& gemm) {
   const std::string node_name = GetNodeName(gemm.label);
   const std::string input_a_name = GetOperandName(gemm.a_operand_id);
@@ -891,6 +923,72 @@ void GraphBuilderOrt::AddReshapeOperation(const mojom::Reshape& reshape) {
   model_builder_.AddNode(kOpTypeReshape, node_name, input_names, output_names);
 }
 
+void GraphBuilderOrt::AddSliceOperation(const mojom::Slice& slice) {
+  const std::string node_name = GetNodeName(slice.label);
+  const std::string input_name = GetOperandName(slice.input_operand_id);
+  const std::string output_name = GetOperandName(slice.output_operand_id);
+
+  auto range = slice.ranges;
+  base::FixedArray<int32_t> beginnings(slice.ranges.size());
+  base::FixedArray<int32_t> endings(slice.ranges.size());
+  base::FixedArray<int32_t> strides(slice.ranges.size());
+  for (size_t i = 0; i < slice.ranges.size(); ++i) {
+    beginnings[i] = base::checked_cast<int32_t>(slice.ranges[i].start);
+    endings[i] = base::checked_cast<int32_t>(slice.ranges[i].start +
+                                             slice.ranges[i].size);
+    strides[i] = base::checked_cast<int32_t>(slice.ranges[i].stride);
+  }
+
+  // Starts is an operand with data type int64, not an attribute.
+  std::vector<uint32_t> starts_shape = {
+      base::checked_cast<uint32_t>(beginnings.size())};
+  std::vector<int64_t> starts;
+  base::ranges::transform(
+      beginnings, std::back_inserter(starts),
+      [](uint32_t val) { return static_cast<int64_t>(val); });
+  uint64_t starts_id = NewInitializerAsRawData(
+      starts_shape,
+      base::span(reinterpret_cast<const uint8_t*>(starts.data()),
+                 sizeof(int64_t) * starts.size()),
+      OperandDataType::kInt64);
+  const std::string starts_name = GetInsertedOperandName(starts_id);
+
+  // Ends is an operand with data type int64, not an attribute.
+  std::vector<uint32_t> ends_shape = {
+      base::checked_cast<uint32_t>(endings.size())};
+  std::vector<int64_t> ends;
+  base::ranges::transform(endings, std::back_inserter(ends), [](uint32_t val) {
+    return static_cast<int64_t>(val);
+  });
+  uint64_t ends_id = NewInitializerAsRawData(
+      ends_shape,
+      base::span(reinterpret_cast<const uint8_t*>(ends.data()),
+                 sizeof(int64_t) * ends.size()),
+      OperandDataType::kInt64);
+  const std::string ends_name = GetInsertedOperandName(ends_id);
+
+  // Steps is an operand with data type int64, not an attribute.
+  std::vector<uint32_t> steps_shape = {
+      base::checked_cast<uint32_t>(strides.size())};
+  std::vector<int64_t> steps;
+  base::ranges::transform(strides, std::back_inserter(steps), [](uint32_t val) {
+    return static_cast<int64_t>(val);
+  });
+  uint64_t steps_id = NewInitializerAsRawData(
+      steps_shape,
+      base::span(reinterpret_cast<const uint8_t*>(steps.data()),
+                 sizeof(int64_t) * steps.size()),
+      OperandDataType::kInt64);
+  const std::string steps_name = GetInsertedOperandName(steps_id);
+
+  std::array<const char*, 5> input_names = {
+      input_name.c_str(), starts_name.c_str(), ends_name.c_str(), /*axes=*/"",
+      steps_name.c_str()};
+  std::array<const char*, 1> output_names = {output_name.c_str()};
+
+  model_builder_.AddNode(kOpTypeSlice, node_name, input_names, output_names);
+}
+
 void GraphBuilderOrt::AddSoftmaxOperation(const mojom::Softmax& softmax) {
   const std::string node_name = GetNodeName(softmax.label);
   const std::string input_name = GetOperandName(softmax.input_operand_id);
@@ -996,6 +1094,10 @@ GraphBuilderOrt::BuildModel() {
         AddConv2dOperation(*operation->get_conv2d());
         break;
       }
+      case mojom::Operation::Tag::kExpand: {
+        AddExpandOperation(*operation->get_expand());
+        break;
+      }
       case mojom::Operation::Tag::kGemm: {
         AddGemmOperation(*operation->get_gemm());
         break;
@@ -1025,6 +1127,10 @@ GraphBuilderOrt::BuildModel() {
         AddReshapeOperation(*operation->get_reshape());
         break;
       }
+      case mojom::Operation::Tag::kSlice: {
+        AddSliceOperation(*operation->get_slice());
+        break;
+      }
       case mojom::Operation::Tag::kSoftmax: {
         AddSoftmaxOperation(*operation->get_softmax());
         break;
@@ -1043,7 +1149,6 @@ GraphBuilderOrt::BuildModel() {
       case mojom::Operation::Tag::kCumulativeSum:
       case mojom::Operation::Tag::kDequantizeLinear:
       case mojom::Operation::Tag::kElu:
-      case mojom::Operation::Tag::kExpand:
       case mojom::Operation::Tag::kGather:
       case mojom::Operation::Tag::kGatherElements:
       case mojom::Operation::Tag::kGatherNd:
@@ -1065,7 +1170,6 @@ GraphBuilderOrt::BuildModel() {
       case mojom::Operation::Tag::kScatterElements:
       case mojom::Operation::Tag::kScatterNd:
       case mojom::Operation::Tag::kSigmoid:
-      case mojom::Operation::Tag::kSlice:
       case mojom::Operation::Tag::kSoftplus:
       case mojom::Operation::Tag::kSoftsign:
       case mojom::Operation::Tag::kSplit:
