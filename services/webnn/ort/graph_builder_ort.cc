@@ -969,9 +969,13 @@ void GraphBuilderOrt::AddSliceOperation(const mojom::Slice& slice) {
                  sizeof(int64_t) * strides.size()),
       OperandDataType::kInt64);
 
+  // Axes is an optional input, if not provided, it is an empty string and will
+  // be treated as [0, 1, …, len(starts) - 1]:
+  // https://onnx.ai/onnx/operators/onnx__Slice.html#inputs
+  const std::string axes_name = "";
   std::array<const char*, 5> input_names = {
-      input_name.c_str(), starts_name.c_str(), ends_name.c_str(), /*axes=*/"",
-      steps_name.c_str()};
+      input_name.c_str(), starts_name.c_str(), ends_name.c_str(),
+      axes_name.c_str(), steps_name.c_str()};
   std::array<const char*, 1> output_names = {output_name.c_str()};
 
   model_builder_.AddNode(kOpTypeSlice, node_name, input_names, output_names);

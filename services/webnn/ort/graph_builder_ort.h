@@ -101,10 +101,8 @@ class GraphBuilderOrt {
   // 4. Slice op needs parameter *starts*, *ends* and *steps* as raw data to do
   // shape inference.
   //
-  // Issue(https://github.com/shiyi9801/chromium/issues/52): Are there other ops
-  // requiring initializer as raw data? Currently we upload all constants into
-  // external data (for potential zero-copy) but what if some ops like Reshape
-  // can't take external data as initializers?
+  // See issue(https://github.com/shiyi9801/chromium/issues/52) for more
+  // details.
   //
   // Create a new initializer copied into graph.
   std::string CreateInitializerAsRawData(base::span<const uint32_t> shape,
