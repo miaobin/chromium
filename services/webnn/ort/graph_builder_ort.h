@@ -96,7 +96,10 @@ class GraphBuilderOrt {
 
   // Some initializers must be uploaded to raw data, for example:
   // 1. Reshape op needs parameter *shape* as raw data to do shape inference.
-  // 2. Reduce op needs parameter *axes* as raw data.
+  // 2. Reduce op needs parameter *axes* as raw data to do shape inference.
+  // 3. Expand op needs parameter *shape* as raw data to do shape inference.
+  // 4. Slice op needs parameter *starts*, *ends* and *steps* as raw data to do
+  // shape inference.
   //
   // Issue(https://github.com/shiyi9801/chromium/issues/52): Are there other ops
   // requiring initializer as raw data? Currently we upload all constants into
