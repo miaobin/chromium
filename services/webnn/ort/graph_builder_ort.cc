@@ -588,12 +588,12 @@ void GraphBuilderOrt::AddExpandOperation(const mojom::Expand& expand) {
   base::ranges::transform(
       output_shape, std::back_inserter(shape_values),
       [](uint32_t dim) { return static_cast<int64_t>(dim); });
-  uint64_t shape_id = NewInitializerAsRawData(
+  // Expand op needs parameter *shape* as raw data to do shape inference.
+  const std::string shape_name = CreateInitializerAsRawData(
       shape_dims,
       base::span(reinterpret_cast<const uint8_t*>(shape_values.data()),
                  sizeof(int64_t) * shape_values.size()),
       OperandDataType::kInt64);
-  const std::string shape_name = GetInsertedOperandName(shape_id);
 
   std::array<const char*, 2> input_names = {input_name.c_str(),
                                             shape_name.c_str()};
@@ -929,57 +929,45 @@ void GraphBuilderOrt::AddSliceOperation(const mojom::Slice& slice) {
   const std::string output_name = GetOperandName(slice.output_operand_id);
 
   auto range = slice.ranges;
-  base::FixedArray<int32_t> beginnings(slice.ranges.size());
-  base::FixedArray<int32_t> endings(slice.ranges.size());
-  base::FixedArray<int32_t> strides(slice.ranges.size());
+  base::FixedArray<int64_t> beginnings(slice.ranges.size());
+  base::FixedArray<int64_t> endings(slice.ranges.size());
+  base::FixedArray<int64_t> strides(slice.ranges.size());
   for (size_t i = 0; i < slice.ranges.size(); ++i) {
-    beginnings[i] = base::checked_cast<int32_t>(slice.ranges[i].start);
-    endings[i] = base::checked_cast<int32_t>(slice.ranges[i].start +
+    beginnings[i] = base::checked_cast<int64_t>(slice.ranges[i].start);
+    endings[i] = base::checked_cast<int64_t>(slice.ranges[i].start +
                                              slice.ranges[i].size);
-    strides[i] = base::checked_cast<int32_t>(slice.ranges[i].stride);
+    strides[i] = base::checked_cast<int64_t>(slice.ranges[i].stride);
   }
 
   // Starts is an operand with data type int64, not an attribute.
   std::vector<uint32_t> starts_shape = {
       base::checked_cast<uint32_t>(beginnings.size())};
-  std::vector<int64_t> starts;
-  base::ranges::transform(
-      beginnings, std::back_inserter(starts),
-      [](uint32_t val) { return static_cast<int64_t>(val); });
-  uint64_t starts_id = NewInitializerAsRawData(
+  // Slice op needs parameter *starts* as raw data to do shape inference.
+  const std::string starts_name = CreateInitializerAsRawData(
       starts_shape,
-      base::span(reinterpret_cast<const uint8_t*>(starts.data()),
-                 sizeof(int64_t) * starts.size()),
+      base::span(reinterpret_cast<const uint8_t*>(beginnings.data()),
+                 sizeof(int64_t) * beginnings.size()),
       OperandDataType::kInt64);
-  const std::string starts_name = GetInsertedOperandName(starts_id);
 
   // Ends is an operand with data type int64, not an attribute.
   std::vector<uint32_t> ends_shape = {
       base::checked_cast<uint32_t>(endings.size())};
-  std::vector<int64_t> ends;
-  base::ranges::transform(endings, std::back_inserter(ends), [](uint32_t val) {
-    return static_cast<int64_t>(val);
-  });
-  uint64_t ends_id = NewInitializerAsRawData(
+  // Slice op needs parameter *ends* as raw data to do shape inference.
+  const std::string ends_name = CreateInitializerAsRawData(
       ends_shape,
-      base::span(reinterpret_cast<const uint8_t*>(ends.data()),
-                 sizeof(int64_t) * ends.size()),
+      base::span(reinterpret_cast<const uint8_t*>(endings.data()),
+                 sizeof(int64_t) * endings.size()),
       OperandDataType::kInt64);
-  const std::string ends_name = GetInsertedOperandName(ends_id);
 
   // Steps is an operand with data type int64, not an attribute.
   std::vector<uint32_t> steps_shape = {
       base::checked_cast<uint32_t>(strides.size())};
-  std::vector<int64_t> steps;
-  base::ranges::transform(strides, std::back_inserter(steps), [](uint32_t val) {
-    return static_cast<int64_t>(val);
-  });
-  uint64_t steps_id = NewInitializerAsRawData(
+  // Slice op needs parameter *steps* as raw data to do shape inference.
+  const std::string steps_name = CreateInitializerAsRawData(
       steps_shape,
-      base::span(reinterpret_cast<const uint8_t*>(steps.data()),
-                 sizeof(int64_t) * steps.size()),
+      base::span(reinterpret_cast<const uint8_t*>(strides.data()),
+                 sizeof(int64_t) * strides.size()),
       OperandDataType::kInt64);
-  const std::string steps_name = GetInsertedOperandName(steps_id);
 
   std::array<const char*, 5> input_names = {
       input_name.c_str(), starts_name.c_str(), ends_name.c_str(), /*axes=*/"",
