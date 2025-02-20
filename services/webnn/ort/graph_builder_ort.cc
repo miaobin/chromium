@@ -1624,21 +1624,16 @@ GraphBuilderOrt::AddLinearOperation(const mojom::Linear& linear) {
   const OperandDataType input_data_type = input_operand.descriptor.data_type();
 
   std::string alpha_name;
-  std::vector<uint32_t> constant_dims = input_operand.descriptor.shape().empty()
-                                            ? std::vector<uint32_t>()
-                                            : std::vector<uint32_t>{1};
   switch (input_data_type) {
     case OperandDataType::kFloat16: {
-      std::vector<uint16_t> alpha_data_fp16(
-          1, fp16_ieee_from_fp32_value(linear.alpha));
-      ASSIGN_OR_RETURN(alpha_name, CreateInitializer<uint16_t>(
-                                       constant_dims, alpha_data_fp16));
+      ASSIGN_OR_RETURN(alpha_name,
+                       CreateScalarInitializer<uint16_t>(
+                           fp16_ieee_from_fp32_value(linear.alpha)));
       break;
     }
     case OperandDataType::kFloat32: {
-      std::vector<float> alpha_data(1, linear.alpha);
       ASSIGN_OR_RETURN(alpha_name,
-                       CreateInitializer<float>(constant_dims, alpha_data));
+                       CreateScalarInitializer<float>(linear.alpha));
       break;
     }
     default:
@@ -1659,16 +1654,12 @@ GraphBuilderOrt::AddLinearOperation(const mojom::Linear& linear) {
   std::string beta_name;
   switch (input_data_type) {
     case OperandDataType::kFloat16: {
-      std::vector<uint16_t> beta_data_fp16(
-          1, fp16_ieee_from_fp32_value(linear.beta));
-      ASSIGN_OR_RETURN(beta_name, CreateInitializer<uint16_t>(constant_dims,
-                                                              beta_data_fp16));
+      ASSIGN_OR_RETURN(beta_name, CreateScalarInitializer<uint16_t>(
+                                      fp16_ieee_from_fp32_value(linear.beta)));
       break;
     }
     case OperandDataType::kFloat32: {
-      std::vector<float> beta_data(1, linear.beta);
-      ASSIGN_OR_RETURN(beta_name,
-                       CreateInitializer<float>(constant_dims, beta_data));
+      ASSIGN_OR_RETURN(beta_name, CreateScalarInitializer<float>(linear.beta));
       break;
     }
     default:
