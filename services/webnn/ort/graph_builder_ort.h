@@ -139,7 +139,12 @@ class GraphBuilderOrt {
       std::string_view input,
       base::span<const uint32_t> new_shape);
 
-  std::string PrependTranspose(std::string_view input,
+  [[nodiscard]] base::expected<void, mojom::ErrorPtr> AppendReshape(
+      std::string_view input_name,
+      std::string_view output_name,
+      base::span<const uint32_t> new_shape);
+
+  std::string PrependTranspose(std::string_view input_name,
                                base::span<const uint32_t> permutation);
 
   // Insert a cast operation after an operation to convert its output to the
@@ -153,11 +158,6 @@ class GraphBuilderOrt {
   void AppendTranspose(std::string_view input,
                        std::string_view output,
                        base::span<const uint32_t> permutation);
-
-  [[nodiscard]] base::expected<void, mojom::ErrorPtr> AppendReshape(
-      std::string_view input,
-      std::string_view output,
-      base::span<const uint32_t> new_shape);
 
   [[nodiscard]] base::expected<void, mojom::ErrorPtr> AddSliceNode(
       std::string_view node,
@@ -222,6 +222,11 @@ class GraphBuilderOrt {
   void AddGatherElementsOperation(const mojom::GatherElements& gather_elements);
   void AddGatherNDOperation(const mojom::GatherND& gather_nd);
   void AddGemmOperation(const mojom::Gemm& gemm);
+  template <typename GruType>
+    requires(std::is_same_v<GruType, mojom::Gru> ||
+             std::is_same_v<GruType, mojom::GruCell>)
+  [[nodiscard]] base::expected<void, mojom::ErrorPtr> AddGruOperation(
+      const GruType& gru);
   void AddHardSigmoidOperation(const mojom::HardSigmoid& hard_sigmoid);
   [[nodiscard]] base::expected<void, mojom::ErrorPtr>
   AddInstanceNormalizationOperation(
