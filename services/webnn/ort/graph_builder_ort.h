@@ -144,6 +144,10 @@ class GraphBuilderOrt {
       std::string_view output_name,
       base::span<const uint32_t> new_shape);
 
+  [[nodiscard]] base::expected<std::string, mojom::ErrorPtr> PrependExpand(
+      std::string_view input_name,
+      base::span<const uint32_t> shape);
+
   std::string PrependTranspose(std::string_view input_name,
                                base::span<const uint32_t> permutation);
 
