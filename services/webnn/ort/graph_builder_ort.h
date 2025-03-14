@@ -140,15 +140,15 @@ class GraphBuilderOrt {
       base::span<const uint32_t> new_shape);
 
   [[nodiscard]] base::expected<void, mojom::ErrorPtr> AppendReshape(
-      std::string_view input_name,
-      std::string_view output_name,
+      std::string_view input,
+      std::string_view output,
       base::span<const uint32_t> new_shape);
 
   [[nodiscard]] base::expected<std::string, mojom::ErrorPtr> PrependExpand(
-      std::string_view input_name,
+      std::string_view input,
       base::span<const uint32_t> shape);
 
-  std::string PrependTranspose(std::string_view input_name,
+  std::string PrependTranspose(std::string_view input,
                                base::span<const uint32_t> permutation);
 
   // Insert a cast operation after an operation to convert its output to the

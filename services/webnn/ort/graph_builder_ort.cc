@@ -440,25 +440,24 @@ GraphBuilderOrt::AppendReshape(std::string_view input,
 }
 
 [[nodiscard]] base::expected<std::string, mojom::ErrorPtr>
-GraphBuilderOrt::PrependExpand(std::string_view input_name,
+GraphBuilderOrt::PrependExpand(std::string_view input,
                                base::span<const uint32_t> shape) {
-  const std::string node_name = GenerateNextOperationName("inserted_expand");
-  const std::string output_name = GenerateNextOperandName();
+  const std::string node = GenerateNextOperationName("inserted_expand");
+  const std::string output = GenerateNextOperandName();
 
   // Shape is an operand with data type int64, not an attribute.
   std::vector<uint32_t> shape_dims = {
       base::checked_cast<uint32_t>(shape.size())};
   std::vector<int64_t> shape_value(shape.begin(), shape.end());
-  ASSIGN_OR_RETURN(const std::string shape_name,
+  ASSIGN_OR_RETURN(const std::string new_shape,
                    CreateInitializer<int64_t>(shape_dims, shape_value));
 
-  std::array<const char*, 2> input_names = {input_name.data(),
-                                            shape_name.c_str()};
-  std::array<const char*, 1> output_names = {output_name.c_str()};
+  std::array<const char*, 2> inputs = {input.data(), new_shape.c_str()};
+  std::array<const char*, 1> outputs = {output.c_str()};
 
-  model_editor_.AddNode(kOpTypeExpand, node_name, input_names, output_names);
+  model_editor_.AddNode(kOpTypeExpand, node, inputs, outputs);
 
-  return output_name;
+  return output;
 }
 
 [[nodiscard]] base::expected<void, mojom::ErrorPtr>
@@ -1485,44 +1484,44 @@ template <typename GruType>
            std::is_same_v<GruType, mojom::GruCell>)
 [[nodiscard]] base::expected<void, mojom::ErrorPtr>
 GraphBuilderOrt::AddGruOperation(const GruType& gru) {
-  const std::string node_name = GenerateNextOperationName(gru.label);
-  std::string input_name = GetOperandNameById(gru.input_operand_id);
-  std::string weight_name = GetOperandNameById(gru.weight_operand_id);
-  std::string recurrent_weight_name =
+  const std::string node = GenerateNextOperationName(gru.label);
+  std::string input = GetOperandNameById(gru.input_operand_id);
+  std::string weight = GetOperandNameById(gru.weight_operand_id);
+  std::string recurrent_weight =
       GetOperandNameById(gru.recurrent_weight_operand_id);
   if constexpr (std::is_same_v<GruType, mojom::GruCell>) {
     const std::vector<uint32_t>& input_shape =
         GetOperand(gru.input_operand_id).descriptor.shape();
     CHECK_EQ(input_shape.size(), 2u);
     ASSIGN_OR_RETURN(
-        input_name,
+        input,
         // Reshape the input into a 3-D tensor, since the GRU of ONNX requires
         // the input shape to be [seq_length, batch_size, input_size]. For
         // gruCell, `seq_length` is equal to 1.
-        PrependReshape(input_name, {1, input_shape[0], input_shape[1]}));
+        PrependReshape(input, {1, input_shape[0], input_shape[1]}));
     const std::vector<uint32_t>& weight_shape =
         GetOperand(gru.weight_operand_id).descriptor.shape();
     CHECK_EQ(weight_shape.size(), 2u);
     ASSIGN_OR_RETURN(
-        weight_name,
+        weight,
         // Reshape the weight into a 3-D tensor, since the GRU of ONNX requires
         // the weight shape to be [num_directions, 3*hidden_size, input_size].
         // For gruCell, `num_directions` is equal to 1.
-        PrependReshape(weight_name, {1, weight_shape[0], weight_shape[1]}));
+        PrependReshape(weight, {1, weight_shape[0], weight_shape[1]}));
     const std::vector<uint32_t>& recurrent_weight_shape =
         GetOperand(gru.recurrent_weight_operand_id).descriptor.shape();
     CHECK_EQ(recurrent_weight_shape.size(), 2u);
     ASSIGN_OR_RETURN(
-        recurrent_weight_name,
+        recurrent_weight,
         // Reshape the recurrentWeight into a 3-D tensor, since the GRU of ONNX
         // requires the recurrent weight shape to be [num_directions,
         // 3*hidden_size, hidden_size]. For gruCell, `num_directions` is equal
         // to 1.
-        PrependReshape(recurrent_weight_name, {1, recurrent_weight_shape[0],
-                                               recurrent_weight_shape[1]}));
+        PrependReshape(recurrent_weight, {1, recurrent_weight_shape[0],
+                                          recurrent_weight_shape[1]}));
   }
-  std::vector<const char*> input_names = {
-      input_name.c_str(), weight_name.c_str(), recurrent_weight_name.c_str()};
+  std::vector<const char*> inputs = {input.c_str(), weight.c_str(),
+                                     recurrent_weight.c_str()};
 
   uint32_t num_directions = 1;
   if constexpr (std::is_same_v<GruType, mojom::Gru>) {
@@ -1534,22 +1533,22 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
   uint32_t checked_three_times_hidden_size = hidden_size * 3;
   std::vector<uint32_t> bias_dims = {num_directions,
                                      checked_three_times_hidden_size};
-  std::string bias_name = "";
+  std::string bias = "";
   if (!gru.bias_operand_id.has_value() &&
       !gru.recurrent_bias_operand_id.has_value()) {
     // When both bias and currentBias are not present, set ONNX gru input "B" as
     // not specified.
-    input_names.push_back(bias_name.c_str());
+    inputs.push_back(bias.c_str());
   } else {
     const OperandDataType input_data_type =
         GetOperand(gru.input_operand_id).descriptor.data_type();
     if (gru.bias_operand_id.has_value()) {
-      bias_name = GetOperandNameById(gru.bias_operand_id.value());
+      bias = GetOperandNameById(gru.bias_operand_id.value());
       if constexpr (std::is_same_v<GruType, mojom::GruCell>) {
         // Reshape the bias into a 2-D tensor, since the GRU of ONNX requires
         // the bias shape to be [num_directions, 6*hidden_size]. For gruCell,
         // `num_directions` is equal to 1.
-        ASSIGN_OR_RETURN(bias_name, PrependReshape(bias_name, bias_dims));
+        ASSIGN_OR_RETURN(bias, PrependReshape(bias, bias_dims));
       }
     } else {
       switch (input_data_type) {
@@ -1558,14 +1557,14 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
               fp16_ieee_from_fp32_value(0.0f)};
           ASSIGN_OR_RETURN(const std::string bias_saclar,
                            CreateInitializer<uint16_t>({}, bias_value));
-          ASSIGN_OR_RETURN(bias_name, PrependExpand(bias_saclar, bias_dims));
+          ASSIGN_OR_RETURN(bias, PrependExpand(bias_saclar, bias_dims));
           break;
         }
         case OperandDataType::kFloat32: {
           std::array<float, 1> bias_value = {0.0f};
           ASSIGN_OR_RETURN(const std::string bias_saclar,
                            CreateInitializer<float>({}, bias_value));
-          ASSIGN_OR_RETURN(bias_name, PrependExpand(bias_saclar, bias_dims));
+          ASSIGN_OR_RETURN(bias, PrependExpand(bias_saclar, bias_dims));
           break;
         }
         default:
@@ -1573,16 +1572,16 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
               << "[WebNN] GRU only supports float32 and float16 data type.";
       }
     }
-    std::string recurrent_bias_name;
+    std::string recurrent_bias;
     if (gru.recurrent_bias_operand_id.has_value()) {
-      recurrent_bias_name =
+      recurrent_bias =
           GetOperandNameById(gru.recurrent_bias_operand_id.value());
       if constexpr (std::is_same_v<GruType, mojom::GruCell>) {
         // Reshape the recurrentBias into a 2-D tensor, since the GRU of ONNX
         // requires the bias shape to be [num_directions, 6*hidden_size]. For
         // gruCell, `num_directions` is equal to 1.
-        ASSIGN_OR_RETURN(recurrent_bias_name,
-                         PrependReshape(recurrent_bias_name, bias_dims));
+        ASSIGN_OR_RETURN(recurrent_bias,
+                         PrependReshape(recurrent_bias, bias_dims));
       }
     } else {
       switch (input_data_type) {
@@ -1592,7 +1591,7 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
           ASSIGN_OR_RETURN(
               const std::string recurrent_bias_saclar,
               CreateInitializer<uint16_t>({}, recurrent_bias_value));
-          ASSIGN_OR_RETURN(recurrent_bias_name,
+          ASSIGN_OR_RETURN(recurrent_bias,
                            PrependExpand(recurrent_bias_saclar, bias_dims));
           break;
         }
@@ -1600,7 +1599,7 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
           std::array<float, 1> recurrent_bias_value = {0.0f};
           ASSIGN_OR_RETURN(const std::string recurrent_bias_saclar,
                            CreateInitializer<float>({}, recurrent_bias_value));
-          ASSIGN_OR_RETURN(recurrent_bias_name,
+          ASSIGN_OR_RETURN(recurrent_bias,
                            PrependExpand(recurrent_bias_saclar, bias_dims));
           break;
         }
@@ -1610,11 +1609,10 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
       }
     }
     // Concat bias and recurrent_bias
-    std::string concatenated_bias_name = GenerateNextOperandName();
-    std::array<const char*, 2> bias_input_names = {bias_name.c_str(),
-                                                   recurrent_bias_name.c_str()};
-    std::array<const char*, 1> bias_output_names = {
-        concatenated_bias_name.c_str()};
+    std::string concatenated_bias = GenerateNextOperandName();
+    std::array<const char*, 2> bias_inputs = {bias.c_str(),
+                                              recurrent_bias.c_str()};
+    std::array<const char*, 1> bias_outputs = {concatenated_bias.c_str()};
     // The bias tensor of ONNX has shape [num_directions, 6*hidden_size]
     std::vector<ScopedOrtOpAttr> concat_attributes;
     concat_attributes.reserve(1);
@@ -1622,35 +1620,34 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
         /*name=*/"axis", static_cast<int64_t>(1))});
     model_editor_.AddNode(
         kOpTypeConcat, GenerateNextOperationName("inserted_concat"),
-        bias_input_names, bias_output_names, std::move(concat_attributes));
-    input_names.push_back(concatenated_bias_name.c_str());
+        bias_inputs, bias_outputs, std::move(concat_attributes));
+    inputs.push_back(concatenated_bias.c_str());
   }
 
   // `sequence_lens` is an optional tensor specifying lengths of the sequences
   // in a batch.
-  std::string sequence_lens_name = "";
-  input_names.push_back(sequence_lens_name.c_str());
+  std::string sequence_lens = "";
+  inputs.push_back(sequence_lens.c_str());
 
-  std::string hidden_state_name;
+  std::string hidden_state;
   if constexpr (std::is_same_v<GruType, mojom::Gru>) {
     if (gru.initial_hidden_state_operand_id.has_value()) {
-      hidden_state_name =
+      hidden_state =
           GetOperandNameById(gru.initial_hidden_state_operand_id.value());
     }
   } else {
-    hidden_state_name = GetOperandNameById(gru.hidden_state_operand_id);
+    hidden_state = GetOperandNameById(gru.hidden_state_operand_id);
     const std::vector<uint32_t>& hidden_state_shape =
         GetOperand(gru.hidden_state_operand_id).descriptor.shape();
     CHECK_EQ(hidden_state_shape.size(), 2u);
     // Reshape the hiddenState into a 3-D tensor, since the GRU of ONNX requires
     // the initial_h shape to be [num_directions, batch_size, hidden_size]. For
     // gruCell, `num_directions` is equal to 1.
-    ASSIGN_OR_RETURN(
-        hidden_state_name,
-        PrependReshape(hidden_state_name,
-                       {1, hidden_state_shape[0], hidden_state_shape[1]}));
+    ASSIGN_OR_RETURN(hidden_state,
+                     PrependReshape(hidden_state, {1, hidden_state_shape[0],
+                                                   hidden_state_shape[1]}));
   }
-  input_names.push_back(hidden_state_name.c_str());
+  inputs.push_back(hidden_state.c_str());
 
   std::vector<ScopedOrtOpAttr> attributes;
   attributes.reserve(4);
@@ -1663,12 +1660,12 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
 
   const std::vector<std::string> activations = GetRecurrentNetworkActivations(
       gru.activations, direction == "bidirectional");
-  std::vector<const char*> activation_names;
+  std::vector<const char*> activations_c_str;
   for (const auto& activation : activations) {
-    activation_names.push_back(activation.c_str());
+    activations_c_str.push_back(activation.c_str());
   }
   attributes.push_back(
-      model_editor_.CreateAttribute(/*name=*/"activations", activation_names));
+      model_editor_.CreateAttribute(/*name=*/"activations", activations_c_str));
 
   attributes.push_back(model_editor_.CreateAttribute(
       /*name=*/"hidden_size", base::checked_cast<int64_t>(hidden_size)));
@@ -1683,18 +1680,17 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
   attributes.push_back(model_editor_.CreateAttribute(
       /*name=*/"linear_before_reset", linear_before_reset));
 
-  std::string output_name_Y, output_name_Y_h;
+  std::string output_Y, output_Y_h;
   if constexpr (std::is_same_v<GruType, mojom::Gru>) {
-    output_name_Y_h = GetOperandNameById(gru.output_operand_ids[0]);
+    output_Y_h = GetOperandNameById(gru.output_operand_ids[0]);
     if (gru.return_sequence) {
-      output_name_Y = GetOperandNameById(gru.output_operand_ids[1]);
+      output_Y = GetOperandNameById(gru.output_operand_ids[1]);
     }
   } else {
-    output_name_Y_h = GenerateNextOperandName();
+    output_Y_h = GenerateNextOperandName();
   }
-  std::array<const char*, 2> output_names = {output_name_Y.c_str(),
-                                             output_name_Y_h.c_str()};
-  model_editor_.AddNode(kOpTypeGru, node_name, input_names, output_names,
+  std::array<const char*, 2> outputs = {output_Y.c_str(), output_Y_h.c_str()};
+  model_editor_.AddNode(kOpTypeGru, node, inputs, outputs,
                         std::move(attributes));
   if constexpr (std::is_same_v<GruType, mojom::GruCell>) {
     // Reshape the Y_h of shape [num_directions, batch_size, hidden_size] back
@@ -1703,9 +1699,8 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
     const std::vector<uint32_t>& output_shape =
         GetOperand(gru.output_operand_id).descriptor.shape();
     CHECK_EQ(output_shape.size(), 2u);
-    RETURN_IF_ERROR(AppendReshape(output_name_Y_h,
-                                  GetOperandNameById(gru.output_operand_id),
-                                  output_shape));
+    RETURN_IF_ERROR(AppendReshape(
+        output_Y_h, GetOperandNameById(gru.output_operand_id), output_shape));
   }
 
   return base::ok();
