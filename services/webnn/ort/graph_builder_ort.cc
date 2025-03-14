@@ -1615,13 +1615,14 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
                                                    recurrent_bias_name.c_str()};
     std::array<const char*, 1> bias_output_names = {
         concatenated_bias_name.c_str()};
-    // The bias tensor has shape [num_directions, 6*hidden_size]
-    ScopedOrtOpAttr attr_axis =
-        model_editor_.CreateAttribute(/*name=*/"axis", static_cast<int64_t>(1));
-    std::array<OrtOpAttr*, 1> concat_attributes = {attr_axis.release()};
+    // The bias tensor of ONNX has shape [num_directions, 6*hidden_size]
+    std::vector<ScopedOrtOpAttr> concat_attributes;
+    concat_attributes.reserve(1);
+    concat_attributes.push_back({model_editor_.CreateAttribute(
+        /*name=*/"axis", static_cast<int64_t>(1))});
     model_editor_.AddNode(
         kOpTypeConcat, GenerateNextOperationName("inserted_concat"),
-        bias_input_names, bias_output_names, concat_attributes);
+        bias_input_names, bias_output_names, std::move(concat_attributes));
     input_names.push_back(concatenated_bias_name.c_str());
   }
 
@@ -1651,14 +1652,14 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
   }
   input_names.push_back(hidden_state_name.c_str());
 
-  std::vector<OrtOpAttr*> attributes;
+  std::vector<ScopedOrtOpAttr> attributes;
+  attributes.reserve(4);
   std::string direction = "forward";
   if constexpr (std::is_same_v<GruType, mojom::Gru>) {
     direction = GetRecurrentNetworkDirection(gru.direction);
   }
-  ScopedOrtOpAttr attr_direction =
-      model_editor_.CreateAttribute(/*name=*/"direction", direction.c_str());
-  attributes.push_back(attr_direction.release());
+  attributes.push_back(
+      model_editor_.CreateAttribute(/*name=*/"direction", direction.c_str()));
 
   const std::vector<std::string> activations = GetRecurrentNetworkActivations(
       gru.activations, direction == "bidirectional");
@@ -1666,13 +1667,11 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
   for (const auto& activation : activations) {
     activation_names.push_back(activation.c_str());
   }
-  ScopedOrtOpAttr attr_activations =
-      model_editor_.CreateAttribute(/*name=*/"activations", activation_names);
-  attributes.push_back(attr_activations.release());
+  attributes.push_back(
+      model_editor_.CreateAttribute(/*name=*/"activations", activation_names));
 
-  ScopedOrtOpAttr attr_hidden_size = model_editor_.CreateAttribute(
-      /*name=*/"hidden_size", base::checked_cast<int64_t>(hidden_size));
-  attributes.push_back(attr_hidden_size.release());
+  attributes.push_back(model_editor_.CreateAttribute(
+      /*name=*/"hidden_size", base::checked_cast<int64_t>(hidden_size)));
 
   // TODO(https://github.com/shiyi9801/chromium/issues/190): Support rzn layout.
   if (gru.layout != mojom::GruWeightLayout::kZrn) {
@@ -1681,9 +1680,8 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
   }
 
   int64_t linear_before_reset = static_cast<int64_t>(gru.reset_after);
-  ScopedOrtOpAttr attr_linear_before_reset = model_editor_.CreateAttribute(
-      /*name=*/"linear_before_reset", linear_before_reset);
-  attributes.push_back(attr_linear_before_reset.release());
+  attributes.push_back(model_editor_.CreateAttribute(
+      /*name=*/"linear_before_reset", linear_before_reset));
 
   std::string output_name_Y, output_name_Y_h;
   if constexpr (std::is_same_v<GruType, mojom::Gru>) {
@@ -1697,7 +1695,7 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
   std::array<const char*, 2> output_names = {output_name_Y.c_str(),
                                              output_name_Y_h.c_str()};
   model_editor_.AddNode(kOpTypeGru, node_name, input_names, output_names,
-                        attributes);
+                        std::move(attributes));
   if constexpr (std::is_same_v<GruType, mojom::GruCell>) {
     // Reshape the Y_h of shape [num_directions, batch_size, hidden_size] back
     // to a 2-D tensor, since the gruCell of WebNN requires the output shape to
