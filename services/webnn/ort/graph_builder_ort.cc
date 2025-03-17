@@ -318,8 +318,8 @@ GraphBuilderOrt::CreateOrReshapeBias(const std::optional<uint32_t>& bias_id,
         break;
       }
       default:
-        NOTREACHED()
-            << "[WebNN] LSTM only supports float32 and float16 data type.";
+        NOTREACHED() << "[WebNN] Recurrent network operators only support "
+                        "float32 and float16 data type.";
     }
   }
   return bias;

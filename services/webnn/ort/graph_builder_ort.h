@@ -148,7 +148,7 @@ class GraphBuilderOrt {
       std::string_view input,
       base::span<const uint32_t> shape);
 
-  // A helper function used to handle the bias of recurrent network operations
+  // A helper function used to handle the bias of recurrent network operators
   // (GRU, LSTM, etc.).
   [[nodiscard]] base::expected<std::string, mojom::ErrorPtr>
   CreateOrReshapeBias(const std::optional<uint32_t>& bias_id,
