@@ -1604,8 +1604,7 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
 
   // `sequence_lens` is an optional tensor specifying lengths of the sequences
   // in a batch.
-  std::string sequence_lens = "";
-  inputs.push_back(sequence_lens.c_str());
+  inputs.push_back("");
 
   std::string hidden_state;
   if constexpr (std::is_same_v<GruType, mojom::Gru>) {
@@ -1658,16 +1657,16 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
   attributes.push_back(model_editor_.CreateAttribute(
       /*name=*/"linear_before_reset", linear_before_reset));
 
-  std::string output_Y, output_Y_h;
+  std::string output, output_hidden;
   if constexpr (std::is_same_v<GruType, mojom::Gru>) {
-    output_Y_h = GetOperandNameById(gru.output_operand_ids[0]);
+    output_hidden = GetOperandNameById(gru.output_operand_ids[0]);
     if (gru.return_sequence) {
-      output_Y = GetOperandNameById(gru.output_operand_ids[1]);
+      output = GetOperandNameById(gru.output_operand_ids[1]);
     }
   } else {
-    output_Y_h = GenerateNextOperandName();
+    output_hidden = GenerateNextOperandName();
   }
-  std::array<const char*, 2> outputs = {output_Y.c_str(), output_Y_h.c_str()};
+  std::array<const char*, 2> outputs = {output.c_str(), output_hidden.c_str()};
   model_editor_.AddNode(kOpTypeGru, node, inputs, outputs,
                         std::move(attributes));
   if constexpr (std::is_same_v<GruType, mojom::GruCell>) {
@@ -1677,8 +1676,9 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
     const std::vector<uint32_t>& output_shape =
         GetOperand(gru.output_operand_id).descriptor.shape();
     CHECK_EQ(output_shape.size(), 2u);
-    RETURN_IF_ERROR(AppendReshape(
-        output_Y_h, GetOperandNameById(gru.output_operand_id), output_shape));
+    RETURN_IF_ERROR(AppendReshape(output_hidden,
+                                  GetOperandNameById(gru.output_operand_id),
+                                  output_shape));
   }
 
   return base::ok();
@@ -2095,8 +2095,7 @@ GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
 
   // `sequence_lens` is an optional tensor specifying lengths of the sequences
   // in a batch.
-  std::string sequence_lens = "";
-  inputs.push_back(sequence_lens.c_str());
+  inputs.push_back("");
 
   std::string hidden_state, cell_state;
   if constexpr (std::is_same_v<LstmType, mojom::Lstm>) {
@@ -2181,21 +2180,21 @@ GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
         "[WebNN] The lstm weight layout (ifgo) is not supported.");
   }
 
-  std::string output_Y, output_Y_h, output_Y_c;
+  std::string output, output_hidden, output_cell;
   if constexpr (std::is_same_v<LstmType, mojom::Lstm>) {
     CHECK_GE(lstm.output_operand_ids.size(), 2u);
-    output_Y_h = GetOperandNameById(lstm.output_operand_ids[0]);
-    output_Y_c = GetOperandNameById(lstm.output_operand_ids[1]);
+    output_hidden = GetOperandNameById(lstm.output_operand_ids[0]);
+    output_cell = GetOperandNameById(lstm.output_operand_ids[1]);
     if (lstm.return_sequence) {
       CHECK_EQ(lstm.output_operand_ids.size(), 3u);
-      output_Y = GetOperandNameById(lstm.output_operand_ids[2]);
+      output = GetOperandNameById(lstm.output_operand_ids[2]);
     }
   } else {
-    output_Y_h = GenerateNextOperandName();
-    output_Y_c = GenerateNextOperandName();
+    output_hidden = GenerateNextOperandName();
+    output_cell = GenerateNextOperandName();
   }
-  std::array<const char*, 3> outputs = {output_Y.c_str(), output_Y_h.c_str(),
-                                        output_Y_c.c_str()};
+  std::array<const char*, 3> outputs = {output.c_str(), output_hidden.c_str(),
+                                        output_cell.c_str()};
   model_editor_.AddNode(kOpTypeLstm, node, inputs, outputs,
                         std::move(attributes));
   if constexpr (std::is_same_v<LstmType, mojom::LstmCell>) {
@@ -2207,10 +2206,10 @@ GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
     CHECK_EQ(output_shape.size(), 2u);
     CHECK_EQ(lstm.output_operand_ids.size(), 2u);
     RETURN_IF_ERROR(AppendReshape(
-        output_Y_h, GetOperandNameById(lstm.output_operand_ids[0]),
+        output_hidden, GetOperandNameById(lstm.output_operand_ids[0]),
         output_shape));
     RETURN_IF_ERROR(AppendReshape(
-        output_Y_c, GetOperandNameById(lstm.output_operand_ids[1]),
+        output_cell, GetOperandNameById(lstm.output_operand_ids[1]),
         output_shape));
   }
 
