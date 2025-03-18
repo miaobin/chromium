@@ -1075,9 +1075,6 @@ GraphBuilderOrt::AddConv2dOperation(const mojom::Conv2d& conv2d) {
       std::array<int64_t, 2> output_size = {
           base::checked_cast<int64_t>(output_shape[2]),
           base::checked_cast<int64_t>(output_shape[3])};
-      attributes.push_back(
-          model_editor_.CreateAttribute(/*name=*/"output_shape", output_size));
-
       // According to the ONNX ConvTranspose2d documentation, the shape of the
       // output_padding is calculated as:
       // output_padding[i] = output_shape[i] - stride[i] * (input_size[i] - 1) -
