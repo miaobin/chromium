@@ -1111,11 +1111,12 @@ GraphBuilderOrt::AddConv2dOperation(const mojom::Conv2d& conv2d) {
           output_padding_height.ValueOrDie(),
           output_padding_width.ValueOrDie()};
 
-      // According to the ONNX ConvTranspose2d documentation, since pads will be
-      // auto generated if output_shape is specified, and output_shape is
-      // determined by pads and output_padding, we need to calculate the actual
-      // output_padding to ensure that the pads value automatically calculated
-      // is correct.
+      // According to the ONNX ConvTranspose2d documentation, `output_padding`
+      // is a zero vector if not specified and `pads` will be auto generated if
+      // `output_shape` is specified. So we need to calculate the
+      // `output_padding` and explicitly set it to ensure that the attributes
+      // information is not missing. Since the `pads` attribute has already been
+      // set, there is no need to set `output_size` attribute.
       // https://onnx.ai/onnx/operators/onnx__ConvTranspose.html#attributes
       attributes.push_back(model_editor_.CreateAttribute(
           /*name=*/"output_padding", output_padding));
