@@ -2408,13 +2408,6 @@ GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
   attributes.push_back(model_editor_.CreateAttribute(
       /*name=*/"hidden_size", base::checked_cast<int64_t>(hidden_size)));
 
-  // // TODO(https://github.com/shiyi9801/chromium/issues/195): Support ifgo
-  // // layout.
-  // if (lstm.layout != mojom::LstmWeightLayout::kIofg) {
-  //   return NewNotSupportedError(
-  //       "[WebNN] The lstm weight layout (ifgo) is not supported.");
-  // }
-
   std::string output, output_hidden, output_cell;
   if constexpr (std::is_same_v<LstmType, mojom::Lstm>) {
     CHECK_GE(lstm.output_operand_ids.size(), 2u);
