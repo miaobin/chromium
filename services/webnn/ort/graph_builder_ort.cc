@@ -338,9 +338,7 @@ GraphBuilderOrt::CreateOrReshapeBias(const std::optional<uint32_t>& bias_id,
 }
 
 std::string GraphBuilderOrt::ConvertRznToZrn(std::string_view weight_or_bias) {
-  uint32_t num_gates = 3;
-
-  // Use Split operator to split the weight/bias into num_gates slices.
+  // Use Split operator to split the weight/bias into 3 (r, z, n) slices.
   std::string r_gate = GenerateNextOperandName();
   std::string z_gate = GenerateNextOperandName();
   std::string n_gate = GenerateNextOperandName();
@@ -348,8 +346,8 @@ std::string GraphBuilderOrt::ConvertRznToZrn(std::string_view weight_or_bias) {
   split_attrs.reserve(2);
   split_attrs.push_back(
       model_editor_.CreateAttribute("axis", static_cast<int64_t>(1)));
-  split_attrs.push_back(model_editor_.CreateAttribute(
-      "num_outputs", static_cast<int64_t>(num_gates)));
+  split_attrs.push_back(
+      model_editor_.CreateAttribute("num_outputs", static_cast<int64_t>(3)));
   std::array<const char*, 1> split_inputs = {weight_or_bias.data()};
   std::array<const char*, 3> split_outputs = {r_gate.c_str(), z_gate.c_str(),
                                               n_gate.c_str()};
