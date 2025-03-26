@@ -156,8 +156,11 @@ class GraphBuilderOrt {
                       OperandDataType input_data_type,
                       const std::vector<uint32_t>& bias_dims);
 
-  // A helper function used to convert the weight or bias from Rzn to Zrn.
-  std::string ConvertRznToZrn(std::string_view weight_or_bias);
+  // A helper function used to reorder the weight and bias data for the RNN
+  // operators (GRU, LSTM, etc.).
+  [[nodiscard]] base::expected<std::string, mojom::ErrorPtr>
+  ConvertRnnGateLayout(std::string_view weight_or_bias,
+                                   uint32_t num_gates);
 
   std::string PrependTranspose(std::string_view input,
                                base::span<const uint32_t> permutation);
