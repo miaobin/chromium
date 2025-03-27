@@ -339,13 +339,20 @@ GraphBuilderOrt::CreateOrReshapeBias(const std::optional<uint32_t>& bias_id,
 }
 
 [[nodiscard]] base::expected<std::string, mojom::ErrorPtr>
-GraphBuilderOrt::ConvertRnnGateLayout(std::string_view weight_or_bias,
-                                      uint32_t num_gates) {
-  // Use Split operator to split the weight/bias into num_gates slices.
+GraphBuilderOrt::TransposeRnnWeightOrBiasLayout(
+    std::string_view weight_or_bias,
+    base::span<const uint32_t> permutation) {
+  size_t num_gates = permutation.size();
   // GRU: (update, reset, and new gates, num_gates = 3).
   // LSTM: (input, output, forget and cell gates, num_gates = 4).
+  if (num_gates != 3 && num_gates != 4) {
+    return NewNotSupportedError(
+        "[WebNN] Unsupported number of gates for RNN operators.");
+  }
+
+  // Use Split operator to split the weight/bias into num_gates slices.
   std::vector<std::string> gate_names;
-  for (uint32_t i = 0; i < num_gates; i++) {
+  for (size_t i = 0; i < num_gates; i++) {
     gate_names.push_back(GenerateNextOperandName());
   }
   std::vector<ScopedOrtOpAttr> split_attrs;
@@ -364,19 +371,9 @@ GraphBuilderOrt::ConvertRnnGateLayout(std::string_view weight_or_bias,
                         split_inputs, split_outputs, std::move(split_attrs));
 
   // Use Concat operator to concatenate the slices in the order of permutation.
-  std::vector<uint32_t> perm;
-  if (num_gates == 3) {
-    // GRU: RZN -> ZRN (R:0 Z:1 N:2 -> Z:1 R:0 N:2)
-    perm = {1, 0, 2};
-  } else if (num_gates == 4) {
-    // LSTM: IFGO -> IOFG (I:0 F:1 G:2 O:3 -> I:0 O:3 F:1 G:2)
-    perm = {0, 3, 1, 2};
-  } else {
-    NOTREACHED() << "[WebNN] Unsupported number of gates for RNN operators.";
-  }
   std::vector<const char*> concat_inputs;
   concat_inputs.reserve(num_gates);
-  for (uint32_t idx : perm) {
+  for (uint32_t idx : permutation) {
     concat_inputs.push_back(gate_names[idx].c_str());
   }
   std::string new_weight_or_bias = GenerateNextOperandName();
@@ -1781,9 +1778,9 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
                                           recurrent_weight_shape[1]}));
   }
   if (gru.layout == mojom::GruWeightLayout::kRzn) {
-    ASSIGN_OR_RETURN(weight, ConvertRnnGateLayout(weight, 3));
-    ASSIGN_OR_RETURN(recurrent_weight,
-                     ConvertRnnGateLayout(recurrent_weight, 3));
+    ASSIGN_OR_RETURN(weight, TransposeRnnWeightOrBiasLayout(weight, {1, 0, 2}));
+    ASSIGN_OR_RETURN(recurrent_weight, TransposeRnnWeightOrBiasLayout(
+                                           recurrent_weight, {1, 0, 2}));
   }
   std::vector<const char*> inputs = {input.c_str(), weight.c_str(),
                                      recurrent_weight.c_str()};
@@ -1814,8 +1811,9 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
                      CreateOrReshapeBias(gru.recurrent_bias_operand_id,
                                          input_data_type, bias_dims));
     if (gru.layout == mojom::GruWeightLayout::kRzn) {
-      ASSIGN_OR_RETURN(bias, ConvertRnnGateLayout(bias, 3));
-      ASSIGN_OR_RETURN(recurrent_bias, ConvertRnnGateLayout(recurrent_bias, 3));
+      ASSIGN_OR_RETURN(bias, TransposeRnnWeightOrBiasLayout(bias, {1, 0, 2}));
+      ASSIGN_OR_RETURN(recurrent_bias, TransposeRnnWeightOrBiasLayout(
+                                           recurrent_bias, {1, 0, 2}));
     }
     // Concat bias and recurrent_bias
     concatenated_bias = GenerateNextOperandName();
@@ -2277,9 +2275,10 @@ GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
                                           recurrent_weight_shape[1]}));
   }
   if (lstm.layout == mojom::LstmWeightLayout::kIfgo) {
-    ASSIGN_OR_RETURN(weight, ConvertRnnGateLayout(weight, 4));
-    ASSIGN_OR_RETURN(recurrent_weight,
-                     ConvertRnnGateLayout(recurrent_weight, 4));
+    ASSIGN_OR_RETURN(weight,
+                     TransposeRnnWeightOrBiasLayout(weight, {0, 3, 1, 2}));
+    ASSIGN_OR_RETURN(recurrent_weight, TransposeRnnWeightOrBiasLayout(
+                                           recurrent_weight, {0, 3, 1, 2}));
   }
   std::vector<const char*> inputs = {input.c_str(), weight.c_str(),
                                      recurrent_weight.c_str()};
@@ -2309,8 +2308,10 @@ GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
                      CreateOrReshapeBias(lstm.recurrent_bias_operand_id,
                                          input_data_type, bias_dims));
     if (lstm.layout == mojom::LstmWeightLayout::kIfgo) {
-      ASSIGN_OR_RETURN(bias, ConvertRnnGateLayout(bias, 4));
-      ASSIGN_OR_RETURN(recurrent_bias, ConvertRnnGateLayout(recurrent_bias, 4));
+      ASSIGN_OR_RETURN(bias,
+                       TransposeRnnWeightOrBiasLayout(bias, {0, 3, 1, 2}));
+      ASSIGN_OR_RETURN(recurrent_bias, TransposeRnnWeightOrBiasLayout(
+                                           recurrent_bias, {0, 3, 1, 2}));
     }
     // Concat bias and recurrent_bias
     concatenated_bias = GenerateNextOperandName();
