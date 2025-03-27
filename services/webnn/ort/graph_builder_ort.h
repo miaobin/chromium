@@ -160,13 +160,13 @@ class GraphBuilderOrt {
   // operators (GRU, LSTM, etc.).
   //
   // Example:
-  //   To transpose gru weight or bias from "rzn" layout to "rzn" layout, pass
+  //   To transpose gru weight or bias from "rzn" layout to "zrn" layout, pass
   //   permutation as {1, 0, 2}.
   //   To transpose lstm weight or bais from "ifgo" layout to "iofg" layout,
   //   pass permutation as {0, 3, 1, 2}
-  [[nodiscard]] base::expected<std::string, mojom::ErrorPtr>
-  TransposeRnnWeightOrBiasLayout(std::string_view weight_or_bias,
-                                 base::span<const uint32_t> permutation);
+  std::string TransposeRnnWeightOrBiasLayout(
+      std::string_view weight_or_bias,
+      base::span<const uint32_t> permutation);
 
   std::string PrependTranspose(std::string_view input,
                                base::span<const uint32_t> permutation);
