@@ -130,9 +130,6 @@ constexpr char kOpTypeWhere[] = "Where";
 constexpr char kInserted[] = "Inserted";
 constexpr char kUnderscore[] = "_";
 
-constexpr std::array<uint32_t, 3> kRznToZrnPermutation = {1, 0, 2};
-constexpr std::array<uint32_t, 4> kIfgoToIofgPermutation = {0, 3, 1, 2};
-
 base::unexpected<mojom::ErrorPtr> NewNotSupportedError(std::string message) {
   return base::unexpected(mojom::Error::New(
       mojom::Error::Code::kNotSupportedError, std::move(message)));
@@ -1773,6 +1770,7 @@ GraphBuilderOrt::AddGruOperation(const GruType& gru) {
         PrependReshape(recurrent_weight, {1, recurrent_weight_shape[0],
                                           recurrent_weight_shape[1]}));
   }
+  const std::array<uint32_t, 3> kRznToZrnPermutation = {1, 0, 2};
   if (gru.layout == mojom::GruWeightLayout::kRzn) {
     weight = TransposeRnnWeightOrBiasLayout(weight, kRznToZrnPermutation);
     recurrent_weight =
@@ -2270,6 +2268,7 @@ GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
         PrependReshape(recurrent_weight, {1, recurrent_weight_shape[0],
                                           recurrent_weight_shape[1]}));
   }
+  const std::array<uint32_t, 4> kIfgoToIofgPermutation = {0, 3, 1, 2};
   if (lstm.layout == mojom::LstmWeightLayout::kIfgo) {
     weight = TransposeRnnWeightOrBiasLayout(weight, kIfgoToIofgPermutation);
     recurrent_weight = TransposeRnnWeightOrBiasLayout(recurrent_weight,
