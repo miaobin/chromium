@@ -487,8 +487,8 @@ void GraphBuilderOrt::OptimizeGraph() {
     }
   }
 
-  // Find all operands that can skip Cast operations. If an operand is a bool
-  // output and also a bool input required, it can skipCast operations.
+  // Find all operands that can skip cast operators. If an operand is a bool
+  // output and also a bool input required, it can skip cast operator.
   for (auto id : bool_output_operands) {
     if (bool_input_required_operands.count(id)) {
       need_skip_cast_operands_.insert(id);
