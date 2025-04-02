@@ -125,6 +125,11 @@ class GraphBuilderOrt {
   [[nodiscard]] base::expected<std::string, mojom::ErrorPtr>
   CreateScalarInitializer(const DataType& value);
 
+  // Iterate over the graph info before adding nodes to optimize the model.
+  // For example, to find redundant cast nodes:
+  // [Less] -> Bool -> [Cast] -> Uint8 -> [Cast] -> Bool -> [Where]
+  void OptimizeGraph();
+
   void AddCastNode(std::string_view node,
                    std::string_view input,
                    std::string_view output,
@@ -323,6 +328,9 @@ class GraphBuilderOrt {
 
   // Used for inserting new operation into graph.
   uint64_t next_operation_id_ = 0;
+
+  // Used for skipping the cast operands that are redundant.
+  std::unordered_set<uint64_t> need_skip_cast_operands_;
 
   // A reference to the WebNN compute graph that `this` instance is converting
   // to ONNX model. The creator of `this` must ensure the GraphInfo reference
