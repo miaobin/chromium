@@ -426,9 +426,9 @@ GraphBuilderOrt::CreateScalarInitializer(const DataType& value) {
       /*shape=*/{}, base::span_from_ref(value));
 }
 
-void GraphBuilderOrt::OptimizeGraph() {
+void GraphBuilderOrt::FindBoolOperands() {
   std::unordered_set<uint64_t> bool_output_operands;
-  std::unordered_set<uint64_t> bool_input_required_operands;
+  std::unordered_set<uint64_t> bool_input_operands;
   for (const mojom::OperationPtr& operation : graph_info_->operations) {
     // Find all operands that are bool output.
     switch (operation->which()) {
@@ -458,28 +458,28 @@ void GraphBuilderOrt::OptimizeGraph() {
         break;
     }
 
-    // Find all operands that are bool input required.
+    // Find all operands that are used as bool input.
     switch (operation->which()) {
       case mojom::Operation::Tag::kElementWiseBinary: {
         const auto& binary = *operation->get_element_wise_binary();
         if (binary.kind == mojom::ElementWiseBinary::Kind::kLogicalAnd ||
             binary.kind == mojom::ElementWiseBinary::Kind::kLogicalOr ||
             binary.kind == mojom::ElementWiseBinary::Kind::kLogicalXor) {
-          bool_input_required_operands.insert(binary.lhs_operand_id);
-          bool_input_required_operands.insert(binary.rhs_operand_id);
+          bool_input_operands.insert(binary.lhs_operand_id);
+          bool_input_operands.insert(binary.rhs_operand_id);
         }
         break;
       }
       case mojom::Operation::Tag::kElementWiseUnary: {
         const auto& unary = *operation->get_element_wise_unary();
         if (unary.kind == mojom::ElementWiseUnary::Kind::kLogicalNot) {
-          bool_input_required_operands.insert(unary.input_operand_id);
+          bool_input_operands.insert(unary.input_operand_id);
         }
         break;
       }
       case mojom::Operation::Tag::kWhere: {
         const auto& where = *operation->get_where();
-        bool_input_required_operands.insert(where.condition_operand_id);
+        bool_input_operands.insert(where.condition_operand_id);
         break;
       }
       default:
@@ -488,10 +488,11 @@ void GraphBuilderOrt::OptimizeGraph() {
   }
 
   // Find all operands that can skip cast operators. If an operand is a bool
-  // output and also a bool input required, it can skip cast operator.
+  // output and also used as bool input, it can skip inserting cast operator
+  // to/from uint8.
   for (auto id : bool_output_operands) {
-    if (bool_input_required_operands.count(id)) {
-      need_skip_cast_operands_.insert(id);
+    if (bool_input_operands.count(id)) {
+      bool_operands_.insert(id);
     }
   }
 }
@@ -926,12 +927,10 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
             mojom::ElementWiseBinary::Kind::kLogicalOr ||
         element_wise_binary->kind ==
             mojom::ElementWiseBinary::Kind::kLogicalXor) {
-      if (!need_skip_cast_operands_.count(
-              element_wise_binary->lhs_operand_id)) {
+      if (!bool_operands_.count(element_wise_binary->lhs_operand_id)) {
         lhs = PrependCast(lhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
       }
-      if (!need_skip_cast_operands_.count(
-              element_wise_binary->rhs_operand_id)) {
+      if (!bool_operands_.count(element_wise_binary->rhs_operand_id)) {
         rhs = PrependCast(rhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
       }
     }
@@ -946,7 +945,7 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
     // the operand is not in the skipped list.
     if (element_wise_unary->kind ==
             mojom::ElementWiseUnary::Kind::kLogicalNot &&
-        !need_skip_cast_operands_.count(element_wise_unary->input_operand_id)) {
+        !bool_operands_.count(element_wise_unary->input_operand_id)) {
       lhs = PrependCast(lhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
     }
 
@@ -958,7 +957,7 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
   uint64_t output_operand_id = absl::visit(
       [](const auto* op) { return op->output_operand_id; }, operation);
   std::string output = GetOperandNameById(output_operand_id);
-  if (need_skip_cast_operands_.count(output_operand_id)) {
+  if (bool_operands_.count(output_operand_id)) {
     std::array<const char*, 1> outputs = {output.c_str()};
     model_editor_.AddNode(op_type, node, inputs, outputs);
   } else {
@@ -993,7 +992,7 @@ void GraphBuilderOrt::AddElementWiseLogicalNotEqualOperation(
   std::string output = GetOperandNameById(output_operand_id);
   const std::string not_node =
       GenerateNextOperationName("inserted_not_to_emulate_" + not_equal.label);
-  if (need_skip_cast_operands_.count(output_operand_id)) {
+  if (bool_operands_.count(output_operand_id)) {
     std::array<const char*, 1> outputs = {output.c_str()};
     model_editor_.AddNode(kOpTypeLogicalNot, not_node, equal_outputs, outputs);
   } else {
@@ -3132,7 +3131,7 @@ void GraphBuilderOrt::AddWhereOperation(const mojom::Where& where) {
   // ONNX only supports bool data type for the condition input of Where, insert
   // a Cast node to convert the condition input to bool.
   std::string condition = GetOperandNameById(where.condition_operand_id);
-  if (!need_skip_cast_operands_.count(where.condition_operand_id)) {
+  if (!bool_operands_.count(where.condition_operand_id)) {
     condition = PrependCast(condition, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
   }
 
@@ -3161,8 +3160,8 @@ GraphBuilderOrt::BuildModel() {
     RETURN_IF_ERROR(AddInitializer(constant_id));
   }
 
-  // Optimize graph.
-  OptimizeGraph();
+  // Find all the bool operands.
+  FindBoolOperands();
 
   // Add operations.
   for (const mojom::OperationPtr& operation : graph_info_->operations) {
