@@ -3069,10 +3069,15 @@ GraphBuilderOrt::AddSliceOperation(const mojom::Slice& slice) {
     steps[i] = base::checked_cast<int64_t>(slice.ranges[i].stride);
   }
 
-  // Axes is an optional input, if not provided, it is an empty string and will
-  // be treated as [0, 1, …, len(starts) - 1]:
-  // https://onnx.ai/onnx/operators/onnx__Slice.html#inputs
-  const std::string axes = "";
+  // Explicitly provide axes to meet the requirements of different EPs.
+  base::FixedArray<int64_t> axes_sizes(slice.ranges.size());
+  for (size_t i = 0; i < slice.ranges.size(); i++) {
+    axes_sizes[i] = base::checked_cast<int64_t>(i);
+  }
+  ASSIGN_OR_RETURN(
+      const std::string axes,
+      CreateInitializer<int64_t>(
+          {base::checked_cast<uint32_t>(axes_sizes.size())}, axes_sizes));
   return AddSliceNode(node, input, output, axes, starts, ends, steps);
 }
 
