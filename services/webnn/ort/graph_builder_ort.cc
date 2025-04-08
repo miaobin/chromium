@@ -3070,14 +3070,12 @@ GraphBuilderOrt::AddSliceOperation(const mojom::Slice& slice) {
   }
 
   // Explicitly provide axes to meet the requirements of different EPs.
-  base::FixedArray<int64_t> axes_sizes(slice.ranges.size());
-  for (size_t i = 0; i < slice.ranges.size(); i++) {
-    axes_sizes[i] = base::checked_cast<int64_t>(i);
-  }
+  base::FixedArray<int64_t> axes_values(slice.ranges.size());
+  std::iota(axes_values.begin(), axes_values.end(), 0);
   ASSIGN_OR_RETURN(
       const std::string axes,
       CreateInitializer<int64_t>(
-          {base::checked_cast<uint32_t>(axes_sizes.size())}, axes_sizes));
+          {base::checked_cast<uint32_t>(axes_values.size())}, axes_values));
   return AddSliceNode(node, input, output, axes, starts, ends, steps);
 }
 
