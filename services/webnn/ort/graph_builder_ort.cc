@@ -449,6 +449,7 @@ GraphBuilderOrt::CreateScalarInitializer(const DataType& value) {
 void GraphBuilderOrt::FindBoolOperands() {
   std::unordered_set<uint64_t> bool_output_operands;
   std::unordered_set<uint64_t> bool_input_operands;
+  std::unordered_set<uint64_t> uint8_input_operands;
   for (const mojom::OperationPtr& operation : graph_info_->operations) {
     // Find all operands that are bool output.
     switch (operation->which()) {
@@ -505,13 +506,161 @@ void GraphBuilderOrt::FindBoolOperands() {
       default:
         break;
     }
+
+    // Find all operands that can used as uint8 input.
+    switch (operation->which()) {
+      case mojom::Operation::Tag::kArgMinMax: {
+        const auto& arg_min_max = *operation->get_arg_min_max();
+        uint8_input_operands.insert(arg_min_max.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kClamp: {
+        const auto& clamp = *operation->get_clamp();
+        uint8_input_operands.insert(clamp.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kConcat: {
+        const auto& concat = *operation->get_concat();
+        for (const auto& input_operand_id : concat.input_operand_ids) {
+          uint8_input_operands.insert(input_operand_id);
+        }
+        break;
+      }
+      case mojom::Operation::Tag::kCumulativeSum: {
+        const auto& cumulative_sum = *operation->get_cumulative_sum();
+        uint8_input_operands.insert(cumulative_sum.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kDequantizeLinear: {
+        const auto& dequantize_linear = *operation->get_dequantize_linear();
+        uint8_input_operands.insert(dequantize_linear.input_operand_id);
+        uint8_input_operands.insert(dequantize_linear.zero_point_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kElementWiseBinary: {
+        const auto& binary = *operation->get_element_wise_binary();
+        if (binary.kind == mojom::ElementWiseBinary::Kind::kAdd ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kSub ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kMul ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kDiv ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kMax ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kMin ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kEqual ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kGreater ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kGreaterOrEqual ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kLesser ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kLesserOrEqual ||
+            binary.kind == mojom::ElementWiseBinary::Kind::kNotEqual) {
+          uint8_input_operands.insert(binary.lhs_operand_id);
+          uint8_input_operands.insert(binary.rhs_operand_id);
+        }
+        break;
+      }
+      case mojom::Operation::Tag::kElementWiseUnary: {
+        const auto& unary = *operation->get_element_wise_unary();
+        if (unary.kind == mojom::ElementWiseUnary::Kind::kAbs ||
+            unary.kind == mojom::ElementWiseUnary::Kind::kErf ||
+            unary.kind == mojom::ElementWiseUnary::Kind::kIdentity) {
+          uint8_input_operands.insert(unary.input_operand_id);
+        }
+        break;
+      }
+      case mojom::Operation::Tag::kExpand: {
+        const auto& expand = *operation->get_expand();
+        uint8_input_operands.insert(expand.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kGather: {
+        const auto& gather = *operation->get_gather();
+        uint8_input_operands.insert(gather.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kGatherElements: {
+        const auto& gather_elements = *operation->get_gather_elements();
+        uint8_input_operands.insert(gather_elements.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kGatherNd: {
+        const auto& gather_nd = *operation->get_gather_nd();
+        uint8_input_operands.insert(gather_nd.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kPad: {
+        // https://github.com/shiyi9801/chromium/issues/85
+        break;
+      }
+      case mojom::Operation::Tag::kResample2d: {
+        const auto& resample = *operation->get_resample2d();
+        uint8_input_operands.insert(resample.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kReshape: {
+        const auto& reshape = *operation->get_reshape();
+        uint8_input_operands.insert(reshape.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kReverse: {
+        const auto& reverse = *operation->get_reverse();
+        uint8_input_operands.insert(reverse.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kScatterElements: {
+        const auto& scatter_elements = *operation->get_scatter_elements();
+        uint8_input_operands.insert(scatter_elements.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kScatterNd: {
+        const auto& scatter_nd = *operation->get_scatter_nd();
+        uint8_input_operands.insert(scatter_nd.input_operand_id);
+        uint8_input_operands.insert(scatter_nd.updates_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kSlice: {
+        const auto& slice = *operation->get_slice();
+        uint8_input_operands.insert(slice.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kSplit: {
+        const auto& split = *operation->get_split();
+        uint8_input_operands.insert(split.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kTile: {
+        const auto& tile = *operation->get_tile();
+        uint8_input_operands.insert(tile.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kTranspose: {
+        const auto& transpose = *operation->get_transpose();
+        uint8_input_operands.insert(transpose.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kTriangular: {
+        const auto& triangular = *operation->get_triangular();
+        uint8_input_operands.insert(triangular.input_operand_id);
+        break;
+      }
+      case mojom::Operation::Tag::kWhere: {
+        const auto& where = *operation->get_where();
+        uint8_input_operands.insert(where.true_value_operand_id);
+        uint8_input_operands.insert(where.false_value_operand_id);
+        break;
+      }
+      default:
+        break;
+    }
   }
 
-  // Find all operands that can skip cast operators. If an operand is a bool
-  // output and also used as bool input, it can skip inserting cast operator
-  // to/from uint8.
+  // The output operands can also be viewed as the uint8 input operands.
+  for (const auto& output_operand_id : graph_info_->output_operands) {
+    uint8_input_operands.insert(output_operand_id);
+  }
+
+  // Find all operands that can skip cast operators. If a bool output operand is
+  // used as bool input and not used as uint8 input at the same time, it can
+  // skip inserting cast operator to/from uint8.
   for (auto id : bool_output_operands) {
-    if (bool_input_operands.count(id)) {
+    if (bool_input_operands.count(id) && !uint8_input_operands.count(id)) {
       bool_operands_.insert(id);
     }
   }
