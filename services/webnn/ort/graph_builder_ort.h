@@ -340,6 +340,12 @@ class GraphBuilderOrt {
   // operators to/from uint8 data type.
   std::unordered_set<uint64_t> bool_operands_;
 
+  // Operands that should be inserted cast operators from bool to uint8.
+  std::unordered_set<uint64_t> bool_to_uint8_operands_;
+
+  // Operands that mapped to bool operands after inserting the cast operators.
+  std::unordered_map<std::string, std::string> operand_to_bool_operand_;
+
   // A reference to the WebNN compute graph that `this` instance is converting
   // to ONNX model. The creator of `this` must ensure the GraphInfo reference
   // passed into `CreateAndBuild()` is valid for as long as `this` exists.

@@ -451,7 +451,7 @@ void GraphBuilderOrt::FindBoolOperands() {
   std::unordered_set<uint64_t> bool_input_operands;
   std::unordered_set<uint64_t> uint8_input_operands;
   for (const mojom::OperationPtr& operation : graph_info_->operations) {
-    // Find all operands that are bool output.
+    // Find all operands that are bool output in ONNX.
     switch (operation->which()) {
       case mojom::Operation::Tag::kElementWiseBinary: {
         const auto& binary = *operation->get_element_wise_binary();
@@ -479,7 +479,7 @@ void GraphBuilderOrt::FindBoolOperands() {
         break;
     }
 
-    // Find all operands that are used as bool input.
+    // Find all operands that are used as bool input in ONNX.
     switch (operation->which()) {
       case mojom::Operation::Tag::kElementWiseBinary: {
         const auto& binary = *operation->get_element_wise_binary();
@@ -656,12 +656,18 @@ void GraphBuilderOrt::FindBoolOperands() {
     uint8_input_operands.insert(output_operand_id);
   }
 
-  // Find all operands that can skip cast operators. If a bool output operand is
-  // used as bool input and not used as uint8 input at the same time, it can
-  // skip inserting cast operator to/from uint8.
   for (auto id : bool_output_operands) {
-    if (bool_input_operands.count(id) && !uint8_input_operands.count(id)) {
+    // Find all operands that can skip cast operators. If an operand is a bool
+    // output and also used as bool input, it can skip inserting cast operator
+    // to/from uint8.
+    if (bool_input_operands.count(id)) {
       bool_operands_.insert(id);
+    }
+    // Find all operands that should insert cast operators. If an operand is a
+    // bool output and also used as uint8 input, it should insert cast operator
+    // from bool to uint8.
+    if (uint8_input_operands.count(id)) {
+      bool_to_uint8_operands_.insert(id);
     }
   }
 }
@@ -1094,8 +1100,18 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
       if (!bool_operands_.count(element_wise_binary->lhs_operand_id)) {
         lhs = PrependCast(lhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
       }
+      // If the current operand is inserted a cast, find the bool operand
+      // through the original operand.
+      if (bool_to_uint8_operands_.count(element_wise_binary->lhs_operand_id)) {
+        lhs = operand_to_bool_operand_[lhs];
+      }
       if (!bool_operands_.count(element_wise_binary->rhs_operand_id)) {
         rhs = PrependCast(rhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
+      }
+      // If the current operand is inserted a cast, find the bool operand
+      // through the original operand.
+      if (bool_to_uint8_operands_.count(element_wise_binary->rhs_operand_id)) {
+        rhs = operand_to_bool_operand_[rhs];
       }
     }
 
@@ -1108,23 +1124,27 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
     // For some ONNX logical operators that require bool input, add a cast if
     // the operand is not in the skipped list.
     if (element_wise_unary->kind ==
-            mojom::ElementWiseUnary::Kind::kLogicalNot &&
-        !bool_operands_.count(element_wise_unary->input_operand_id)) {
-      lhs = PrependCast(lhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
+        mojom::ElementWiseUnary::Kind::kLogicalNot) {
+      if (!bool_operands_.count(element_wise_unary->input_operand_id)) {
+        lhs = PrependCast(lhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
+      }
+      // If the current operand is inserted a cast, find the bool operand
+      // through the original operand.
+      if (bool_to_uint8_operands_.count(element_wise_unary->input_operand_id)) {
+        lhs = operand_to_bool_operand_[lhs];
+      }
     }
 
     inputs = {lhs.c_str()};
   }
 
   // ONNX logical operators only support bool output. To support output with the
-  // WebNN data type, append a cast if the operand is not in the skipped list.
+  // WebNN data type, append a cast if the operand is used by a node that
+  // requires a uint8 input.
   uint64_t output_operand_id = absl::visit(
       [](const auto* op) { return op->output_operand_id; }, operation);
   std::string output = GetOperandNameById(output_operand_id);
-  if (bool_operands_.count(output_operand_id)) {
-    std::array<const char*, 1> outputs = {output.c_str()};
-    model_editor_.AddNode(op_type, node, inputs, outputs);
-  } else {
+  if (bool_to_uint8_operands_.count(output_operand_id)) {
     const std::string bool_output = GenerateNextOperandName();
     std::array<const char*, 1> bool_outputs = {bool_output.c_str()};
     model_editor_.AddNode(op_type, node, inputs, bool_outputs);
@@ -1132,6 +1152,12 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
         OperandTypeToONNXTensorElementDataType(
             GetOperand(output_operand_id).descriptor.data_type());
     AppendCast(bool_output, output, output_type);
+    // Store the mapping between the original operand and the bool operand after
+    // inserting the cast.
+    operand_to_bool_operand_[output] = bool_output;
+  } else {
+    std::array<const char*, 1> outputs = {output.c_str()};
+    model_editor_.AddNode(op_type, node, inputs, outputs);
   }
 }
 
@@ -1156,10 +1182,7 @@ void GraphBuilderOrt::AddElementWiseLogicalNotEqualOperation(
   std::string output = GetOperandNameById(output_operand_id);
   const std::string not_node =
       GenerateNextOperationName("inserted_not_to_emulate_" + not_equal.label);
-  if (bool_operands_.count(output_operand_id)) {
-    std::array<const char*, 1> outputs = {output.c_str()};
-    model_editor_.AddNode(kOpTypeLogicalNot, not_node, equal_outputs, outputs);
-  } else {
+  if (bool_to_uint8_operands_.count(output_operand_id)) {
     const std::string bool_output = GenerateNextOperandName();
     std::array<const char*, 1> bool_outputs = {bool_output.c_str()};
     model_editor_.AddNode(kOpTypeLogicalNot, not_node, equal_outputs,
@@ -1168,6 +1191,12 @@ void GraphBuilderOrt::AddElementWiseLogicalNotEqualOperation(
         OperandTypeToONNXTensorElementDataType(
             GetOperand(output_operand_id).descriptor.data_type());
     AppendCast(bool_output, output, output_type);
+    // Store the mapping between the original operand and the bool operand after
+    // inserting the cast.
+    operand_to_bool_operand_[output] = bool_output;
+  } else {
+    std::array<const char*, 1> outputs = {output.c_str()};
+    model_editor_.AddNode(kOpTypeLogicalNot, not_node, equal_outputs, outputs);
   }
 }
 
@@ -3346,7 +3375,11 @@ void GraphBuilderOrt::AddWhereOperation(const mojom::Where& where) {
   if (!bool_operands_.count(where.condition_operand_id)) {
     condition = PrependCast(condition, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
   }
-
+  // If the current operand is inserted a cast, find the bool operand through
+  // the original operand.
+  if (bool_to_uint8_operands_.count(where.condition_operand_id)) {
+    condition = operand_to_bool_operand_[condition];
+  }
   const std::string true_value =
       GetOperandNameById(where.true_value_operand_id);
   const std::string false_value =
