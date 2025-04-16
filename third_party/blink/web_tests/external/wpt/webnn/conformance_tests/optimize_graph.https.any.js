@@ -129,7 +129,7 @@ const optimizedgraphTests = [
     }
   },
   {
-    'name': 'Lesser + Where & output: [Less] -> Bool -> [Where] & [Less] -> [Cast] -> uint8(output)',
+    'name': 'Lesser output is consumed by Where and used as graph output',
     'graph': {
       'inputs': {
         'LesserInputA': {
@@ -174,7 +174,7 @@ const optimizedgraphTests = [
     }
   },
   {
-    'name': 'Lesser + Where & Add: [Less] -> Bool -> [Where] & [Less] -> Bool -> [Cast] -> uint8 -> [Add]',
+    'name': 'Lesser output is consumed by Where and Add',
     'graph': {
       'inputs': {
         'LesserInputA': {

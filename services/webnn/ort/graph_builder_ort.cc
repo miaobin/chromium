@@ -449,7 +449,7 @@ GraphBuilderOrt::CreateScalarInitializer(const DataType& value) {
 void GraphBuilderOrt::FindBoolOperands() {
   std::unordered_set<uint64_t> bool_output_operands;
   std::unordered_set<uint64_t> bool_input_operands;
-  std::unordered_set<uint64_t> uint8_input_operands;
+  std::unordered_set<uint64_t> may_uint8_input_operands;
   for (const mojom::OperationPtr& operation : graph_info_->operations) {
     // Find all operands that are bool output in ONNX.
     switch (operation->which()) {
@@ -507,34 +507,35 @@ void GraphBuilderOrt::FindBoolOperands() {
         break;
     }
 
-    // Find all operands that can used as uint8 input.
+    // Find all operands that may be used as uint8 input.
     switch (operation->which()) {
       case mojom::Operation::Tag::kArgMinMax: {
         const auto& arg_min_max = *operation->get_arg_min_max();
-        uint8_input_operands.insert(arg_min_max.input_operand_id);
+        may_uint8_input_operands.insert(arg_min_max.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kClamp: {
         const auto& clamp = *operation->get_clamp();
-        uint8_input_operands.insert(clamp.input_operand_id);
+        may_uint8_input_operands.insert(clamp.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kConcat: {
         const auto& concat = *operation->get_concat();
         for (const auto& input_operand_id : concat.input_operand_ids) {
-          uint8_input_operands.insert(input_operand_id);
+          may_uint8_input_operands.insert(input_operand_id);
         }
         break;
       }
       case mojom::Operation::Tag::kCumulativeSum: {
         const auto& cumulative_sum = *operation->get_cumulative_sum();
-        uint8_input_operands.insert(cumulative_sum.input_operand_id);
+        may_uint8_input_operands.insert(cumulative_sum.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kDequantizeLinear: {
         const auto& dequantize_linear = *operation->get_dequantize_linear();
-        uint8_input_operands.insert(dequantize_linear.input_operand_id);
-        uint8_input_operands.insert(dequantize_linear.zero_point_operand_id);
+        may_uint8_input_operands.insert(dequantize_linear.input_operand_id);
+        may_uint8_input_operands.insert(
+            dequantize_linear.zero_point_operand_id);
         break;
       }
       case mojom::Operation::Tag::kElementWiseBinary: {
@@ -551,8 +552,8 @@ void GraphBuilderOrt::FindBoolOperands() {
             binary.kind == mojom::ElementWiseBinary::Kind::kLesser ||
             binary.kind == mojom::ElementWiseBinary::Kind::kLesserOrEqual ||
             binary.kind == mojom::ElementWiseBinary::Kind::kNotEqual) {
-          uint8_input_operands.insert(binary.lhs_operand_id);
-          uint8_input_operands.insert(binary.rhs_operand_id);
+          may_uint8_input_operands.insert(binary.lhs_operand_id);
+          may_uint8_input_operands.insert(binary.rhs_operand_id);
         }
         break;
       }
@@ -561,89 +562,90 @@ void GraphBuilderOrt::FindBoolOperands() {
         if (unary.kind == mojom::ElementWiseUnary::Kind::kAbs ||
             unary.kind == mojom::ElementWiseUnary::Kind::kErf ||
             unary.kind == mojom::ElementWiseUnary::Kind::kIdentity) {
-          uint8_input_operands.insert(unary.input_operand_id);
+          may_uint8_input_operands.insert(unary.input_operand_id);
         }
         break;
       }
       case mojom::Operation::Tag::kExpand: {
         const auto& expand = *operation->get_expand();
-        uint8_input_operands.insert(expand.input_operand_id);
+        may_uint8_input_operands.insert(expand.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kGather: {
         const auto& gather = *operation->get_gather();
-        uint8_input_operands.insert(gather.input_operand_id);
+        may_uint8_input_operands.insert(gather.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kGatherElements: {
         const auto& gather_elements = *operation->get_gather_elements();
-        uint8_input_operands.insert(gather_elements.input_operand_id);
+        may_uint8_input_operands.insert(gather_elements.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kGatherNd: {
         const auto& gather_nd = *operation->get_gather_nd();
-        uint8_input_operands.insert(gather_nd.input_operand_id);
+        may_uint8_input_operands.insert(gather_nd.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kPad: {
-        // https://github.com/shiyi9801/chromium/issues/85
+        // TODO(https://github.com/shiyi9801/chromium/issues/85): handle uint8
+        // input once pad supports uint8 input.
         break;
       }
       case mojom::Operation::Tag::kResample2d: {
         const auto& resample = *operation->get_resample2d();
-        uint8_input_operands.insert(resample.input_operand_id);
+        may_uint8_input_operands.insert(resample.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kReshape: {
         const auto& reshape = *operation->get_reshape();
-        uint8_input_operands.insert(reshape.input_operand_id);
+        may_uint8_input_operands.insert(reshape.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kReverse: {
         const auto& reverse = *operation->get_reverse();
-        uint8_input_operands.insert(reverse.input_operand_id);
+        may_uint8_input_operands.insert(reverse.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kScatterElements: {
         const auto& scatter_elements = *operation->get_scatter_elements();
-        uint8_input_operands.insert(scatter_elements.input_operand_id);
+        may_uint8_input_operands.insert(scatter_elements.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kScatterNd: {
         const auto& scatter_nd = *operation->get_scatter_nd();
-        uint8_input_operands.insert(scatter_nd.input_operand_id);
-        uint8_input_operands.insert(scatter_nd.updates_operand_id);
+        may_uint8_input_operands.insert(scatter_nd.input_operand_id);
+        may_uint8_input_operands.insert(scatter_nd.updates_operand_id);
         break;
       }
       case mojom::Operation::Tag::kSlice: {
         const auto& slice = *operation->get_slice();
-        uint8_input_operands.insert(slice.input_operand_id);
+        may_uint8_input_operands.insert(slice.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kSplit: {
         const auto& split = *operation->get_split();
-        uint8_input_operands.insert(split.input_operand_id);
+        may_uint8_input_operands.insert(split.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kTile: {
         const auto& tile = *operation->get_tile();
-        uint8_input_operands.insert(tile.input_operand_id);
+        may_uint8_input_operands.insert(tile.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kTranspose: {
         const auto& transpose = *operation->get_transpose();
-        uint8_input_operands.insert(transpose.input_operand_id);
+        may_uint8_input_operands.insert(transpose.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kTriangular: {
         const auto& triangular = *operation->get_triangular();
-        uint8_input_operands.insert(triangular.input_operand_id);
+        may_uint8_input_operands.insert(triangular.input_operand_id);
         break;
       }
       case mojom::Operation::Tag::kWhere: {
         const auto& where = *operation->get_where();
-        uint8_input_operands.insert(where.true_value_operand_id);
-        uint8_input_operands.insert(where.false_value_operand_id);
+        may_uint8_input_operands.insert(where.true_value_operand_id);
+        may_uint8_input_operands.insert(where.false_value_operand_id);
         break;
       }
       default:
@@ -651,13 +653,14 @@ void GraphBuilderOrt::FindBoolOperands() {
     }
   }
 
-  // The output operands can also be viewed as the uint8 input operands.
+  // The graph output operands can also be viewed as the operands that may be
+  // used as uint8 input.
   for (const auto& output_operand_id : graph_info_->output_operands) {
-    uint8_input_operands.insert(output_operand_id);
+    may_uint8_input_operands.insert(output_operand_id);
   }
 
   for (auto id : bool_output_operands) {
-    // Find all operands that can skip cast operators. If an operand is a bool
+    // Find all operands that may skip cast operators. If an operand is a bool
     // output and also used as bool input, it can skip inserting cast operator
     // to/from uint8.
     if (bool_input_operands.count(id)) {
@@ -666,8 +669,8 @@ void GraphBuilderOrt::FindBoolOperands() {
     // Find all operands that should insert cast operators. If an operand is a
     // bool output and also used as uint8 input, it should insert cast operator
     // from bool to uint8.
-    if (uint8_input_operands.count(id)) {
-      bool_to_uint8_operands_.insert(id);
+    if (may_uint8_input_operands.count(id)) {
+      bool_operands_to_be_casted_to_uint8_.insert(id);
     }
   }
 }
@@ -1099,19 +1102,19 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
             mojom::ElementWiseBinary::Kind::kLogicalXor) {
       if (!bool_operands_.count(element_wise_binary->lhs_operand_id)) {
         lhs = PrependCast(lhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-      }
-      // If the current operand is inserted a cast, find the bool operand
-      // through the original operand.
-      if (bool_to_uint8_operands_.count(element_wise_binary->lhs_operand_id)) {
-        lhs = operand_to_bool_operand_[lhs];
+      } else if (bool_operands_to_be_casted_to_uint8_.count(
+                     element_wise_binary->lhs_operand_id)) {
+        // If the current operand is casted from bool, find and use the bool
+        // operand.
+        lhs = uint8_to_bool_operands_map_[lhs];
       }
       if (!bool_operands_.count(element_wise_binary->rhs_operand_id)) {
         rhs = PrependCast(rhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-      }
-      // If the current operand is inserted a cast, find the bool operand
-      // through the original operand.
-      if (bool_to_uint8_operands_.count(element_wise_binary->rhs_operand_id)) {
-        rhs = operand_to_bool_operand_[rhs];
+      } else if (bool_operands_to_be_casted_to_uint8_.count(
+                     element_wise_binary->rhs_operand_id)) {
+        // If the current operand is casted from bool, find and use the bool
+        // operand.
+        rhs = uint8_to_bool_operands_map_[rhs];
       }
     }
 
@@ -1127,11 +1130,11 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
         mojom::ElementWiseUnary::Kind::kLogicalNot) {
       if (!bool_operands_.count(element_wise_unary->input_operand_id)) {
         lhs = PrependCast(lhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-      }
-      // If the current operand is inserted a cast, find the bool operand
-      // through the original operand.
-      if (bool_to_uint8_operands_.count(element_wise_unary->input_operand_id)) {
-        lhs = operand_to_bool_operand_[lhs];
+      } else if (bool_operands_to_be_casted_to_uint8_.count(
+                     element_wise_unary->input_operand_id)) {
+        // If the current operand is casted from bool, find and use the bool
+        // operand.
+        lhs = uint8_to_bool_operands_map_[lhs];
       }
     }
 
@@ -1144,7 +1147,7 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
   uint64_t output_operand_id = absl::visit(
       [](const auto* op) { return op->output_operand_id; }, operation);
   std::string output = GetOperandNameById(output_operand_id);
-  if (bool_to_uint8_operands_.count(output_operand_id)) {
+  if (bool_operands_to_be_casted_to_uint8_.count(output_operand_id)) {
     const std::string bool_output = GenerateNextOperandName();
     std::array<const char*, 1> bool_outputs = {bool_output.c_str()};
     model_editor_.AddNode(op_type, node, inputs, bool_outputs);
@@ -1154,7 +1157,7 @@ void GraphBuilderOrt::AddElementWiseLogicalOperation(
     AppendCast(bool_output, output, output_type);
     // Store the mapping between the original operand and the bool operand after
     // inserting the cast.
-    operand_to_bool_operand_[output] = bool_output;
+    uint8_to_bool_operands_map_[output] = bool_output;
   } else {
     std::array<const char*, 1> outputs = {output.c_str()};
     model_editor_.AddNode(op_type, node, inputs, outputs);
@@ -1182,7 +1185,7 @@ void GraphBuilderOrt::AddElementWiseLogicalNotEqualOperation(
   std::string output = GetOperandNameById(output_operand_id);
   const std::string not_node =
       GenerateNextOperationName("inserted_not_to_emulate_" + not_equal.label);
-  if (bool_to_uint8_operands_.count(output_operand_id)) {
+  if (bool_operands_to_be_casted_to_uint8_.count(output_operand_id)) {
     const std::string bool_output = GenerateNextOperandName();
     std::array<const char*, 1> bool_outputs = {bool_output.c_str()};
     model_editor_.AddNode(kOpTypeLogicalNot, not_node, equal_outputs,
@@ -1193,7 +1196,7 @@ void GraphBuilderOrt::AddElementWiseLogicalNotEqualOperation(
     AppendCast(bool_output, output, output_type);
     // Store the mapping between the original operand and the bool operand after
     // inserting the cast.
-    operand_to_bool_operand_[output] = bool_output;
+    uint8_to_bool_operands_map_[output] = bool_output;
   } else {
     std::array<const char*, 1> outputs = {output.c_str()};
     model_editor_.AddNode(kOpTypeLogicalNot, not_node, equal_outputs, outputs);
@@ -3374,11 +3377,11 @@ void GraphBuilderOrt::AddWhereOperation(const mojom::Where& where) {
   std::string condition = GetOperandNameById(where.condition_operand_id);
   if (!bool_operands_.count(where.condition_operand_id)) {
     condition = PrependCast(condition, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-  }
-  // If the current operand is inserted a cast, find the bool operand through
-  // the original operand.
-  if (bool_to_uint8_operands_.count(where.condition_operand_id)) {
-    condition = operand_to_bool_operand_[condition];
+  } else if (bool_operands_to_be_casted_to_uint8_.count(
+                 where.condition_operand_id)) {
+    // If the current operand is casted from bool, find and use the bool
+    // operand.
+    condition = uint8_to_bool_operands_map_[condition];
   }
   const std::string true_value =
       GetOperandNameById(where.true_value_operand_id);
