@@ -340,10 +340,10 @@ class GraphBuilderOrt {
   // operators to/from uint8 data type.
   std::unordered_set<uint64_t> bool_operands_;
 
-  // Bool operands that should casted to uint8.
+  // Bool operands that should be casted to uint8.
   std::unordered_set<uint64_t> bool_operands_to_be_casted_to_uint8_;
 
-  // Map the uint8 operands back to bool operands after inserting the cast
+  // Map the uint8 operands back to the bool operands after inserting the cast
   // operators.
   std::unordered_map<std::string, std::string> uint8_to_bool_operands_map_;
 
