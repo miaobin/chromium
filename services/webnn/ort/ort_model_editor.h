@@ -36,7 +36,7 @@ constexpr int32_t kOrtOpsetVersion = 21;
 constexpr int32_t kEPContextOpsetVersion = 1;
 constexpr int32_t kMSNchwcDomainOpsetVersion = 1;
 constexpr int32_t kMSDmlDomainOpsetVersion = 1;
-constexpr int32_t kMSInternalNhwcDomainOpsetVersion = 21;
+constexpr int32_t kMSInternalNhwcDomainOpsetVersion = kOrtOpsetVersion;
 
 // Define the minimum size(in bytes) to use external data.
 constexpr size_t kMinExternalDataSize = 128;
