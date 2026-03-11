@@ -79,6 +79,8 @@ String MLOperator::OperatorKindToString(
           return "logicalOr";
         case webnn::mojom::blink::ElementWiseBinary::Kind::kLogicalXor:
           return "logicalXor";
+        case webnn::mojom::blink::ElementWiseBinary::Kind::kMod:
+          return "mod";
       }
     }
     case webnn::mojom::blink::Operation::Tag::kClamp:
@@ -216,6 +218,9 @@ String MLOperator::OperatorKindToString(
     case webnn::mojom::blink::Operation::Tag::kQuantizeLinear:
       CHECK(std::holds_alternative<std::monostate>(sub_kind));
       return "quantizeLinear";
+    case webnn::mojom::blink::Operation::Tag::kRange:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "range";
     case webnn::mojom::blink::Operation::Tag::kReduce: {
       switch (std::get<webnn::mojom::blink::Reduce::Kind>(sub_kind)) {
         case webnn::mojom::blink::Reduce::Kind::kL1:
@@ -258,6 +263,9 @@ String MLOperator::OperatorKindToString(
     case webnn::mojom::blink::Operation::Tag::kScatterNd:
       CHECK(std::holds_alternative<std::monostate>(sub_kind));
       return "scatterND";
+    case webnn::mojom::blink::Operation::Tag::kShape:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "shape";
     case webnn::mojom::blink::Operation::Tag::kSigmoid:
       CHECK(std::holds_alternative<std::monostate>(sub_kind));
       return "sigmoid";
@@ -291,6 +299,24 @@ String MLOperator::OperatorKindToString(
     case webnn::mojom::blink::Operation::Tag::kWhere:
       CHECK(std::holds_alternative<std::monostate>(sub_kind));
       return "where";
+    case webnn::mojom::blink::Operation::Tag::kDynamicReshape:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "dynamicReshape";
+    case webnn::mojom::blink::Operation::Tag::kDynamicExpand:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "dynamicExpand";
+    case webnn::mojom::blink::Operation::Tag::kDynamicSlice:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "dynamicSlice";
+    case webnn::mojom::blink::Operation::Tag::kDynamicPad:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "dynamicPad";
+    case webnn::mojom::blink::Operation::Tag::kDynamicSplit:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "dynamicSplit";
+    case webnn::mojom::blink::Operation::Tag::kDynamicResample2d:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "dynamicResample2d";
   }
 }
 
@@ -476,6 +502,7 @@ void MLOperator::AddOptionalInputs(
     case webnn::mojom::blink::Operation::Tag::kPool2d:
     case webnn::mojom::blink::Operation::Tag::kPrelu:
     case webnn::mojom::blink::Operation::Tag::kQuantizeLinear:
+    case webnn::mojom::blink::Operation::Tag::kRange:
     case webnn::mojom::blink::Operation::Tag::kReduce:
     case webnn::mojom::blink::Operation::Tag::kResample2d:
     case webnn::mojom::blink::Operation::Tag::kRelu:
@@ -483,6 +510,7 @@ void MLOperator::AddOptionalInputs(
     case webnn::mojom::blink::Operation::Tag::kReverse:
     case webnn::mojom::blink::Operation::Tag::kScatterElements:
     case webnn::mojom::blink::Operation::Tag::kScatterNd:
+    case webnn::mojom::blink::Operation::Tag::kShape:
     case webnn::mojom::blink::Operation::Tag::kSigmoid:
     case webnn::mojom::blink::Operation::Tag::kSlice:
     case webnn::mojom::blink::Operation::Tag::kSoftmax:
@@ -494,6 +522,14 @@ void MLOperator::AddOptionalInputs(
     case webnn::mojom::blink::Operation::Tag::kTranspose:
     case webnn::mojom::blink::Operation::Tag::kTriangular:
     case webnn::mojom::blink::Operation::Tag::kWhere: {
+      break;
+    }
+    case webnn::mojom::blink::Operation::Tag::kDynamicReshape:
+    case webnn::mojom::blink::Operation::Tag::kDynamicExpand:
+    case webnn::mojom::blink::Operation::Tag::kDynamicSlice:
+    case webnn::mojom::blink::Operation::Tag::kDynamicPad:
+    case webnn::mojom::blink::Operation::Tag::kDynamicSplit:
+    case webnn::mojom::blink::Operation::Tag::kDynamicResample2d: {
       break;
     }
   }

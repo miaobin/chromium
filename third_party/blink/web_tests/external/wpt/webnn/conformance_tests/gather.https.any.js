@@ -1698,6 +1698,158 @@ const gatherTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'gather float32 2D tensor with dynamic batch dimension and int32 1D indices axis=0 (concrete shape [2, 3])',
+    'graph': {
+      'inputs': {
+        'gatherInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'shape': [2, 3],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 3], dataType: 'float32'}
+        },
+        'gatherIndices': {
+          'data': [1, 0],
+          'descriptor': {shape: [2], dataType: 'int32'},
+          'constant': true
+        }
+      },
+      'operators': [{
+        'name': 'gather',
+        'arguments': [
+          {'input': 'gatherInput'}, {'indices': 'gatherIndices'},
+          {'options': {'axis': 0}}
+        ],
+        'outputs': 'gatherOutput'
+      }],
+      'expectedOutputs': {
+        'gatherOutput': {
+          'data': [4.0, 5.0, 6.0, 1.0, 2.0, 3.0],
+          'shape': [2, 3],
+          'descriptor': {shape: [2, 3], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'gather float32 3D tensor with dynamic sequence dimension and int32 2D indices axis=1 (concrete shape [2, 3, 4])',
+    'graph': {
+      'inputs': {
+        'gatherInput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor':
+              {shape: [2, {name: 'seq', maxSize: 20}, 4], dataType: 'float32'}
+        },
+        'gatherIndices': {
+          'data': [2, 0, 1, 0],
+          'descriptor': {shape: [2, 2], dataType: 'int32'},
+          'constant': true
+        }
+      },
+      'operators': [{
+        'name': 'gather',
+        'arguments': [
+          {'input': 'gatherInput'}, {'indices': 'gatherIndices'},
+          {'options': {'axis': 1}}
+        ],
+        'outputs': 'gatherOutput'
+      }],
+      'expectedOutputs': {
+        'gatherOutput': {
+          'data': [
+            9.0,  10.0, 11.0, 12.0, 1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,
+            8.0,  1.0,  2.0,  3.0,  4.0,  21.0, 22.0, 23.0, 24.0, 13.0, 14.0,
+            15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 13.0, 14.0, 15.0, 16.0
+          ],
+          'shape': [2, 2, 2, 4],
+          'descriptor': {shape: [2, 2, 2, 4], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'gather float32 2D tensor and int64 1D indices with dynamic size axis=1 (concrete indices shape [3])',
+    'graph': {
+      'inputs': {
+        'gatherInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'descriptor': {shape: [3, 4], dataType: 'float32'}
+        },
+        'gatherIndices': {
+          'data': [2, 0, 1],
+          'shape': [3],
+          'descriptor':
+              {shape: [{name: 'indices_size', maxSize: 10}], dataType: 'int64'}
+        }
+      },
+      'operators': [{
+        'name': 'gather',
+        'arguments': [
+          {'input': 'gatherInput'}, {'indices': 'gatherIndices'},
+          {'options': {'axis': 1}}
+        ],
+        'outputs': 'gatherOutput'
+      }],
+      'expectedOutputs': {
+        'gatherOutput': {
+          'data': [3.0, 1.0, 2.0, 7.0, 5.0, 6.0, 11.0, 9.0, 10.0],
+          'shape': [3, 3],
+          'descriptor': {
+            shape: [3, {name: 'indices_size', maxSize: 10}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'gather float32 2D tensor with dynamic batch and int32 1D indices with dynamic size axis=0 (concrete shapes [3, 4] and [2])',
+    'graph': {
+      'inputs': {
+        'gatherInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [3, 4],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 4], dataType: 'float32'}
+        },
+        'gatherIndices': {
+          'data': [1, 2],
+          'shape': [2],
+          'descriptor':
+              {shape: [{name: 'indices_size', maxSize: 8}], dataType: 'int32'}
+        }
+      },
+      'operators': [{
+        'name': 'gather',
+        'arguments': [
+          {'input': 'gatherInput'}, {'indices': 'gatherIndices'},
+          {'options': {'axis': 0}}
+        ],
+        'outputs': 'gatherOutput'
+      }],
+      'expectedOutputs': {
+        'gatherOutput': {
+          'data': [5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [2, 4],
+          'descriptor': {
+            shape: [{name: 'indices_size', maxSize: 8}, 4],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
   }
 ];
 

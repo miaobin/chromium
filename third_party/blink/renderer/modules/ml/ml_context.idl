@@ -163,6 +163,49 @@ dictionary MLWhereSupportLimits {
   MLTensorLimits output;
 };
 
+dictionary MLRangeSupportLimits {
+  MLTensorLimits start;
+  MLTensorLimits limit;
+  MLTensorLimits delta;
+  MLTensorLimits output;
+};
+
+dictionary MLShapeSupportLimits {
+  MLTensorLimits input;
+  MLTensorLimits output;
+};
+
+dictionary MLDynamicNewShapeSupportLimits {
+  MLTensorLimits input;
+  MLTensorLimits newShape;
+  MLTensorLimits output;
+};
+
+dictionary MLDynamicSliceSupportLimits {
+  MLTensorLimits input;
+  MLTensorLimits starts;
+  MLTensorLimits ends;
+  MLTensorLimits output;
+};
+
+dictionary MLDynamicPadSupportLimits {
+  MLTensorLimits input;
+  MLTensorLimits pads;
+  MLTensorLimits output;
+};
+
+dictionary MLDynamicSplitSupportLimits {
+  MLTensorLimits input;
+  MLTensorLimits splits;
+  MLTensorLimits outputs;
+};
+
+dictionary MLDynamicResample2dSupportLimits {
+  MLTensorLimits input;
+  MLTensorLimits sizes;
+  MLTensorLimits output;
+};
+
 dictionary MLOpSupportLimits {
   MLInputOperandLayout preferredInputLayout;
   [EnforceRange] unsigned long long maxTensorByteLength;
@@ -189,6 +232,7 @@ dictionary MLOpSupportLimits {
   MLBinarySupportLimits max;
   MLBinarySupportLimits min;
   MLBinarySupportLimits pow;
+  MLBinarySupportLimits mod;
 
   // Element-wise logical ops.
   MLBinarySupportLimits equal;
@@ -266,6 +310,7 @@ dictionary MLOpSupportLimits {
   MLSingleInputSupportLimits reverse;
   MLScatterSupportLimits scatterElements;
   MLScatterSupportLimits scatterND;
+  MLShapeSupportLimits shape;
   MLSingleInputSupportLimits sigmoid;
   MLSingleInputSupportLimits slice;
   MLSingleInputSupportLimits softmax;
@@ -277,6 +322,13 @@ dictionary MLOpSupportLimits {
   MLSingleInputSupportLimits transpose;
   MLSingleInputSupportLimits triangular;
   MLWhereSupportLimits where;
+  MLRangeSupportLimits range;
+  MLDynamicNewShapeSupportLimits dynamicReshape;
+  MLDynamicNewShapeSupportLimits dynamicExpand;
+  MLDynamicSliceSupportLimits dynamicSlice;
+  MLDynamicPadSupportLimits dynamicPad;
+  MLDynamicSplitSupportLimits dynamicSplit;
+  MLDynamicResample2dSupportLimits dynamicResample2d;
 };
 
 typedef record<USVString, MLTensor> MLNamedTensors;

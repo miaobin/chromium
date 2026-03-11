@@ -4,15 +4,19 @@
 
 #include "services/webnn/webnn_graph_builder_impl.h"
 
+#include <algorithm>
+#include <cmath>
 #include <variant>
 
 #include "base/check_is_test.h"
 #include "base/containers/fixed_flat_map.h"
+#include "base/containers/span.h"
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/stack_allocated.h"
+#include "base/numerics/byte_conversions.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/bind_post_task.h"
@@ -24,6 +28,7 @@
 #include "services/webnn/graph_builder_context.h"
 #include "services/webnn/public/cpp/graph_validation_utils.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
+#include "services/webnn/public/cpp/shape_folding_interpreter.h"
 #include "services/webnn/public/cpp/supported_data_types.h"
 #include "services/webnn/public/cpp/webnn_trace.h"
 #include "services/webnn/public/cpp/webnn_types.h"
@@ -197,12 +202,15 @@ webnn::Conv2dAttributes ConvertToConv2dAttributes(
           GetMojoOperand(operands, conv2d.input_operand_id);
       CHECK(input);
       CHECK_EQ(input->descriptor.Rank(), 4u);
-      const uint32_t input_channels = input->descriptor.shape()[3];
+      // TODO(ningxin): Support dynamic dimension.
+      const uint32_t input_channels =
+          std::get<uint32_t>(input->descriptor.shape()[3]);
       const auto* const output =
           GetMojoOperand(operands, conv2d.output_operand_id);
       CHECK(output);
       CHECK_EQ(output->descriptor.Rank(), 4u);
-      const uint32_t output_channels = output->descriptor.shape()[3];
+      const uint32_t output_channels =
+          std::get<uint32_t>(output->descriptor.shape()[3]);
       // Depthwise conv2d is "options.groups == input_channels ==
       // output_channels".
       const bool depthwise = webnn::IsDepthwiseConv2d(
@@ -291,24 +299,31 @@ webnn::ConvTranspose2dAttributes ConvertToConvTranspose2dAttributes(
   // Convert the output sizes that fetched from dimensions of output operand.
   auto* output = GetMojoOperand(operands, conv2d.output_operand_id);
   CHECK_EQ(output->descriptor.Rank(), 4u);
-  webnn::Size2d<uint32_t> output_sizes;
+  Dimension height_dim, width_dim;
   switch (context_properties.input_operand_layout) {
     case webnn::InputOperandLayout::kNchw:
       // "channelsFirst": [batches, input_channels, height, width]
-      output_sizes.height = output->descriptor.shape()[2];
-      output_sizes.width = output->descriptor.shape()[3];
+      height_dim = output->descriptor.shape()[2];
+      width_dim = output->descriptor.shape()[3];
       component_attributes.filter_layout =
           ConvTranspose2dFilterOperandLayout::kIohw;
       break;
     case webnn::InputOperandLayout::kNhwc:
       // "channelsLast": [batches, height, width, input_channels]
-      output_sizes.height = output->descriptor.shape()[1];
-      output_sizes.width = output->descriptor.shape()[2];
+      height_dim = output->descriptor.shape()[1];
+      width_dim = output->descriptor.shape()[2];
       component_attributes.filter_layout =
           ConvTranspose2dFilterOperandLayout::kOhwi;
       break;
   }
-  component_attributes.output_sizes = std::move(output_sizes);
+  // Only set output_sizes when both spatial dimensions are static. When they
+  // are dynamic, the validator will compute the output from the formula.
+  if (std::holds_alternative<uint32_t>(height_dim) &&
+      std::holds_alternative<uint32_t>(width_dim)) {
+    component_attributes.output_sizes = webnn::Size2d<uint32_t>{
+        .height = std::get<uint32_t>(height_dim),
+        .width = std::get<uint32_t>(width_dim)};
+  }
 
   return component_attributes;
 }
@@ -340,8 +355,10 @@ webnn::Pool2dAttributes ConvertToPool2dAttributes(
     const mojom::Operand* output) {
   webnn::Pool2dAttributes component_attributes;
   auto& window_dimensions = pool2d.window_dimensions;
-  component_attributes.window_dimensions = webnn::Size2d<uint32_t>{
-      .height = window_dimensions->height, .width = window_dimensions->width};
+  if (window_dimensions) {
+    component_attributes.window_dimensions = webnn::Size2d<uint32_t>{
+        .height = window_dimensions->height, .width = window_dimensions->width};
+  }
   auto& mojo_padding = pool2d.padding;
   component_attributes.padding = webnn::Padding2d{
       .beginning =
@@ -357,14 +374,20 @@ webnn::Pool2dAttributes ConvertToPool2dAttributes(
   CHECK_EQ(output->descriptor.Rank(), 4u);
   switch (component_attributes.layout) {
     case webnn::InputOperandLayout::kNchw:
-      component_attributes.output_sizes =
-          webnn::Size2d<uint32_t>{.height = output->descriptor.shape()[2],
-                                  .width = output->descriptor.shape()[3]};
+      if (std::holds_alternative<uint32_t>(output->descriptor.shape()[2]) &&
+          std::holds_alternative<uint32_t>(output->descriptor.shape()[3])) {
+        component_attributes.output_sizes = webnn::Size2d<uint32_t>{
+            .height = std::get<uint32_t>(output->descriptor.shape()[2]),
+            .width = std::get<uint32_t>(output->descriptor.shape()[3])};
+      }
       break;
     case webnn::InputOperandLayout::kNhwc:
-      component_attributes.output_sizes =
-          webnn::Size2d<uint32_t>{.height = output->descriptor.shape()[1],
-                                  .width = output->descriptor.shape()[2]};
+      if (std::holds_alternative<uint32_t>(output->descriptor.shape()[1]) &&
+          std::holds_alternative<uint32_t>(output->descriptor.shape()[2])) {
+        component_attributes.output_sizes = webnn::Size2d<uint32_t>{
+            .height = std::get<uint32_t>(output->descriptor.shape()[1]),
+            .width = std::get<uint32_t>(output->descriptor.shape()[2])};
+      }
       break;
   }
   component_attributes.label = pool2d.label;
@@ -543,6 +566,8 @@ std::vector<OperandId> GetOperationOutputs(const mojom::Operation& operation) {
       return {operation.get_prelu()->output_operand_id};
     case mojom::Operation::Tag::kQuantizeLinear:
       return {operation.get_quantize_linear()->output_operand_id};
+    case mojom::Operation::Tag::kRange:
+      return {operation.get_range()->output_operand_id};
     case mojom::Operation::Tag::kReduce:
       return {operation.get_reduce()->output_operand_id};
     case mojom::Operation::Tag::kRelu:
@@ -557,6 +582,8 @@ std::vector<OperandId> GetOperationOutputs(const mojom::Operation& operation) {
       return {operation.get_scatter_elements()->output_operand_id};
     case mojom::Operation::Tag::kScatterNd:
       return {operation.get_scatter_nd()->output_operand_id};
+    case mojom::Operation::Tag::kShape:
+      return {operation.get_shape()->output_operand_id};
     case mojom::Operation::Tag::kSigmoid:
       return {operation.get_sigmoid()->output_operand_id};
     case mojom::Operation::Tag::kSlice:
@@ -579,6 +606,18 @@ std::vector<OperandId> GetOperationOutputs(const mojom::Operation& operation) {
       return {operation.get_triangular()->output_operand_id};
     case mojom::Operation::Tag::kWhere:
       return {operation.get_where()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicReshape:
+      return {operation.get_dynamic_reshape()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicExpand:
+      return {operation.get_dynamic_expand()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicSlice:
+      return {operation.get_dynamic_slice()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicPad:
+      return {operation.get_dynamic_pad()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicSplit:
+      return operation.get_dynamic_split()->output_operand_ids;
+    case mojom::Operation::Tag::kDynamicResample2d:
+      return {operation.get_dynamic_resample_2d()->output_operand_id};
   }
 }
 
@@ -602,16 +641,83 @@ class OperationValidationContext {
       base::span<const mojom::OperandPtr> operands,
       base::flat_set<OperandId> processed_operands);
 
+  // Validates operations in "infer output shapes" mode: instead of comparing
+  // inferred output descriptors against declared ones, writes back the inferred
+  // descriptors into `operands`. This is used at dispatch time when only input
+  // operands have concrete shapes and intermediate/output shapes must be
+  // forward-propagated.
+  static bool InferAndValidateConcreteShapes(
+      const std::vector<mojom::OperationPtr>& operations,
+      const ContextProperties& context_properties,
+      std::vector<mojom::OperandPtr>& operands,
+      base::flat_set<OperandId> processed_operands,
+      const base::flat_map<OperandId, std::vector<uint8_t>>&
+          integer_constant_data,
+      const base::flat_map<std::string, uint32_t>& dim_name_to_value);
+
  private:
   OperationValidationContext(const ContextProperties& context_properties,
                              base::span<const mojom::OperandPtr> operands,
                              base::flat_set<OperandId> processed_operands)
       : context_properties_(context_properties),
         operands_(operands),
-        processed_operands_(std::move(processed_operands)) {
-    operand_to_dependent_operations_.reserve(operands.size());
-    operand_to_producing_operation_.reserve(operands.size());
+        processed_operands_(std::move(processed_operands)),
+        dim_name_to_value_(empty_dim_map_) {
+    Init();
   }
+
+  OperationValidationContext(const ContextProperties& context_properties,
+                             std::vector<mojom::OperandPtr>& operands,
+                             base::flat_set<OperandId> processed_operands,
+                             const std::vector<mojom::OperationPtr>& operations,
+                             const base::flat_map<OperandId,
+                                                  std::vector<uint8_t>>&
+                                 integer_constant_data,
+                             const base::flat_map<std::string, uint32_t>&
+                                 dim_name_to_value)
+      : context_properties_(context_properties),
+        operands_(operands),
+        mutable_operands_(&operands),
+        infer_output_shapes_(true),
+        processed_operands_(std::move(processed_operands)),
+        operations_for_folding_(&operations),
+        integer_constant_data_(&integer_constant_data),
+        dim_name_to_value_(dim_name_to_value) {
+    Init();
+  }
+
+  void Init() {
+    operand_to_dependent_operations_.reserve(operands_.size());
+    operand_to_producing_operation_.reserve(operands_.size());
+
+    // Collect dynamic dimensions from all operands for expand validation.
+    for (size_t i = 0; i < operands_.size(); ++i) {
+      const mojom::Operand* operand = operands_[i].get();
+      if (!operand) {
+        continue;
+      }
+      for (const auto& dim : operand->descriptor.shape()) {
+        if (std::holds_alternative<DynamicDimension>(dim)) {
+          const auto& dyn = std::get<DynamicDimension>(dim);
+          if (std::ranges::find(known_dynamic_dims_, dyn) ==
+              known_dynamic_dims_.end()) {
+            known_dynamic_dims_.push_back(dyn);
+          }
+        }
+      }
+    }
+  }
+
+  // In infer mode, writes back the inferred descriptor to the output operand.
+  // In verify mode, checks that inferred descriptor matches the declared one.
+  // Returns false on mismatch (verify mode) or if the operand_id is invalid.
+  bool VerifyOrWriteBackOutput(OperandId output_operand_id,
+                               const OperandDescriptor& inferred_descriptor);
+
+  // Multi-output variant for ops like gru, lstm, split.
+  bool VerifyOrWriteBackOutputs(
+      base::span<const OperandId> output_operand_ids,
+      const std::vector<OperandDescriptor>& inferred_descriptors);
 
   const mojom::Operand* GetMojoOperand(OperandId operand_id);
 
@@ -691,6 +797,7 @@ class OperationValidationContext {
                                OperationId operation_id);
   bool ValidateScatterND(const mojom::ScatterND& scatter_nd,
                          OperationId operation_id);
+  bool ValidateShape(const mojom::Shape& shape, OperationId operation_id);
   bool ValidateSlice(const mojom::Slice& slice, OperationId operation_id);
   bool ValidateSoftmax(const mojom::Softmax& softmax, OperationId operation_id);
   bool ValidateSplit(const mojom::Split& split, OperationId operation_id);
@@ -700,6 +807,19 @@ class OperationValidationContext {
   bool ValidateTriangular(const mojom::Triangular& triangular,
                           OperationId operation_id);
   bool ValidateWhere(const mojom::Where& where, OperationId operation_id);
+  bool ValidateRange(const mojom::RangeOp& range, OperationId operation_id);
+  bool ValidateDynamicReshape(const mojom::DynamicReshape& op,
+                              OperationId operation_id);
+  bool ValidateDynamicExpand(const mojom::DynamicExpand& op,
+                             OperationId operation_id);
+  bool ValidateDynamicSlice(const mojom::DynamicSlice& op,
+                            OperationId operation_id);
+  bool ValidateDynamicPad(const mojom::DynamicPad& op,
+                          OperationId operation_id);
+  bool ValidateDynamicSplit(const mojom::DynamicSplit& op,
+                            OperationId operation_id);
+  bool ValidateDynamicResample2d(const mojom::DynamicResample2d& op,
+                                 OperationId operation_id);
   bool ValidateReduce(const mojom::Reduce& reduce, OperationId operation_id);
 
   bool ValidateOperation(const mojom::Operation& operation,
@@ -708,10 +828,55 @@ class OperationValidationContext {
   const base::raw_ref<const ContextProperties> context_properties_;
   base::span<const mojom::OperandPtr> operands_;
 
+  // Non-null in infer mode — points to the mutable operands vector for
+  // write-back of inferred output descriptors.
+  raw_ptr<std::vector<mojom::OperandPtr>> mutable_operands_ = nullptr;
+  bool infer_output_shapes_ = false;
+
   base::flat_set<OperandId> processed_operands_;
 
   DependentOperationsMap operand_to_dependent_operations_;
   base::flat_map<OperandId, OperationId> operand_to_producing_operation_;
+
+  // Dynamic dimensions from input operands, used for expand validation.
+  std::vector<DynamicDimension> known_dynamic_dims_;
+
+  // Only set in infer mode — used for shape folding in dynamic* op validators.
+  raw_ptr<const std::vector<mojom::OperationPtr>> operations_for_folding_ =
+      nullptr;
+  raw_ptr<const base::flat_map<OperandId, std::vector<uint8_t>>>
+      integer_constant_data_ = nullptr;
+
+  // Maps DynamicDimension names to their concrete dispatch-time values.
+  // Only populated in infer mode.
+  const base::flat_map<std::string, uint32_t>& dim_name_to_value_;
+  static inline const base::flat_map<std::string, uint32_t> empty_dim_map_{};
+
+  // Accumulates resolved DynamicDimension name → concrete value mappings
+  // as intermediate ops are processed during dispatch. This allows downstream
+  // ops (like expand) to resolve DynamicDimension names that were generated
+  // by intermediate ops (not graph inputs).
+  base::flat_map<std::string, uint32_t> resolved_dim_values_;
+
+  // Lazily created shape folding interpreter for dynamic* ops.
+  std::optional<ShapeFoldingInterpreter> shape_folding_interpreter_;
+
+  // Evaluate a shape operand via the ShapeFoldingInterpreter. Returns nullopt
+  // if the value cannot be determined.
+  std::optional<std::vector<int64_t>> EvaluateShapeOperand(
+      OperandId operand_id,
+      std::string_view op_name = "",
+      std::string_view operand_role = "") {
+    CHECK(infer_output_shapes_);
+    CHECK(operations_for_folding_);
+    CHECK(integer_constant_data_);
+    if (!shape_folding_interpreter_) {
+      shape_folding_interpreter_.emplace(
+          operands_, *operations_for_folding_,
+          operand_to_producing_operation_, *integer_constant_data_);
+    }
+    return shape_folding_interpreter_->Evaluate(operand_id);
+  }
 };
 
 const mojom::Operand* OperationValidationContext::GetMojoOperand(
@@ -734,11 +899,14 @@ bool OperationValidationContext::NoteOutputDependency(
     const mojom::Operation& operation,
     OperationId operation_id) {
   for (OperandId output_operand_id : GetOperationOutputs(operation)) {
-    RETURN_IF_FALSE(operand_to_producing_operation_
-                        .try_emplace(output_operand_id, operation_id)
-                        .second);
-    RETURN_IF_FALSE(
-        processed_operands_.insert(OperandId(output_operand_id)).second);
+    if (!operand_to_producing_operation_
+            .try_emplace(output_operand_id, operation_id)
+            .second) {
+      return false;
+    }
+    if (!processed_operands_.insert(OperandId(output_operand_id)).second) {
+      return false;
+    }
   }
   return true;
 }
@@ -762,6 +930,74 @@ OperationValidationContext::ValidateOperationsAndGetDependencies(
   return {{std::move(context.processed_operands_),
            std::move(context.operand_to_dependent_operations_),
            std::move(context.operand_to_producing_operation_)}};
+}
+
+// static
+bool OperationValidationContext::InferAndValidateConcreteShapes(
+    const std::vector<mojom::OperationPtr>& operations,
+    const ContextProperties& context_properties,
+    std::vector<mojom::OperandPtr>& operands,
+    base::flat_set<OperandId> processed_operands,
+    const base::flat_map<OperandId, std::vector<uint8_t>>&
+        integer_constant_data,
+    const base::flat_map<std::string, uint32_t>& dim_name_to_value) {
+  OperationValidationContext context(context_properties, operands,
+                                     std::move(processed_operands),
+                                     operations, integer_constant_data,
+                                     dim_name_to_value);
+
+  for (size_t i = 0; i < operations.size(); i++) {
+    if (!context.ValidateOperation(*operations[i], /*operation_id=*/i)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool OperationValidationContext::VerifyOrWriteBackOutput(
+    OperandId output_operand_id,
+    const OperandDescriptor& inferred_descriptor) {
+  if (infer_output_shapes_) {
+    CHECK(mutable_operands_);
+    auto& operand = (*mutable_operands_)[output_operand_id.value()];
+    CHECK(operand);
+
+    // Before overwriting, record resolved DynamicDimension name → concrete
+    // value mappings. The old descriptor has DynamicDimension names from build
+    // time; the inferred descriptor has concrete uint32_t values from dispatch.
+    const auto& old_shape = operand->descriptor.shape();
+    const auto& new_shape = inferred_descriptor.shape();
+    for (size_t i = 0; i < old_shape.size() && i < new_shape.size(); ++i) {
+      if (std::holds_alternative<DynamicDimension>(old_shape[i]) &&
+          std::holds_alternative<uint32_t>(new_shape[i])) {
+        const auto& dyn = std::get<DynamicDimension>(old_shape[i]);
+        resolved_dim_values_[dyn.name] = std::get<uint32_t>(new_shape[i]);
+      }
+    }
+
+    operand->descriptor = inferred_descriptor;
+    return true;
+  }
+  const auto* output = GetMojoOperand(output_operand_id);
+  if (!output) {
+    return false;
+  }
+  return inferred_descriptor == output->descriptor;
+}
+
+bool OperationValidationContext::VerifyOrWriteBackOutputs(
+    base::span<const OperandId> output_operand_ids,
+    const std::vector<OperandDescriptor>& inferred_descriptors) {
+  if (output_operand_ids.size() != inferred_descriptors.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < inferred_descriptors.size(); ++i) {
+    if (!VerifyOrWriteBackOutput(output_operand_ids[i],
+                                 inferred_descriptors[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool OperationValidationContext::IsProcessedOperand(OperandId operand_id) {
@@ -795,6 +1031,16 @@ bool OperationValidationContext::ValidateUnaryOperation(
     if (IsLogicalElementWiseUnary(operation.kind)) {
       // For logical unary operations, output must be uint8 but shape should
       // match input.
+      if (infer_output_shapes_) {
+        auto inferred = OperandDescriptor::CreateForDeserialization(
+            OperandDataType::kUint8, input->descriptor.shape(),
+            input->descriptor.pending_permutation());
+        if (!inferred.has_value()) {
+          return false;
+        }
+        return VerifyOrWriteBackOutput(operation.output_operand_id,
+                                       *inferred);
+      }
       if (output->descriptor.data_type() != OperandDataType::kUint8) {
         return false;
       }
@@ -804,6 +1050,10 @@ bool OperationValidationContext::ValidateUnaryOperation(
 
   // For all other operations, output descriptor should match input descriptor
   // exactly.
+  if (infer_output_shapes_) {
+    return VerifyOrWriteBackOutput(operation.output_operand_id,
+                                   input->descriptor);
+  }
   return output->descriptor == input->descriptor;
 }
 
@@ -830,7 +1080,7 @@ bool OperationValidationContext::ValidateCastOperation(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(operation.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -897,7 +1147,7 @@ bool OperationValidationContext::ValidateBatchNormalization(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(batch_normalization.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -927,7 +1177,7 @@ bool OperationValidationContext::ValidateArgMinMax(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(arg_min_max.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -978,7 +1228,7 @@ bool OperationValidationContext::ValidateConcat(const mojom::Concat& concat,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(concat.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1044,10 +1294,10 @@ bool OperationValidationContext::ValidateConv2d(const mojom::Conv2d& conv2d,
       break;
     }
   }
-  if (!validated_output.has_value()) {
+  if (!validated_output.has_value() || !validated_output->has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(conv2d.output_operand_id, **validated_output)) {
     return false;
   }
 
@@ -1077,7 +1327,7 @@ bool OperationValidationContext::ValidateCumulativeSum(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(cumulative_sum.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1113,7 +1363,7 @@ bool OperationValidationContext::ValidateDequantizeLinear(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(dequantize_linear.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1191,6 +1441,9 @@ bool OperationValidationContext::ValidateElementWiseBinaryOperands(
     case mojom::ElementWiseBinary::Kind::kLogicalXor:
       return context_properties_->data_type_limits.logical_xor_input
           .SupportsAll({lhs->descriptor, rhs->descriptor});
+    case mojom::ElementWiseBinary::Kind::kMod:
+      return context_properties_->data_type_limits.mod_input.SupportsAll(
+          {lhs->descriptor, rhs->descriptor});
   }
 }
 
@@ -1222,6 +1475,19 @@ bool OperationValidationContext::ValidateElementWiseBinary(
   if (!dims_output) {
     // The input shapes are not broadcastable.
     return false;
+  }
+  if (infer_output_shapes_) {
+    OperandDataType output_type =
+        IsLogicalElementWiseBinary(operation.kind)
+            ? OperandDataType::kUint8
+            : a->descriptor.data_type();
+    auto inferred = OperandDescriptor::CreateForDeserialization(
+        output_type, dims_output.value(),
+        output->descriptor.pending_permutation());
+    if (!inferred.has_value()) {
+      return false;
+    }
+    return VerifyOrWriteBackOutput(operation.output_operand_id, *inferred);
   }
   if (!std::ranges::equal(output->descriptor.shape(), dims_output.value())) {
     // The output shape is not expected.
@@ -1339,13 +1605,46 @@ bool OperationValidationContext::ValidateExpand(const mojom::Expand& expand,
     return false;
   }
 
+  // Convert expand.new_shape (mojo DimensionPtr) to webnn::Dimension vector.
+  // In infer mode, resolve DynamicDimensions to concrete values using
+  // dim_name_to_value_ (graph input dims) and resolved_dim_values_
+  // (intermediate op dims resolved during this dispatch).
+  std::vector<Dimension> new_shape_dims;
+  new_shape_dims.reserve(expand.new_shape.size());
+  for (const auto& dim_ptr : expand.new_shape) {
+    if (dim_ptr->is_size()) {
+      new_shape_dims.push_back(dim_ptr->get_size());
+    } else {
+      const auto& mojo_dyn = dim_ptr->get_dynamic_dimension();
+      if (infer_output_shapes_) {
+        // Check graph input dim names first.
+        auto it = dim_name_to_value_.find(mojo_dyn->name);
+        if (it != dim_name_to_value_.end()) {
+          new_shape_dims.push_back(it->second);
+          continue;
+        }
+        // Check intermediate dim names resolved by earlier ops.
+        auto it2 = resolved_dim_values_.find(mojo_dyn->name);
+        if (it2 != resolved_dim_values_.end()) {
+          new_shape_dims.push_back(it2->second);
+          continue;
+        }
+      }
+      new_shape_dims.push_back(DynamicDimension{
+          .name = mojo_dyn->name,
+          .max_size = mojo_dyn->max_size,
+          .min_size = mojo_dyn->min_size});
+    }
+  }
+
   const base::expected<OperandDescriptor, std::string> validated_output =
       ValidateExpandAndInferOutput(*context_properties_, input->descriptor,
-                                   output->descriptor.shape(), expand.label);
+                                   new_shape_dims, expand.label,
+                                   known_dynamic_dims_);
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(expand.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1376,7 +1675,7 @@ bool OperationValidationContext::ValidateGather(const mojom::Gather& gather,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(gather.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1407,7 +1706,7 @@ bool OperationValidationContext::ValidateGatherElements(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(gather_elements.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1437,7 +1736,7 @@ bool OperationValidationContext::ValidateGatherND(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(gather_nd.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1482,7 +1781,7 @@ bool OperationValidationContext::ValidateGemm(const mojom::Gemm& gemm,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(gemm.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1555,14 +1854,8 @@ bool OperationValidationContext::ValidateGru(const mojom::Gru& gru,
   if (gru.output_operand_ids.size() != validated_outputs->size()) {
     return false;
   }
-  for (size_t i = 0; i < validated_outputs->size(); ++i) {
-    const auto* output = GetMojoOperand(gru.output_operand_ids[i]);
-    if (!output) {
-      return false;
-    }
-    if (validated_outputs->at(i) != output->descriptor) {
-      return false;
-    }
+  if (!VerifyOrWriteBackOutputs(gru.output_operand_ids, *validated_outputs)) {
+    return false;
   }
 
   return true;
@@ -1630,7 +1923,7 @@ bool OperationValidationContext::ValidateGruCell(const mojom::GruCell& gru_cell,
   if (!output) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(gru_cell.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1695,7 +1988,7 @@ bool OperationValidationContext::ValidateLayerNormalization(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(layer_normalization.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1812,14 +2105,8 @@ bool OperationValidationContext::ValidateLstm(const mojom::Lstm& lstm,
   if (lstm.output_operand_ids.size() != validated_outputs->size()) {
     return false;
   }
-  for (size_t i = 0; i < validated_outputs->size(); ++i) {
-    const auto* output = GetMojoOperand(lstm.output_operand_ids[i]);
-    if (!output) {
-      return false;
-    }
-    if (validated_outputs->at(i) != output->descriptor) {
-      return false;
-    }
+  if (!VerifyOrWriteBackOutputs(lstm.output_operand_ids, *validated_outputs)) {
+    return false;
   }
 
   return true;
@@ -1902,15 +2189,9 @@ bool OperationValidationContext::ValidateLstmCell(
   if (lstm_cell.output_operand_ids.size() != validated_outputs->size()) {
     return false;
   }
-  for (size_t i = 0; i < validated_outputs->size(); ++i) {
-    const mojom::Operand* output =
-        GetMojoOperand(lstm_cell.output_operand_ids[i]);
-    if (!output) {
-      return false;
-    }
-    if (validated_outputs->at(i) != output->descriptor) {
-      return false;
-    }
+  if (!VerifyOrWriteBackOutputs(lstm_cell.output_operand_ids,
+                                *validated_outputs)) {
+    return false;
   }
 
   return true;
@@ -1957,7 +2238,7 @@ bool OperationValidationContext::ValidateInstanceNormalization(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(instance_normalization.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -1986,7 +2267,7 @@ bool OperationValidationContext::ValidateMatmul(const mojom::Matmul& matmul,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(matmul.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2015,7 +2296,7 @@ bool OperationValidationContext::ValidatePad(const mojom::Pad& pad,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(pad.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2047,7 +2328,7 @@ bool OperationValidationContext::ValidatePool2d(const mojom::Pool2d& pool2d,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(pool2d.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2077,7 +2358,7 @@ bool OperationValidationContext::ValidatePrelu(const mojom::Prelu& prelu,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(prelu.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2113,7 +2394,7 @@ bool OperationValidationContext::ValidateQuantizeLinear(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(quantize_linear.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2165,7 +2446,8 @@ bool OperationValidationContext::ValidateResample2d(
   if (resample2d.scales) {
     scales_or_sizes = resample2d.scales.value();
   } else {
-    sizes = {output_dimensions[axes[0]], output_dimensions[axes[1]]};
+    sizes = {std::get<uint32_t>(output->descriptor.shape()[axes[0]]),
+             std::get<uint32_t>(output->descriptor.shape()[axes[1]])};
     scales_or_sizes = sizes;
   }
 
@@ -2175,7 +2457,7 @@ bool OperationValidationContext::ValidateResample2d(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(resample2d.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2207,11 +2489,224 @@ bool OperationValidationContext::ValidateReshape(const mojom::Reshape& reshape,
     return false;
   }
 
-  if (input->descriptor.NumberOfElements() !=
-      output->descriptor.NumberOfElements()) {
+  // When both sides are bounded, verify element count equality.
+  // When either side is unbounded, skip this check (defer to dispatch time).
+  auto input_elements = input->descriptor.NumberOfElements();
+  auto output_elements = output->descriptor.NumberOfElements();
+  if (input_elements.has_value() && output_elements.has_value() &&
+      *input_elements != *output_elements) {
     // The output shape is not expected.
     return false;
   }
+
+  // For a dynamic dimension in output shape, validate input shape has it
+  // uniquely.
+  auto available_input_shape = input->descriptor.shape();
+  auto available_output_shape = output->descriptor.shape();
+  // First pass: eliminate directly matching dynamic dimensions.
+  for (auto out_it = available_output_shape.begin();
+       out_it != available_output_shape.end();) {
+    if (std::holds_alternative<DynamicDimension>(*out_it)) {
+      auto in_it = std::find(available_input_shape.begin(),
+                             available_input_shape.end(), *out_it);
+      if (in_it != available_input_shape.end()) {
+        available_input_shape.erase(in_it);
+        out_it = available_output_shape.erase(out_it);
+        continue;
+      }
+    }
+    ++out_it;
+  }
+
+  // Count remaining dynamic dimensions on each side.
+  size_t remaining_input_dynamic_count = 0;
+  size_t remaining_output_dynamic_count = 0;
+  base::CheckedNumeric<size_t> input_static_product = 1;
+  base::CheckedNumeric<size_t> output_static_product = 1;
+  const DynamicDimension* remaining_input_dyn = nullptr;
+  const DynamicDimension* remaining_output_dyn = nullptr;
+
+  for (const auto& dim : available_input_shape) {
+    if (std::holds_alternative<DynamicDimension>(dim)) {
+      ++remaining_input_dynamic_count;
+      remaining_input_dyn = &std::get<DynamicDimension>(dim);
+    } else {
+      input_static_product *= std::get<uint32_t>(dim);
+    }
+  }
+  for (const auto& dim : available_output_shape) {
+    if (std::holds_alternative<DynamicDimension>(dim)) {
+      ++remaining_output_dynamic_count;
+      remaining_output_dyn = &std::get<DynamicDimension>(dim);
+    } else {
+      output_static_product *= std::get<uint32_t>(dim);
+    }
+  }
+
+  if (remaining_input_dynamic_count == 0 &&
+      remaining_output_dynamic_count == 0) {
+    // All dynamic dims were directly matched. Remaining are all static.
+  } else if (remaining_input_dynamic_count == 1 &&
+             remaining_output_dynamic_count == 1) {
+    // One unmatched dynamic dim on each side: verify algebraic relationship
+    // only if both have max_size (bounded).
+    if (remaining_input_dyn->max_size.has_value() &&
+        remaining_output_dyn->max_size.has_value()) {
+      size_t s_in, s_out;
+      if (!input_static_product.AssignIfValid(&s_in) ||
+          !output_static_product.AssignIfValid(&s_out)) {
+        return false;
+      }
+      base::CheckedNumeric<size_t> input_max_total =
+          base::CheckedNumeric<size_t>(*remaining_input_dyn->max_size) * s_in;
+      base::CheckedNumeric<size_t> output_max_total =
+          base::CheckedNumeric<size_t>(*remaining_output_dyn->max_size) * s_out;
+      base::CheckedNumeric<size_t> input_min_total =
+          base::CheckedNumeric<size_t>(remaining_input_dyn->min_size) * s_in;
+      base::CheckedNumeric<size_t> output_min_total =
+          base::CheckedNumeric<size_t>(remaining_output_dyn->min_size) * s_out;
+
+      size_t in_max, out_max, in_min, out_min;
+      if (!input_max_total.AssignIfValid(&in_max) ||
+          !output_max_total.AssignIfValid(&out_max) ||
+          !input_min_total.AssignIfValid(&in_min) ||
+          !output_min_total.AssignIfValid(&out_min)) {
+        return false;
+      }
+      if (in_max != out_max || in_min != out_min) {
+        return false;
+      }
+    }
+    // When either side is unbounded, skip algebraic verification.
+  } else {
+    // Multiple unmatched dynamic dims: allow when any are unbounded,
+    // defer validation to dispatch time.
+    bool has_unbounded = false;
+    for (const auto& dim : available_input_shape) {
+      if (std::holds_alternative<DynamicDimension>(dim) &&
+          !std::get<DynamicDimension>(dim).max_size.has_value()) {
+        has_unbounded = true;
+        break;
+      }
+    }
+    if (!has_unbounded) {
+      for (const auto& dim : available_output_shape) {
+        if (std::holds_alternative<DynamicDimension>(dim) &&
+            !std::get<DynamicDimension>(dim).max_size.has_value()) {
+          has_unbounded = true;
+          break;
+        }
+      }
+    }
+    if (!has_unbounded) {
+      // All bounded but multiple unmatched — unsupported.
+      return false;
+    }
+    // Unbounded: defer to dispatch time.
+  }
+
+  // In infer mode, resolve any dynamic dims in the output shape and write back.
+  if (infer_output_shapes_) {
+    // Try to determine the input element count. If input has dynamic dims,
+    // attempt to resolve them using resolved_dim_values_.
+    std::optional<size_t> resolved_input_elements = input_elements;
+    if (!resolved_input_elements.has_value()) {
+      // Try to resolve dynamic dims in input shape to get element count.
+      base::CheckedNumeric<size_t> product = 1;
+      bool all_resolved = true;
+      for (const auto& dim : input->descriptor.shape()) {
+        if (std::holds_alternative<uint32_t>(dim)) {
+          product *= std::get<uint32_t>(dim);
+        } else {
+          const auto& dyn = std::get<DynamicDimension>(dim);
+          auto it = resolved_dim_values_.find(dyn.name);
+          if (it != resolved_dim_values_.end()) {
+            product *= it->second;
+          } else {
+            auto it2 = dim_name_to_value_.find(dyn.name);
+            if (it2 != dim_name_to_value_.end()) {
+              product *= it2->second;
+            } else {
+              all_resolved = false;
+              break;
+            }
+          }
+        }
+      }
+      if (all_resolved && product.IsValid()) {
+        resolved_input_elements = product.ValueOrDie();
+      }
+    }
+
+    if (resolved_input_elements.has_value()) {
+    const auto& out_shape = output->descriptor.shape();
+    std::vector<Dimension> concrete_dims;
+    concrete_dims.reserve(out_shape.size());
+    base::CheckedNumeric<size_t> static_product = 1;
+    size_t dyn_count = 0;
+    size_t dyn_idx = 0;
+
+    for (size_t i = 0; i < out_shape.size(); i++) {
+      if (std::holds_alternative<uint32_t>(out_shape[i])) {
+        uint32_t v = std::get<uint32_t>(out_shape[i]);
+        concrete_dims.push_back(v);
+        static_product *= v;
+      } else {
+        // Try to resolve via resolved_dim_values_ or dim_name_to_value_.
+        const auto& dyn = std::get<DynamicDimension>(out_shape[i]);
+        auto it = resolved_dim_values_.find(dyn.name);
+        if (it != resolved_dim_values_.end()) {
+          concrete_dims.push_back(it->second);
+          static_product *= it->second;
+        } else {
+          auto it2 = dim_name_to_value_.find(dyn.name);
+          if (it2 != dim_name_to_value_.end()) {
+            concrete_dims.push_back(it2->second);
+            static_product *= it2->second;
+          } else {
+            dyn_count++;
+            dyn_idx = i;
+            concrete_dims.push_back(uint32_t(0));  // placeholder
+          }
+        }
+      }
+    }
+
+    if (dyn_count == 0) {
+      // Already all concrete — write back as-is.
+      auto new_desc = OperandDescriptor::Create(
+          *context_properties_, output->descriptor.data_type(), concrete_dims,
+          reshape.label);
+      if (!new_desc.has_value()) {
+        return false;
+      }
+      if (!VerifyOrWriteBackOutput(reshape.output_operand_id, *new_desc)) {
+        return false;
+      }
+    } else if (dyn_count == 1 && static_product.IsValid() &&
+               static_product.ValueOrDie() > 0) {
+      // Exactly one dynamic dim — infer from element count.
+      size_t sp = static_product.ValueOrDie();
+      if (*resolved_input_elements % sp == 0) {
+        size_t inferred = *resolved_input_elements / sp;
+        if (base::IsValueInRangeForNumericType<uint32_t>(inferred)) {
+          concrete_dims[dyn_idx] = static_cast<uint32_t>(inferred);
+          auto new_desc = OperandDescriptor::Create(
+              *context_properties_, output->descriptor.data_type(),
+              concrete_dims, reshape.label);
+          if (!new_desc.has_value()) {
+            return false;
+          }
+          if (!VerifyOrWriteBackOutput(reshape.output_operand_id, *new_desc)) {
+            return false;
+          }
+        }
+      }
+    }
+    // Multiple unresolved dynamic dims: leave as-is (defer to dispatch time).
+    }
+  }
+
   return true;
 }
 
@@ -2235,7 +2730,7 @@ bool OperationValidationContext::ValidateReverseOperation(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(reverse.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2270,7 +2765,7 @@ bool OperationValidationContext::ValidateScatterElements(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(scatter_elements.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2305,7 +2800,33 @@ bool OperationValidationContext::ValidateScatterND(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(scatter_nd.output_operand_id, *validated_output)) {
+    return false;
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateShape(const mojom::Shape& shape,
+                                               OperationId operation_id) {
+  if (!IsProcessedOperand(shape.input_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(shape.input_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(shape.input_operand_id);
+  auto* output = GetMojoOperand(shape.output_operand_id);
+  if (!input || !output || output == input) {
+    return false;
+  }
+
+  const base::expected<OperandDescriptor, std::string> validated_output =
+      ValidateShapeAndInferOutput(*context_properties_, input->descriptor,
+                                  shape.label);
+  if (!validated_output.has_value()) {
+    return false;
+  }
+  if (!VerifyOrWriteBackOutput(shape.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2337,7 +2858,7 @@ bool OperationValidationContext::ValidateSlice(const mojom::Slice& slice,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(slice.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2363,7 +2884,7 @@ bool OperationValidationContext::ValidateSoftmax(const mojom::Softmax& softmax,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(softmax.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2393,7 +2914,15 @@ bool OperationValidationContext::ValidateSplit(const mojom::Split& split,
     if (split.axis >= output->descriptor.Rank()) {
       return false;
     }
-    splits.push_back(output->descriptor.shape()[split.axis]);
+    // The per-output split sizes are derived from each output's size along the
+    // split axis, so that size must be static. A dynamic split-axis size on the
+    // *input* is fine — it is deferred to dispatch time in
+    // ValidateSplitAndInferOutput.
+    const auto& output_axis_dim = output->descriptor.shape()[split.axis];
+    if (!std::holds_alternative<uint32_t>(output_axis_dim)) {
+      return false;
+    }
+    splits.push_back(std::get<uint32_t>(output_axis_dim));
   }
 
   const base::expected<std::vector<OperandDescriptor>, std::string>
@@ -2410,11 +2939,9 @@ bool OperationValidationContext::ValidateSplit(const mojom::Split& split,
     return false;
   }
 
-  for (uint32_t i = 0; i < validated_output->size(); ++i) {
-    auto* output = GetMojoOperand(split.output_operand_ids[i]);
-    if (validated_output->at(i) != output->descriptor) {
-      return false;
-    }
+  if (!VerifyOrWriteBackOutputs(split.output_operand_ids,
+                                *validated_output)) {
+    return false;
   }
 
   return true;
@@ -2440,7 +2967,7 @@ bool OperationValidationContext::ValidateTile(const mojom::Tile& tile,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(tile.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2468,7 +2995,7 @@ bool OperationValidationContext::ValidateTranspose(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(transpose.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2496,7 +3023,7 @@ bool OperationValidationContext::ValidateTriangular(
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(triangular.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2531,8 +3058,603 @@ bool OperationValidationContext::ValidateWhere(const mojom::Where& where,
   if (!validated_output_descriptor.has_value()) {
     return false;
   }
-  if (validated_output_descriptor != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(where.output_operand_id,
+                               *validated_output_descriptor)) {
     return false;
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateRange(const mojom::RangeOp& range,
+                                               OperationId operation_id) {
+  if (!IsProcessedOperand(range.start_operand_id) ||
+      !IsProcessedOperand(range.limit_operand_id) ||
+      !IsProcessedOperand(range.delta_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(range.start_operand_id, operation_id);
+  NoteInputDependency(range.limit_operand_id, operation_id);
+  NoteInputDependency(range.delta_operand_id, operation_id);
+
+  auto* start = GetMojoOperand(range.start_operand_id);
+  auto* limit = GetMojoOperand(range.limit_operand_id);
+  auto* delta = GetMojoOperand(range.delta_operand_id);
+  auto* output = GetMojoOperand(range.output_operand_id);
+  if (!start || !limit || !delta || !output || output == start ||
+      output == limit || output == delta) {
+    return false;
+  }
+
+  // All inputs must be scalar.
+  if (start->descriptor.Rank() != 0 || limit->descriptor.Rank() != 0 ||
+      delta->descriptor.Rank() != 0) {
+    return false;
+  }
+
+  // All inputs must have the same data type.
+  if (start->descriptor.data_type() != limit->descriptor.data_type() ||
+      start->descriptor.data_type() != delta->descriptor.data_type()) {
+    return false;
+  }
+
+  // Output must be 1D and have the same data type.
+  if (output->descriptor.Rank() != 1 ||
+      output->descriptor.data_type() != start->descriptor.data_type()) {
+    return false;
+  }
+
+  // In infer mode, if the output has a dynamic dimension, we need to compute
+  // the concrete output size from the start/limit/delta scalar values
+  // and write it back.
+  if (infer_output_shapes_ && !output->descriptor.StaticShape().has_value()) {
+    // Range output size = max(0, ceil((limit - start) / delta)).
+    // The inputs may be constants or computed intermediate values (e.g.,
+    // from Shape ops). Use the shape folding interpreter for int types
+    // (handles both constants and computation chains), and read directly
+    // from constant data for float types.
+    auto eval_scalar = [&](OperandId id,
+                           std::string_view role) -> std::optional<double> {
+      const auto* operand = GetMojoOperand(id);
+      if (!operand) {
+        return std::nullopt;
+      }
+
+      // For integer types, use the shape folding interpreter which can
+      // trace computation chains (Shape → Gather → etc.).
+      if (operand->descriptor.data_type() == OperandDataType::kInt64 ||
+          operand->descriptor.data_type() == OperandDataType::kInt32) {
+        auto values = EvaluateShapeOperand(id, "range", role);
+        if (values && values->size() == 1) {
+          return static_cast<double>((*values)[0]);
+        }
+        return std::nullopt;
+      }
+
+      // For float types, read directly from constant data.
+      if (integer_constant_data_) {
+        auto it = integer_constant_data_->find(id);
+        if (it != integer_constant_data_->end()) {
+          auto byte_span = base::as_byte_span(it->second);
+          if (operand->descriptor.data_type() == OperandDataType::kFloat32 &&
+              byte_span.size() >= sizeof(float)) {
+            return static_cast<double>(
+                base::FloatFromLittleEndian(byte_span.first<4u>()));
+          }
+        }
+      }
+      return std::nullopt;
+    };
+
+    auto start_val = eval_scalar(range.start_operand_id, "start");
+    auto limit_val = eval_scalar(range.limit_operand_id, "limit");
+    auto delta_val = eval_scalar(range.delta_operand_id, "delta");
+    if (start_val && limit_val && delta_val && *delta_val != 0.0) {
+      double count = std::ceil((*limit_val - *start_val) / *delta_val);
+      if (count < 0) count = 0;
+      uint32_t output_size = static_cast<uint32_t>(count);
+      std::vector<Dimension> dims = {output_size};
+      auto new_desc = OperandDescriptor::Create(
+          *context_properties_, output->descriptor.data_type(), dims,
+          range.label);
+      if (!new_desc.has_value()) {
+        return false;
+      }
+      if (!VerifyOrWriteBackOutput(range.output_operand_id, *new_desc)) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateDynamicReshape(
+    const mojom::DynamicReshape& op,
+    OperationId operation_id) {
+  if (!IsProcessedOperand(op.input_operand_id) ||
+      !IsProcessedOperand(op.new_shape_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(op.input_operand_id, operation_id);
+  NoteInputDependency(op.new_shape_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(op.input_operand_id);
+  auto* new_shape = GetMojoOperand(op.new_shape_operand_id);
+  auto* output = GetMojoOperand(op.output_operand_id);
+  if (!input || !new_shape || !output || output == input ||
+      output == new_shape) {
+    return false;
+  }
+
+  if (new_shape->descriptor.Rank() != 1 ||
+      new_shape->descriptor.data_type() != OperandDataType::kInt64) {
+    return false;
+  }
+
+  if (infer_output_shapes_) {
+    auto shape_values = EvaluateShapeOperand(
+        op.new_shape_operand_id, "dynamicReshape", "new_shape");
+    if (!shape_values) {
+      return false;
+    }
+
+    // Convert int64 values to uint32 dimensions, handling -1 (infer one dim).
+    std::vector<uint32_t> new_dims;
+    new_dims.reserve(shape_values->size());
+    std::optional<size_t> infer_dim_index;
+    base::CheckedNumeric<size_t> new_element_count = 1;
+    for (size_t i = 0; i < shape_values->size(); ++i) {
+      int64_t val = (*shape_values)[i];
+      if (val == -1) {
+        if (infer_dim_index.has_value()) {
+          return false;  // Only one -1 is allowed.
+        }
+        infer_dim_index = i;
+        new_dims.push_back(0);  // Placeholder.
+      } else if (val <= 0) {
+        return false;  // Invalid dimension.
+      } else {
+        if (!base::IsValueInRangeForNumericType<uint32_t>(val)) {
+          return false;
+        }
+        new_dims.push_back(base::checked_cast<uint32_t>(val));
+        new_element_count *= new_dims.back();
+      }
+    }
+
+    auto input_elements = input->descriptor.NumberOfElements();
+    if (!input_elements.has_value()) {
+      return false;  // Input shape must be concrete at dispatch time.
+    }
+
+    if (infer_dim_index.has_value()) {
+      if (!new_element_count.IsValid() || new_element_count.ValueOrDie() == 0) {
+        return false;
+      }
+      size_t known_product = new_element_count.ValueOrDie();
+      if (*input_elements % known_product != 0) {
+        return false;
+      }
+      size_t inferred = *input_elements / known_product;
+      if (!base::IsValueInRangeForNumericType<uint32_t>(inferred)) {
+        return false;
+      }
+      new_dims[*infer_dim_index] = base::checked_cast<uint32_t>(inferred);
+    } else {
+      if (!new_element_count.IsValid() ||
+          new_element_count.ValueOrDie() != *input_elements) {
+        return false;
+      }
+    }
+
+    std::vector<Dimension> dimensions(new_dims.begin(), new_dims.end());
+    auto output_descriptor = OperandDescriptor::Create(
+        *context_properties_, input->descriptor.data_type(), dimensions,
+        op.label);
+    if (!output_descriptor.has_value()) {
+      return false;
+    }
+    if (!VerifyOrWriteBackOutput(op.output_operand_id, *output_descriptor)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateDynamicExpand(
+    const mojom::DynamicExpand& op,
+    OperationId operation_id) {
+  if (!IsProcessedOperand(op.input_operand_id) ||
+      !IsProcessedOperand(op.new_shape_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(op.input_operand_id, operation_id);
+  NoteInputDependency(op.new_shape_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(op.input_operand_id);
+  auto* new_shape = GetMojoOperand(op.new_shape_operand_id);
+  auto* output = GetMojoOperand(op.output_operand_id);
+  if (!input || !new_shape || !output || output == input ||
+      output == new_shape) {
+    return false;
+  }
+
+  if (new_shape->descriptor.Rank() != 1 ||
+      new_shape->descriptor.data_type() != OperandDataType::kInt64) {
+    return false;
+  }
+
+  if (infer_output_shapes_) {
+    auto shape_values = EvaluateShapeOperand(
+        op.new_shape_operand_id, "dynamicExpand", "new_shape");
+    if (!shape_values) {
+      return false;
+    }
+
+    // Convert int64 values to concrete Dimensions.
+    std::vector<Dimension> new_shape_dims;
+    new_shape_dims.reserve(shape_values->size());
+    for (int64_t val : *shape_values) {
+      if (val < 0 || !base::IsValueInRangeForNumericType<uint32_t>(val)) {
+        return false;
+      }
+      new_shape_dims.push_back(base::checked_cast<uint32_t>(val));
+    }
+
+    auto validated_output = ValidateExpandAndInferOutput(
+        *context_properties_, input->descriptor, new_shape_dims, op.label,
+        known_dynamic_dims_);
+    if (!validated_output.has_value()) {
+      return false;
+    }
+
+    if (!VerifyOrWriteBackOutput(op.output_operand_id, *validated_output)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateDynamicSlice(
+    const mojom::DynamicSlice& op,
+    OperationId operation_id) {
+  if (!IsProcessedOperand(op.input_operand_id) ||
+      !IsProcessedOperand(op.starts_operand_id) ||
+      !IsProcessedOperand(op.ends_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(op.input_operand_id, operation_id);
+  NoteInputDependency(op.starts_operand_id, operation_id);
+  NoteInputDependency(op.ends_operand_id, operation_id);
+
+  if (op.axes_operand_id.has_value()) {
+    if (!IsProcessedOperand(*op.axes_operand_id)) {
+      return false;
+    }
+    NoteInputDependency(*op.axes_operand_id, operation_id);
+  }
+  if (op.strides_operand_id.has_value()) {
+    if (!IsProcessedOperand(*op.strides_operand_id)) {
+      return false;
+    }
+    NoteInputDependency(*op.strides_operand_id, operation_id);
+  }
+
+  auto* input = GetMojoOperand(op.input_operand_id);
+  auto* output = GetMojoOperand(op.output_operand_id);
+  if (!input || !output || output == input) {
+    return false;
+  }
+
+  if (infer_output_shapes_) {
+    auto starts_values = EvaluateShapeOperand(
+        op.starts_operand_id, "dynamicSlice", "starts");
+    auto ends_values = EvaluateShapeOperand(
+        op.ends_operand_id, "dynamicSlice", "ends");
+    if (!starts_values || !ends_values) {
+      return false;
+    }
+
+    const size_t rank = input->descriptor.Rank();
+
+    // Evaluate optional strides.
+    std::vector<int64_t> strides_values;
+    if (op.strides_operand_id.has_value()) {
+      auto evaluated = EvaluateShapeOperand(
+          *op.strides_operand_id, "dynamicSlice", "strides");
+      if (!evaluated) {
+        return false;
+      }
+      strides_values = std::move(*evaluated);
+    } else {
+      // Default strides: all 1s, length matches starts.
+      strides_values.assign(starts_values->size(), 1);
+    }
+
+    // Evaluate optional axes.
+    std::optional<std::vector<int64_t>> axes_values;
+    if (op.axes_operand_id.has_value()) {
+      axes_values = EvaluateShapeOperand(
+          *op.axes_operand_id, "dynamicSlice", "axes");
+      if (!axes_values) {
+        return false;
+      }
+    }
+
+    // Build SliceAttributes over all dimensions.
+    SliceAttributes attributes;
+    attributes.starts.resize(rank, 0);
+    attributes.sizes.resize(rank);
+    attributes.strides.resize(rank, 1);
+    attributes.label = op.label;
+
+    // Initialize sizes to input dimensions (for axes not mentioned).
+    for (size_t i = 0; i < rank; ++i) {
+      auto dim = input->descriptor.shape()[i];
+      if (!std::holds_alternative<uint32_t>(dim)) {
+        return false;  // Input dims must be concrete at dispatch time.
+      }
+      attributes.sizes[i] = std::get<uint32_t>(dim);
+    }
+
+    const size_t num_slice_dims = starts_values->size();
+    if (ends_values->size() != num_slice_dims ||
+        strides_values.size() != num_slice_dims) {
+      return false;
+    }
+
+    for (size_t i = 0; i < num_slice_dims; ++i) {
+      size_t axis;
+      if (axes_values) {
+        if (i >= axes_values->size()) {
+          return false;
+        }
+        int64_t ax = (*axes_values)[i];
+        if (ax < 0 || !base::IsValueInRangeForNumericType<size_t>(ax) ||
+            static_cast<size_t>(ax) >= rank) {
+          return false;
+        }
+        axis = static_cast<size_t>(ax);
+      } else {
+        axis = i;
+        if (axis >= rank) {
+          return false;
+        }
+      }
+
+      int64_t dim_size = static_cast<int64_t>(attributes.sizes[axis]);
+      int64_t start = (*starts_values)[i];
+      int64_t end = (*ends_values)[i];
+      int64_t stride = strides_values[i];
+      if (stride <= 0) {
+        return false;
+      }
+
+      // Normalize negative indices (ONNX convention: -1 means last element).
+      if (start < 0) {
+        start = std::max(start + dim_size, int64_t{0});
+      }
+      if (end < 0) {
+        end = std::max(end + dim_size, int64_t{0});
+      }
+
+      // Clamp to dimension bounds.
+      start = std::clamp(start, int64_t{0}, dim_size);
+      end = std::clamp(end, int64_t{0}, dim_size);
+
+      if (end <= start) {
+        return false;
+      }
+
+      int64_t size = end - start;
+      if (!base::IsValueInRangeForNumericType<uint32_t>(start) ||
+          !base::IsValueInRangeForNumericType<uint32_t>(size) ||
+          !base::IsValueInRangeForNumericType<uint32_t>(stride)) {
+        return false;
+      }
+      attributes.starts[axis] = base::checked_cast<uint32_t>(start);
+      attributes.sizes[axis] = base::checked_cast<uint32_t>(size);
+      attributes.strides[axis] = base::checked_cast<uint32_t>(stride);
+    }
+
+    auto validated_output = ValidateSliceAndInferOutput(
+        *context_properties_, input->descriptor, std::move(attributes));
+    if (!validated_output.has_value()) {
+      return false;
+    }
+    if (!VerifyOrWriteBackOutput(op.output_operand_id, *validated_output)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateDynamicPad(
+    const mojom::DynamicPad& op,
+    OperationId operation_id) {
+  if (!IsProcessedOperand(op.input_operand_id) ||
+      !IsProcessedOperand(op.pads_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(op.input_operand_id, operation_id);
+  NoteInputDependency(op.pads_operand_id, operation_id);
+
+  if (op.constant_value_operand_id.has_value()) {
+    if (!IsProcessedOperand(*op.constant_value_operand_id)) {
+      return false;
+    }
+    NoteInputDependency(*op.constant_value_operand_id, operation_id);
+  }
+
+  auto* input = GetMojoOperand(op.input_operand_id);
+  auto* output = GetMojoOperand(op.output_operand_id);
+  if (!input || !output || output == input) {
+    return false;
+  }
+
+  if (infer_output_shapes_) {
+    auto pads_values = EvaluateShapeOperand(
+        op.pads_operand_id, "dynamicPad", "pads");
+    if (!pads_values) {
+      return false;
+    }
+
+    const size_t rank = input->descriptor.Rank();
+    if (pads_values->size() != 2 * rank) {
+      return false;
+    }
+
+    // Split interleaved pads into beginning and ending padding.
+    std::vector<uint32_t> beginning_padding(rank);
+    std::vector<uint32_t> ending_padding(rank);
+    for (size_t i = 0; i < rank; ++i) {
+      int64_t begin_val = (*pads_values)[2 * i];
+      int64_t end_val = (*pads_values)[2 * i + 1];
+      if (begin_val < 0 || end_val < 0 ||
+          !base::IsValueInRangeForNumericType<uint32_t>(begin_val) ||
+          !base::IsValueInRangeForNumericType<uint32_t>(end_val)) {
+        return false;
+      }
+      beginning_padding[i] = base::checked_cast<uint32_t>(begin_val);
+      ending_padding[i] = base::checked_cast<uint32_t>(end_val);
+    }
+
+    auto validated_output = ValidatePadAndInferOutput(
+        *context_properties_, input->descriptor, beginning_padding,
+        ending_padding, FromMojoPaddingMode(op.mode->which()), op.label);
+    if (!validated_output.has_value()) {
+      return false;
+    }
+    if (!VerifyOrWriteBackOutput(op.output_operand_id, *validated_output)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateDynamicSplit(
+    const mojom::DynamicSplit& op,
+    OperationId operation_id) {
+  if (!IsProcessedOperand(op.input_operand_id) ||
+      !IsProcessedOperand(op.splits_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(op.input_operand_id, operation_id);
+  NoteInputDependency(op.splits_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(op.input_operand_id);
+  if (!input) {
+    return false;
+  }
+
+  for (const auto& output_id : op.output_operand_ids) {
+    auto* output = GetMojoOperand(output_id);
+    if (!output || output == input) {
+      return false;
+    }
+  }
+
+  if (infer_output_shapes_) {
+    auto splits_values = EvaluateShapeOperand(
+        op.splits_operand_id, "dynamicSplit", "splits");
+    if (!splits_values) {
+      return false;
+    }
+
+    // Convert int64 split sizes to uint32.
+    std::vector<uint32_t> split_sizes;
+    split_sizes.reserve(splits_values->size());
+    for (int64_t val : *splits_values) {
+      if (val <= 0 || !base::IsValueInRangeForNumericType<uint32_t>(val)) {
+        return false;
+      }
+      split_sizes.push_back(base::checked_cast<uint32_t>(val));
+    }
+
+    SplitAttribute attributes;
+    attributes.splits = base::span<const uint32_t>(split_sizes);
+    attributes.axis = op.axis;
+    attributes.label = op.label;
+
+    auto validated_outputs = ValidateSplitAndInferOutput(
+        *context_properties_, input->descriptor, attributes);
+    if (!validated_outputs.has_value()) {
+      return false;
+    }
+
+    std::vector<OperandId> output_ids(op.output_operand_ids.begin(),
+                                      op.output_operand_ids.end());
+    if (!VerifyOrWriteBackOutputs(output_ids,
+                                  std::move(*validated_outputs))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateDynamicResample2d(
+    const mojom::DynamicResample2d& op,
+    OperationId operation_id) {
+  if (!IsProcessedOperand(op.input_operand_id) ||
+      !IsProcessedOperand(op.sizes_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(op.input_operand_id, operation_id);
+  NoteInputDependency(op.sizes_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(op.input_operand_id);
+  auto* output = GetMojoOperand(op.output_operand_id);
+  if (!input || !output || output == input) {
+    return false;
+  }
+
+  // Input must be 4-D and output must have the same rank and data type.
+  if (input->descriptor.Rank() != 4 ||
+      output->descriptor.Rank() != input->descriptor.Rank() ||
+      output->descriptor.data_type() != input->descriptor.data_type()) {
+    return false;
+  }
+
+  // `axes` must specify two distinct axes in [0, 4).
+  if (op.axes[0] >= 4 || op.axes[1] >= 4 || op.axes[0] == op.axes[1]) {
+    return false;
+  }
+
+  if (infer_output_shapes_) {
+    auto sizes_values = EvaluateShapeOperand(
+        op.sizes_operand_id, "dynamicResample2d", "sizes");
+    if (!sizes_values || sizes_values->size() != 2) {
+      return false;
+    }
+
+    // Convert int64 sizes to uint32.
+    std::vector<uint32_t> sizes(2);
+    for (size_t i = 0; i < 2; ++i) {
+      int64_t val = (*sizes_values)[i];
+      if (val <= 0 || !base::IsValueInRangeForNumericType<uint32_t>(val)) {
+        return false;
+      }
+      sizes[i] = base::checked_cast<uint32_t>(val);
+    }
+
+    std::array<uint32_t, 2> axes = {op.axes[0], op.axes[1]};
+    auto validated_output = ValidateResample2dAndInferOutput(
+        *context_properties_, input->descriptor,
+        base::span<const uint32_t>(sizes), axes, op.label);
+    if (!validated_output.has_value()) {
+      return false;
+    }
+    if (!VerifyOrWriteBackOutput(op.output_operand_id, *validated_output)) {
+      return false;
+    }
   }
 
   return true;
@@ -2559,7 +3681,7 @@ bool OperationValidationContext::ValidateReduce(const mojom::Reduce& reduce,
   if (!validated_output.has_value()) {
     return false;
   }
-  if (validated_output != output->descriptor) {
+  if (!VerifyOrWriteBackOutput(reduce.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -2663,6 +3785,8 @@ bool OperationValidationContext::ValidateOperation(
                                      operation_id);
     case mojom::Operation::Tag::kScatterNd:
       return ValidateScatterND(*operation.get_scatter_nd(), operation_id);
+    case mojom::Operation::Tag::kShape:
+      return ValidateShape(*operation.get_shape(), operation_id);
     case mojom::Operation::Tag::kSlice:
       return ValidateSlice(*operation.get_slice(), operation_id);
     case mojom::Operation::Tag::kSigmoid:
@@ -2693,6 +3817,25 @@ bool OperationValidationContext::ValidateOperation(
       return ValidateTriangular(*operation.get_triangular(), operation_id);
     case mojom::Operation::Tag::kWhere:
       return ValidateWhere(*operation.get_where(), operation_id);
+    case mojom::Operation::Tag::kRange:
+      return ValidateRange(*operation.get_range(), operation_id);
+    case mojom::Operation::Tag::kDynamicReshape:
+      return ValidateDynamicReshape(*operation.get_dynamic_reshape(),
+                                    operation_id);
+    case mojom::Operation::Tag::kDynamicExpand:
+      return ValidateDynamicExpand(*operation.get_dynamic_expand(),
+                                   operation_id);
+    case mojom::Operation::Tag::kDynamicSlice:
+      return ValidateDynamicSlice(*operation.get_dynamic_slice(),
+                                  operation_id);
+    case mojom::Operation::Tag::kDynamicPad:
+      return ValidateDynamicPad(*operation.get_dynamic_pad(), operation_id);
+    case mojom::Operation::Tag::kDynamicSplit:
+      return ValidateDynamicSplit(*operation.get_dynamic_split(),
+                                  operation_id);
+    case mojom::Operation::Tag::kDynamicResample2d:
+      return ValidateDynamicResample2d(*operation.get_dynamic_resample_2d(),
+                                       operation_id);
   }
 }
 
@@ -2731,10 +3874,11 @@ TransposePendingPermutation(
     for (uint32_t i = 0; i < rank; ++i) {
       inverse_permutation[permutation[i]] = i;
     }
-    auto& transposed_shape = descriptor.shape();
+    auto transposed_shape = descriptor.StaticShape().value();
     base::FixedArray<uint32_t> original_shape(rank);
-    for (uint32_t i = 0; i < rank; ++i) {
-      original_shape[i] = descriptor.shape()[inverse_permutation[i]];
+    for (size_t i = 0; i < rank; ++i) {
+      original_shape[i] =
+          descriptor.StaticShape().value()[inverse_permutation[i]];
     }
 
     std::vector<uint32_t> original_strides = CalculateStrides(original_shape);
@@ -2804,7 +3948,7 @@ TransposePendingPermutation(
       base::span<uint8_t> transposed_span = transposed_data.as_span();
 
       // Loop through all elements in the transposed tensor.
-      for (size_t i = 0; i < descriptor.NumberOfElements(); ++i) {
+      for (size_t i = 0; i < descriptor.NumberOfElements().value(); ++i) {
         for (size_t d = 0; d < rank; ++d) {
           original_idx[d] = transposed_idx[inverse_permutation[d]];
         }
@@ -2835,6 +3979,31 @@ TransposePendingPermutation(
 }
 
 }  // namespace
+
+// static
+bool WebNNGraphBuilderImpl::RevalidateGraphWithConcreteShapes(
+    const ContextProperties& context_properties,
+    base::span<const mojom::OperandPtr> operands,
+    const std::vector<mojom::OperationPtr>& operations,
+    const base::flat_set<OperandId>& processed_operands) {
+  return OperationValidationContext::ValidateOperationsAndGetDependencies(
+             operations, context_properties, operands, processed_operands)
+      .has_value();
+}
+
+// static
+bool WebNNGraphBuilderImpl::InferAndValidateConcreteShapes(
+    const ContextProperties& context_properties,
+    std::vector<mojom::OperandPtr>& operands,
+    const std::vector<mojom::OperationPtr>& operations,
+    const base::flat_set<OperandId>& processed_operands,
+    const base::flat_map<OperandId, std::vector<uint8_t>>&
+        integer_constant_data,
+    const base::flat_map<std::string, uint32_t>& dim_name_to_value) {
+  return OperationValidationContext::InferAndValidateConcreteShapes(
+      operations, context_properties, operands, processed_operands,
+      integer_constant_data, dim_name_to_value);
+}
 
 WebNNGraphBuilderImpl::ValidateGraphSuccessResult::ValidateGraphSuccessResult(
     WebNNGraphImpl::ComputeResourceInfo compute_resource_info,
@@ -3044,10 +4213,37 @@ WebNNGraphBuilderImpl::ValidateGraphImpl(
   for (size_t id = 0; id < graph_info.operands.size(); ++id) {
     const mojom::OperandPtr& operand = graph_info.operands[id];
     const OperandId operand_id(base::checked_cast<uint32_t>(id));
-    const size_t byte_length = operand->descriptor.PackedByteLength();
-    if (byte_length > context_properties.tensor_byte_length_limit) {
-      return std::nullopt;
+    // Only check byte length limit if the shape is bounded (all dims have
+    // max_size). For unbounded shapes, defer to dispatch time.
+    const auto num_elements = operand->descriptor.NumberOfElements();
+    if (num_elements.has_value()) {
+      const size_t byte_length = operand->descriptor.PackedByteLength();
+      if (byte_length > context_properties.tensor_byte_length_limit) {
+        return std::nullopt;
+      }
     }
+
+    // Validate dynamic dimensions.
+    for (const auto& dimension : operand->descriptor.shape()) {
+      if (std::holds_alternative<DynamicDimension>(dimension)) {
+        const auto& dynamic_dim = std::get<DynamicDimension>(dimension);
+        if (dynamic_dim.min_size == 0) {
+          // minSize must be at least 1.
+          return std::nullopt;
+        }
+        if (dynamic_dim.max_size.has_value()) {
+          if (*dynamic_dim.max_size == 0) {
+            // maxSize must be at least 1.
+            return std::nullopt;
+          }
+          if (dynamic_dim.min_size > *dynamic_dim.max_size) {
+            // minSize must be less than or equal to maxSize.
+            return std::nullopt;
+          }
+        }
+      }
+    }
+
     const std::optional<std::string>& name = operand->name;
     switch (operand->kind) {
       case mojom::Operand::Kind::kInput: {
@@ -3203,11 +4399,66 @@ WebNNGraphBuilderImpl::ValidateGraphImpl(
     }
   }
 
+  // Clone graph operands and operations for dispatch-time re-validation
+  // (only needed when the graph has dynamic input dimensions).
+  std::vector<mojom::OperandPtr> cloned_operands;
+  std::vector<mojom::OperationPtr> cloned_operations;
+  std::vector<OperandId> input_operand_ids;
+
+  // Check if any input has dynamic dims before cloning.
+  bool any_input_dynamic = false;
+  for (const auto& [name, desc] : inputs) {
+    if (!desc.StaticShape().has_value()) {
+      any_input_dynamic = true;
+      break;
+    }
+  }
+  if (any_input_dynamic) {
+    cloned_operands.reserve(graph_info.operands.size());
+    for (const auto& operand : graph_info.operands) {
+      cloned_operands.push_back(operand.Clone());
+    }
+    cloned_operations.reserve(graph_info.operations.size());
+    for (const auto& operation : graph_info.operations) {
+      cloned_operations.push_back(operation.Clone());
+    }
+    input_operand_ids.reserve(graph_info.input_operands.size());
+    for (const auto& id : graph_info.input_operands) {
+      input_operand_ids.push_back(id);
+    }
+  }
+
+  // Extract integer constant data for dispatch-time shape folding.
+  // Only needed when the graph has dynamic inputs (Phase B Step 2).
+  base::flat_map<OperandId, std::vector<uint8_t>> integer_constant_data;
+  if (any_input_dynamic) {
+    for (const auto& [operand_id, constant_operand] : graph_constants) {
+      if (!constant_operand) {
+        continue;
+      }
+      OperandDataType dtype = constant_operand->descriptor().data_type();
+      if (dtype == OperandDataType::kInt32 ||
+          dtype == OperandDataType::kUint32 ||
+          dtype == OperandDataType::kInt64 ||
+          dtype == OperandDataType::kUint64 ||
+          dtype == OperandDataType::kInt8 ||
+          dtype == OperandDataType::kUint8) {
+        auto byte_span = constant_operand->ByteSpan();
+        integer_constant_data.emplace(
+            operand_id,
+            std::vector<uint8_t>(byte_span.begin(), byte_span.end()));
+      }
+    }
+  }
+
   return ValidateGraphSuccessResult{
       WebNNGraphImpl::ComputeResourceInfo(
           std::move(inputs), std::move(outputs),
           std::move(result->operand_to_dependent_operations),
           std::move(result->operand_to_producing_operation),
+          std::move(cloned_operands), std::move(cloned_operations),
+          std::move(input_operand_ids),
+          std::move(integer_constant_data),
           base::PassKey<WebNNGraphBuilderImpl>()),
       std::move(graph_constants)};
 }

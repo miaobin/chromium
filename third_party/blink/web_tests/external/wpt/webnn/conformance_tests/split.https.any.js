@@ -915,6 +915,160 @@ const splitTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'split float32 3D tensor with dynamic batch dimension number splits options.axis=1',
+    'graph': {
+      'inputs': {
+        'splitInput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'descriptor': {
+            shape: [{'name': 'N', 'maxSize': 10}, 3, 4],
+            dataType: 'float32'
+          },
+          'shape': [2, 3, 4]
+        }
+      },
+      'operators': [{
+        'name': 'split',
+        'arguments':
+            [{'input': 'splitInput'}, {'splits': 3}, {'options': {'axis': 1}}],
+        'outputs': ['splitOutput1', 'splitOutput2', 'splitOutput3']
+      }],
+      'expectedOutputs': {
+        'splitOutput1': {
+          'data': [1.0, 2.0, 3.0, 4.0, 13.0, 14.0, 15.0, 16.0],
+          'descriptor': {
+            shape: [{'name': 'N', 'maxSize': 10}, 1, 4],
+            dataType: 'float32'
+          },
+          'shape': [2, 1, 4]
+        },
+        'splitOutput2': {
+          'data': [5.0, 6.0, 7.0, 8.0, 17.0, 18.0, 19.0, 20.0],
+          'descriptor': {
+            shape: [{'name': 'N', 'maxSize': 10}, 1, 4],
+            dataType: 'float32'
+          },
+          'shape': [2, 1, 4]
+        },
+        'splitOutput3': {
+          'data': [9.0, 10.0, 11.0, 12.0, 21.0, 22.0, 23.0, 24.0],
+          'descriptor': {
+            shape: [{'name': 'N', 'maxSize': 10}, 1, 4],
+            dataType: 'float32'
+          },
+          'shape': [2, 1, 4]
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'split float32 3D tensor with dynamic spatial dimension number splits options.axis=0',
+    'graph': {
+      'inputs': {
+        'splitInput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'descriptor': {
+            shape: [2, 3, {'name': 'W', 'maxSize': 10}],
+            dataType: 'float32'
+          },
+          'shape': [2, 3, 4]
+        }
+      },
+      'operators': [{
+        'name': 'split',
+        'arguments':
+            [{'input': 'splitInput'}, {'splits': 2}, {'options': {'axis': 0}}],
+        'outputs': ['splitOutput1', 'splitOutput2']
+      }],
+      'expectedOutputs': {
+        'splitOutput1': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'descriptor': {
+            shape: [1, 3, {'name': 'W', 'maxSize': 10}],
+            dataType: 'float32'
+          },
+          'shape': [1, 3, 4]
+        },
+        'splitOutput2': {
+          'data': [
+            13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0,
+            24.0
+          ],
+          'descriptor': {
+            shape: [1, 3, {'name': 'W', 'maxSize': 10}],
+            dataType: 'float32'
+          },
+          'shape': [1, 3, 4]
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'split float32 4D tensor with dynamic dimensions array splits options.axis=1',
+    'graph': {
+      'inputs': {
+        'splitInput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'descriptor': {
+            shape: [
+              {'name': 'N', 'maxSize': 10}, 6, {'name': 'H', 'maxSize': 10}, 2
+            ],
+            dataType: 'float32'
+          },
+          'shape': [1, 6, 2, 2]
+        }
+      },
+      'operators': [{
+        'name': 'split',
+        'arguments': [
+          {'input': 'splitInput'}, {'splits': [2, 4]}, {'options': {'axis': 1}}
+        ],
+        'outputs': ['splitOutput1', 'splitOutput2']
+      }],
+      'expectedOutputs': {
+        'splitOutput1': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+          'descriptor': {
+            shape: [
+              {'name': 'N', 'maxSize': 10}, 2, {'name': 'H', 'maxSize': 10}, 2
+            ],
+            dataType: 'float32'
+          },
+          'shape': [1, 2, 2, 2]
+        },
+        'splitOutput2': {
+          'data': [
+            9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0,
+            20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'descriptor': {
+            shape: [
+              {'name': 'N', 'maxSize': 10}, 4, {'name': 'H', 'maxSize': 10}, 2
+            ],
+            dataType: 'float32'
+          },
+          'shape': [1, 4, 2, 2]
+        }
+      }
+    }
   }
 ];
 

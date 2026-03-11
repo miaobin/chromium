@@ -50,6 +50,11 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphImpl
         base::flat_map<OperandId, base::flat_set<OperationId>>
             operand_to_dependent_operations,
         base::flat_map<OperandId, OperationId> operand_to_producing_operation,
+        std::vector<mojom::OperandPtr> graph_operands,
+        std::vector<mojom::OperationPtr> graph_operations,
+        std::vector<OperandId> graph_input_operand_ids,
+        base::flat_map<OperandId, std::vector<uint8_t>>
+            integer_constant_data,
         base::PassKey<WebNNGraphBuilderImpl> pass_key);
     ~ComputeResourceInfo();
 
@@ -64,6 +69,20 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphImpl
     base::flat_map<OperandId, base::flat_set<OperationId>>
         operand_to_dependent_operations;
     base::flat_map<OperandId, OperationId> operand_to_producing_operation;
+
+    // True if any input descriptor contains a DynamicDimension.
+    // Used as a fast-path gate: when false, dispatch skips re-validation.
+    bool has_dynamic_inputs = false;
+
+    // Graph structure for dispatch-time re-validation (Phase B Steps 3-5).
+    // Only populated when has_dynamic_inputs is true.
+    std::vector<mojom::OperandPtr> graph_operands;
+    std::vector<mojom::OperationPtr> graph_operations;
+    std::vector<OperandId> graph_input_operand_ids;
+
+    // Raw byte data of integer constant operands, for dispatch-time shape
+    // folding (Phase B Step 2). Only populated when has_dynamic_inputs is true.
+    base::flat_map<OperandId, std::vector<uint8_t>> integer_constant_data;
   };
 
   // Constructs a graph where the receiver and implementation are owned by the

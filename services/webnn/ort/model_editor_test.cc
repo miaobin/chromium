@@ -130,7 +130,7 @@ TEST_F(WebNNOrtModelEditorTest, ReshapeToScalar) {
 
   // Add an output.
   auto output_desc = OperandDescriptor::CreateForDeserialization(
-      OperandDataType::kInt32, {}, {});
+      OperandDataType::kInt32, std::vector<uint32_t>{}, {});
   ASSERT_TRUE(output_desc.has_value());
   mojom::OperandPtr output_operand =
       mojom::Operand::New(mojom::Operand::Kind::kOutput,

@@ -357,6 +357,10 @@ class WebNNGraphImplTest : public testing::Test {
     return provider_remote_;
   }
 
+  mojo::Remote<mojom::WebNNContext>& webnn_context() {
+    return webnn_context_;
+  }
+
  protected:
   WebNNGraphImplTest()
       : scoped_feature_list_(
@@ -1903,6 +1907,7 @@ struct ElementWiseBinaryTester {
       case mojom::ElementWiseBinary::Kind::kPow:
       case mojom::ElementWiseBinary::Kind::kMax:
       case mojom::ElementWiseBinary::Kind::kMin:
+      case mojom::ElementWiseBinary::Kind::kMod:
       case mojom::ElementWiseBinary::Kind::kEqual:
       case mojom::ElementWiseBinary::Kind::kGreater:
       case mojom::ElementWiseBinary::Kind::kGreaterOrEqual:
@@ -1926,6 +1931,7 @@ struct ElementWiseBinaryTester {
       case mojom::ElementWiseBinary::Kind::kPow:
       case mojom::ElementWiseBinary::Kind::kMax:
       case mojom::ElementWiseBinary::Kind::kMin:
+      case mojom::ElementWiseBinary::Kind::kMod:
         return OperandDataType::kFloat32;
       case mojom::ElementWiseBinary::Kind::kEqual:
       case mojom::ElementWiseBinary::Kind::kGreater:
@@ -2473,7 +2479,10 @@ struct ExpandTester {
         builder.BuildInput("input", input.dimensions, input.type);
     OperandId output_operand_id =
         builder.BuildOutput("output", output.dimensions, output.type);
-    builder.BuildExpand(input_operand_id, output_operand_id);
+    std::vector<webnn::Dimension> new_shape(output.dimensions.begin(),
+                                            output.dimensions.end());
+    builder.BuildExpand(input_operand_id, output_operand_id,
+                        std::move(new_shape));
 
     EXPECT_EQ(builder.IsValidGraphForTesting(context_properties), expected);
   }
@@ -2538,7 +2547,8 @@ TEST_F(WebNNGraphImplTest, ExpandTest) {
     GraphInfoBuilder builder(remote);
     OperandId input_operand_id =
         builder.BuildInput("input", {2}, OperandDataType::kFloat32);
-    builder.BuildExpand(input_operand_id, input_operand_id);
+    builder.BuildExpand(input_operand_id, input_operand_id,
+                        std::vector<webnn::Dimension>{uint32_t{2}});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
   {
@@ -2553,7 +2563,10 @@ TEST_F(WebNNGraphImplTest, ExpandTest) {
         builder.BuildInput("input", {2}, OperandDataType::kFloat32);
     OperandId output_operand_id = builder.BuildOutput(
         "output", {1, 1, 1, 1, 2}, OperandDataType::kFloat32);
-    builder.BuildExpand(input_operand_id, output_operand_id);
+    builder.BuildExpand(
+        input_operand_id, output_operand_id,
+        std::vector<webnn::Dimension>{uint32_t{1}, uint32_t{1}, uint32_t{1},
+                                      uint32_t{1}, uint32_t{2}});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
 }
@@ -7758,6 +7771,394 @@ TEST_F(WebNNGraphImplTest, ValidateDispatchTest) {
     base::flat_map<std::string, CreateTensorSuccess> outputs;
     outputs["output1"] = CreateWebNNTensor(webnn_context, kDataType, kShape);
     outputs["output2"] = {/*webnn_tensor=*/std::nullopt};
+    EXPECT_FALSE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                  std::move(inputs), std::move(outputs)));
+  }
+}
+
+TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicDimensionsTest) {
+  const OperandDataType kMojoDataType = OperandDataType::kUint8;
+  const OperandDataType kDataType = OperandDataType::kUint8;
+
+  // Build a graph with dynamic input dimensions:
+  // lhs: [batch, 5] where batch is dynamic with min=2, max=8
+  // rhs: [batch, 5] where batch shares the same dynamic dim name
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+
+  const DynamicDimension batch_dim{/*name=*/"batch", /*max_size=*/8u,
+                                   /*min_size=*/2u};
+  const std::vector<Dimension> kDynamicShape = {batch_dim, Dimension(5u)};
+  const OperandId lhs_operand_id =
+      builder.BuildDynamicInput("lhs", kDynamicShape, kMojoDataType);
+  const OperandId rhs_operand_id =
+      builder.BuildDynamicInput("rhs", kDynamicShape, kMojoDataType);
+  const OperandId output_operand_id =
+      builder.BuildDynamicOutput("output", kDynamicShape, kMojoDataType);
+  builder.BuildElementWiseBinary(mojom::ElementWiseBinary::Kind::kAdd,
+                                 lhs_operand_id, rhs_operand_id,
+                                 output_operand_id);
+
+  {
+    // Valid: actual batch=4 is within [2, 8] and consistent across inputs.
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["lhs"] = CreateWebNNTensor(webnn_context, kDataType, {4, 5});
+    inputs["rhs"] = CreateWebNNTensor(webnn_context, kDataType, {4, 5});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {4, 5});
+    EXPECT_TRUE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                 std::move(inputs), std::move(outputs)));
+  }
+  {
+    // Valid: actual batch=2 (min boundary).
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["lhs"] = CreateWebNNTensor(webnn_context, kDataType, {2, 5});
+    inputs["rhs"] = CreateWebNNTensor(webnn_context, kDataType, {2, 5});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {2, 5});
+    EXPECT_TRUE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                 std::move(inputs), std::move(outputs)));
+  }
+  {
+    // Valid: actual batch=8 (max boundary).
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["lhs"] = CreateWebNNTensor(webnn_context, kDataType, {8, 5});
+    inputs["rhs"] = CreateWebNNTensor(webnn_context, kDataType, {8, 5});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {8, 5});
+    EXPECT_TRUE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                 std::move(inputs), std::move(outputs)));
+  }
+  {
+    // Invalid: actual batch=1 violates min_size=2.
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["lhs"] = CreateWebNNTensor(webnn_context, kDataType, {1, 5});
+    inputs["rhs"] = CreateWebNNTensor(webnn_context, kDataType, {1, 5});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {1, 5});
+    EXPECT_FALSE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                  std::move(inputs), std::move(outputs)));
+  }
+  {
+    // Invalid: actual batch=9 exceeds max_size=8.
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["lhs"] = CreateWebNNTensor(webnn_context, kDataType, {9, 5});
+    inputs["rhs"] = CreateWebNNTensor(webnn_context, kDataType, {9, 5});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {9, 5});
+    EXPECT_FALSE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                  std::move(inputs), std::move(outputs)));
+  }
+  {
+    // Invalid: same-name dim "batch" has inconsistent values (lhs=4, rhs=6).
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["lhs"] = CreateWebNNTensor(webnn_context, kDataType, {4, 5});
+    inputs["rhs"] = CreateWebNNTensor(webnn_context, kDataType, {6, 5});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {4, 5});
+    EXPECT_FALSE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                  std::move(inputs), std::move(outputs)));
+  }
+}
+
+TEST_F(WebNNGraphImplTest, ValidateDispatchUnboundedDynamicDimensionTest) {
+  const OperandDataType kMojoDataType = OperandDataType::kFloat32;
+  const OperandDataType kDataType = OperandDataType::kFloat32;
+
+  // Build a graph with an unbounded dynamic dimension (no max_size).
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+
+  const DynamicDimension seq_dim{/*name=*/"seq", /*max_size=*/std::nullopt,
+                                 /*min_size=*/2u};
+  const std::vector<Dimension> kDynamicShape = {Dimension(2u), seq_dim};
+  const OperandId input_id =
+      builder.BuildDynamicInput("input", kDynamicShape, kMojoDataType);
+  const OperandId output_id =
+      builder.BuildDynamicOutput("output", kDynamicShape, kMojoDataType);
+  builder.BuildElementWiseUnary(mojom::ElementWiseUnary::Kind::kAbs, input_id,
+                                output_id);
+
+  {
+    // Valid: any value >= min_size is accepted for unbounded dim.
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["input"] = CreateWebNNTensor(webnn_context, kDataType, {2, 1000});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {2, 1000});
+    EXPECT_TRUE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                 std::move(inputs), std::move(outputs)));
+  }
+  {
+    // Invalid: actual=1 violates min_size=2 even for unbounded dim.
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["input"] = CreateWebNNTensor(webnn_context, kDataType, {2, 1});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {2, 1});
+    EXPECT_FALSE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                  std::move(inputs), std::move(outputs)));
+  }
+}
+
+// Test dispatch-time graph re-validation with DynamicReshape.
+// Graph topology:
+//   input[batch, 784] → shape() → gather(0) → concat(batch, [28, 28])
+//                     → dynamicReshape(input, concat_out) → output[batch,28,28]
+// This tests the full shape folding + infer mode pipeline.
+TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicReshapeTest) {
+  auto context_properties = GetContextPropertiesForTesting();
+  const OperandDataType kDataType = OperandDataType::kFloat32;
+
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+
+  const DynamicDimension batch_dim{/*name=*/"batch", /*max_size=*/16u,
+                                   /*min_size=*/1u};
+
+  // Input: [batch, 784]
+  const std::vector<Dimension> kInputShape = {batch_dim, Dimension(784u)};
+  const OperandId input_id =
+      builder.BuildDynamicInput("input", kInputShape, kDataType);
+
+  // shape(input) → shape_out [2] int64
+  const OperandId shape_out_id =
+      builder.BuildIntermediateOperand({2}, OperandDataType::kInt64);
+  builder.BuildShape(input_id, shape_out_id);
+
+  // constant indices [1] int32 = {0}
+  const std::vector<int32_t> gather_indices = {0};
+  const OperandId indices_id = builder.BuildConstant(
+      {1}, OperandDataType::kInt32,
+      base::as_bytes(base::span(gather_indices)));
+
+  // gather(shape_out, indices) → batch_val [1] int64
+  const OperandId batch_val_id =
+      builder.BuildIntermediateOperand({1}, OperandDataType::kInt64);
+  builder.BuildGather(shape_out_id, indices_id, batch_val_id, /*axis=*/0);
+
+  // constant [2] int64 = {28, 28}
+  const std::vector<int64_t> spatial_dims = {28, 28};
+  const OperandId spatial_const_id = builder.BuildConstant(
+      {2}, OperandDataType::kInt64,
+      base::as_bytes(base::span(spatial_dims)));
+
+  // concat([batch_val, spatial_const]) → new_shape [3] int64
+  const OperandId new_shape_id =
+      builder.BuildIntermediateOperand({3}, OperandDataType::kInt64);
+  builder.BuildConcat({batch_val_id, spatial_const_id}, new_shape_id,
+                      /*axis=*/0);
+
+  // dynamicReshape(input, new_shape) → output [batch, 28, 28]
+  const std::vector<Dimension> kOutputShape = {batch_dim, Dimension(28u),
+                                                Dimension(28u)};
+  const OperandId output_id =
+      builder.BuildDynamicOutput("output", kOutputShape, kDataType);
+  builder.BuildDynamicReshape(input_id, new_shape_id, output_id);
+
+  ASSERT_TRUE(builder.IsValidGraphForTesting(context_properties));
+
+  // Create the graph using the same builder that has the constants.
+  base::test::TestFuture<
+      base::expected<mojom::CreateGraphSuccessPtr, mojom::ErrorPtr>>
+      create_graph_future;
+  remote->CreateGraph(builder.TakeGraphInfo(),
+                      create_graph_future.GetCallback());
+  auto create_graph_result = create_graph_future.Take();
+  ASSERT_TRUE(create_graph_result.has_value());
+  mojo::Remote<mojom::WebNNGraph> webnn_graph;
+  webnn_graph.Bind(std::move(create_graph_result.value()->graph_remote));
+  blink::WebNNGraphToken graph_token = create_graph_result.value()->graph_token;
+
+  auto dispatch_and_validate =
+      [&](const std::vector<uint32_t>& input_shape,
+          const std::vector<uint32_t>& output_shape) -> bool {
+    auto input_tensor =
+        CreateWebNNTensor(webnn_context(), kDataType, input_shape);
+    auto output_tensor =
+        CreateWebNNTensor(webnn_context(), kDataType, output_shape);
+
+    bool valid = true;
+    mojo::SetDefaultProcessErrorHandler(
+        base::BindLambdaForTesting([&](const std::string& error_message) {
+          valid = false;
+        }));
+
+    webnn_context().FlushForTesting();
+    webnn_context()->Dispatch(graph_token,
+                              {{"input", input_tensor.webnn_handle}},
+                              {{"output", output_tensor.webnn_handle}});
+    webnn_context().FlushForTesting();
+    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
+    return valid;
+  };
+
+  EXPECT_TRUE(dispatch_and_validate({4, 784}, {4, 28, 28}));
+  EXPECT_TRUE(dispatch_and_validate({1, 784}, {1, 28, 28}));
+  EXPECT_TRUE(dispatch_and_validate({16, 784}, {16, 28, 28}));
+  // Invalid: batch=20 exceeds max_size=16.
+  EXPECT_FALSE(dispatch_and_validate({20, 784}, {20, 28, 28}));
+}
+
+// Test dispatch-time re-validation with DynamicReshape using -1 (infer dim).
+// Graph: input[batch, 3, 224, 224] → dynamicReshape(input, [batch, -1])
+// The -1 dimension is inferred from the total element count.
+TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicReshapeInferDimTest) {
+  auto context_properties = GetContextPropertiesForTesting();
+  const OperandDataType kDataType = OperandDataType::kFloat32;
+
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+
+  const DynamicDimension batch_dim{/*name=*/"batch", /*max_size=*/8u,
+                                   /*min_size=*/1u};
+
+  const std::vector<Dimension> kInputShape = {batch_dim, Dimension(3u),
+                                               Dimension(224u),
+                                               Dimension(224u)};
+  const OperandId input_id =
+      builder.BuildDynamicInput("input", kInputShape, kDataType);
+
+  const OperandId shape_out_id =
+      builder.BuildIntermediateOperand({4}, OperandDataType::kInt64);
+  builder.BuildShape(input_id, shape_out_id);
+
+  const std::vector<int32_t> gather_indices = {0};
+  const OperandId indices_id = builder.BuildConstant(
+      {1}, OperandDataType::kInt32,
+      base::as_bytes(base::span(gather_indices)));
+
+  const OperandId batch_val_id =
+      builder.BuildIntermediateOperand({1}, OperandDataType::kInt64);
+  builder.BuildGather(shape_out_id, indices_id, batch_val_id, /*axis=*/0);
+
+  const std::vector<int64_t> neg_one = {-1};
+  const OperandId neg_one_id = builder.BuildConstant(
+      {1}, OperandDataType::kInt64, base::as_bytes(base::span(neg_one)));
+
+  const OperandId new_shape_id =
+      builder.BuildIntermediateOperand({2}, OperandDataType::kInt64);
+  builder.BuildConcat({batch_val_id, neg_one_id}, new_shape_id, /*axis=*/0);
+
+  const std::vector<Dimension> kOutputShape = {batch_dim,
+                                                Dimension(3u * 224u * 224u)};
+  const OperandId output_id =
+      builder.BuildDynamicOutput("output", kOutputShape, kDataType);
+  builder.BuildDynamicReshape(input_id, new_shape_id, output_id);
+
+  ASSERT_TRUE(builder.IsValidGraphForTesting(context_properties));
+
+  base::test::TestFuture<
+      base::expected<mojom::CreateGraphSuccessPtr, mojom::ErrorPtr>>
+      create_graph_future;
+  remote->CreateGraph(builder.TakeGraphInfo(),
+                      create_graph_future.GetCallback());
+  auto create_graph_result = create_graph_future.Take();
+  ASSERT_TRUE(create_graph_result.has_value());
+  mojo::Remote<mojom::WebNNGraph> webnn_graph;
+  webnn_graph.Bind(std::move(create_graph_result.value()->graph_remote));
+  blink::WebNNGraphToken graph_token = create_graph_result.value()->graph_token;
+
+  auto dispatch_and_validate =
+      [&](const std::vector<uint32_t>& input_shape,
+          const std::vector<uint32_t>& output_shape) -> bool {
+    auto input_tensor =
+        CreateWebNNTensor(webnn_context(), kDataType, input_shape);
+    auto output_tensor =
+        CreateWebNNTensor(webnn_context(), kDataType, output_shape);
+
+    bool valid = true;
+    mojo::SetDefaultProcessErrorHandler(
+        base::BindLambdaForTesting([&](const std::string& error_message) {
+          valid = false;
+        }));
+
+    webnn_context().FlushForTesting();
+    webnn_context()->Dispatch(graph_token,
+                              {{"input", input_tensor.webnn_handle}},
+                              {{"output", output_tensor.webnn_handle}});
+    webnn_context().FlushForTesting();
+    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
+    return valid;
+  };
+
+  // Valid: batch=2, input [2,3,224,224] → output [2, 150528].
+  EXPECT_TRUE(
+      dispatch_and_validate({2, 3, 224, 224}, {2, 150528}));
+  // Invalid: wrong output shape — user provides [2, 3, 50176].
+  EXPECT_FALSE(
+      dispatch_and_validate({2, 3, 224, 224}, {2, 3, 50176}));
+}
+
+// Test dispatch with DynamicExpand: broadcast a scalar across a dynamic shape.
+// Graph: input[batch, 1] → shape(input) → dynamicExpand(scalar, shape_out)
+TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicExpandTest) {
+  const OperandDataType kDataType = OperandDataType::kFloat32;
+
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+
+  const DynamicDimension batch_dim{/*name=*/"batch", /*max_size=*/32u,
+                                   /*min_size=*/1u};
+
+  // The input whose shape we want to expand to.
+  const std::vector<Dimension> kTargetShape = {batch_dim, Dimension(10u)};
+  const OperandId target_input_id =
+      builder.BuildDynamicInput("target_input", kTargetShape, kDataType);
+
+  // The scalar input to be expanded.
+  const OperandId scalar_input_id =
+      builder.BuildInput("scalar_input", {1, 1}, kDataType);
+
+  // shape(target_input) → shape_out [2] int64
+  const OperandId shape_out_id =
+      builder.BuildIntermediateOperand({2}, OperandDataType::kInt64);
+  builder.BuildShape(target_input_id, shape_out_id);
+
+  // dynamicExpand(scalar_input, shape_out) → output [batch, 10]
+  const OperandId output_id =
+      builder.BuildDynamicOutput("output", kTargetShape, kDataType);
+  builder.BuildDynamicExpand(scalar_input_id, shape_out_id, output_id);
+
+  {
+    // Valid: batch=8, expand [1,1] to [8,10].
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["target_input"] =
+        CreateWebNNTensor(webnn_context, kDataType, {8, 10});
+    inputs["scalar_input"] =
+        CreateWebNNTensor(webnn_context, kDataType, {1, 1});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {8, 10});
+    EXPECT_TRUE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
+                                 std::move(inputs), std::move(outputs)));
+  }
+  {
+    // Invalid: output shape mismatch — user provides [8,5] instead of [8,10].
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    base::flat_map<std::string, CreateTensorSuccess> inputs;
+    inputs["target_input"] =
+        CreateWebNNTensor(webnn_context, kDataType, {8, 10});
+    inputs["scalar_input"] =
+        CreateWebNNTensor(webnn_context, kDataType, {1, 1});
+    base::flat_map<std::string, CreateTensorSuccess> outputs;
+    outputs["output"] = CreateWebNNTensor(webnn_context, kDataType, {8, 5});
     EXPECT_FALSE(ValidateDispatch(webnn_context, builder.CloneGraphInfo(),
                                   std::move(inputs), std::move(outputs)));
   }

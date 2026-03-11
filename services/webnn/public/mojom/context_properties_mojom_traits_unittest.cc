@@ -70,6 +70,9 @@ TEST(ContextPropertiesMojomTraitsTest, Basic) {
        /*pow_input=*/
        {{webnn::OperandDataType::kFloat16, webnn::OperandDataType::kInt8},
         kMaxRank},
+       /*mod_input=*/
+       {{webnn::OperandDataType::kFloat16, webnn::OperandDataType::kInt8},
+        kMaxRank},
        /*equal_input=*/{{webnn::OperandDataType::kFloat16}, kMaxRank},
        /*greater_input=*/{{webnn::OperandDataType::kFloat16}, kMaxRank},
        /*greater_or_equal_input=*/
@@ -232,13 +235,30 @@ TEST(ContextPropertiesMojomTraitsTest, Basic) {
        /*where_condition=*/{webnn::SupportedDataTypes::All(), kMaxRank},
        /*where_value=*/
        {{webnn::OperandDataType::kFloat16, webnn::OperandDataType::kFloat32},
-        kMaxRank}});
+        kMaxRank},
+       /*range_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*range_output=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*shape_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*shape_output=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_reshape_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_reshape_new_shape=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_expand_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_expand_new_shape=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_slice_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_slice_starts=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_pad_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_pad_pads=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_split_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_split_splits=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_resample_2d_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_resample_2d_sizes=*/{webnn::SupportedDataTypes::All(), kMaxRank}});
 
   webnn::ContextProperties output(
       webnn::InputOperandLayout::kNhwc, webnn::Resample2DAxes::kChannelsFirst,
       webnn::BatchNormalizationAxis::kChannelsFirst,
       /*tensor_byte_length_limit=*/0,
       {{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+       {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},

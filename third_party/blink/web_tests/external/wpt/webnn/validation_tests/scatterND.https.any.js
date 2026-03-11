@@ -47,6 +47,12 @@ const tests = [
     indices: {dataType: 'int32', shape: [2, 1]},
     // Updates tensor shape should be [2, 4, 4].
     updates: {dataType: 'float32', shape: [2, 3, 4]},
+  },
+  {
+    name: '[scatterND] Throw if the last dimension of indices is dynamic',
+    input: {dataType: 'float32', shape: [4, 4, 4]},
+    indices: {dataType: 'int32', shape: [2, {name: 'num_axes', maxSize: 3}]},
+    updates: {dataType: 'float32', shape: [2, 4, 4]},
   }
 ];
 

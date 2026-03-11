@@ -9,6 +9,8 @@
   Exposed=(Window, Worker)
 ] interface MLGraph {
   readonly attribute FrozenArray<MLDeviceType> devices;
+  record<DOMString, MLInputOperandDescriptor> inputs();
+  record<DOMString, MLInputOperandDescriptor> outputs();
 
   void destroy();
 };

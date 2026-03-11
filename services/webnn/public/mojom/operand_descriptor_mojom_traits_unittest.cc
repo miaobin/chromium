@@ -49,14 +49,14 @@ TEST(OperandDescriptorMojomTraitsTest, Int4) {
           *input, output));
   EXPECT_EQ(*input, output);
   // 9 int4 elements are packed in 5 bytes.
-  EXPECT_EQ(output.NumberOfElements(), 9u);
+  EXPECT_EQ(output.NumberOfElements().value(), 9u);
   EXPECT_EQ(output.PackedByteLength(), 5u);
 }
 
 TEST(OperandDescriptorMojomTraitsTest, EmptyShape) {
   // Descriptors with an empty shape are treated as scalars.
   auto input = webnn::OperandDescriptor::CreateForDeserialization(
-      webnn::OperandDataType::kInt32, {}, {});
+      webnn::OperandDataType::kInt32, std::vector<uint32_t>{}, {});
   ASSERT_TRUE(input.has_value());
 
   webnn::OperandDescriptor output = CreateInvalidOperandDescriptor();
@@ -64,7 +64,7 @@ TEST(OperandDescriptorMojomTraitsTest, EmptyShape) {
       mojo::test::SerializeAndDeserialize<webnn::mojom::OperandDescriptor>(
           *input, output));
   EXPECT_EQ(*input, output);
-  EXPECT_EQ(output.NumberOfElements(), 1u);
+  EXPECT_EQ(output.NumberOfElements().value(), 1u);
   EXPECT_EQ(output.PackedByteLength(), 4u);  // int32 is 4 bytes.
 }
 

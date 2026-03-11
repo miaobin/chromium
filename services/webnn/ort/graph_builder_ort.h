@@ -27,6 +27,21 @@ class WebNNConstantOperand;
 
 namespace ort {
 
+// Information about where a dynamic dimension originates from.
+// Used as the value in a map keyed by the dynamic dimension's name.
+struct DynamicDimensionInfo {
+  DynamicDimensionInfo();
+  DynamicDimensionInfo(std::string input_operand_name, uint32_t axis);
+  ~DynamicDimensionInfo();
+  DynamicDimensionInfo(const DynamicDimensionInfo&);
+  DynamicDimensionInfo& operator=(const DynamicDimensionInfo&);
+  DynamicDimensionInfo(DynamicDimensionInfo&&);
+  DynamicDimensionInfo& operator=(DynamicDimensionInfo&&);
+
+  std::string input_operand_name;  // The input operand name for Shape op
+  uint32_t axis = 0;  // The axis in the input operand for Gather op
+};
+
 namespace internal {
 
 // Supported tensor types for immediate values. The list can be expanded as
@@ -148,6 +163,18 @@ class GraphBuilderOrt {
   std::string CreateZeroInitializer(OperandDataType data_type,
                                     base::span<const uint32_t> shape);
 
+  // A helper method that creates an initializer matching the input's shape and
+  // data type, with all elements set to the given float value. This function
+  // dynamically constructs the shape at runtime using Shape and Expand
+  // operators, making it suitable for inputs with dynamic dimensions.
+  // If `axes` is provided, only the dimensions at the specified axes are
+  // gathered from the input shape (e.g., for batch norm scale/bias which are
+  // 1D along the channel dimension).
+  std::string CreateInitializerWithInputShapeAndDataTypeForFloat(
+      OperandId input_operand_id,
+      float value,
+      std::optional<base::span<const uint32_t>> axes = std::nullopt);
+
   // A helper function used to transpose the weight or bias layout for the RNN
   // operations (GRU, LSTM, etc.).
   //
@@ -174,6 +201,14 @@ class GraphBuilderOrt {
                      base::cstring_view input,
                      base::cstring_view output,
                      base::span<const uint32_t> shape);
+  void AddExpandNode(
+      base::cstring_view node_name,
+      base::cstring_view input,
+      base::cstring_view output,
+      base::span<const Dimension> shape,
+      base::span<const Dimension> input_shape,
+      const base::flat_map<DynamicDimension, DynamicDimensionInfo>&
+          known_dynamic_dims);
   std::string CreateExpandNode(base::cstring_view input,
                                base::span<const uint32_t> shape);
 
@@ -197,6 +232,26 @@ class GraphBuilderOrt {
   void InsertReshapeNode(base::cstring_view input,
                          base::cstring_view output,
                          base::span<const uint32_t> shape);
+
+  void AddUnsqueezeNode(base::cstring_view node_name,
+                        base::cstring_view input,
+                        base::cstring_view output,
+                        base::span<const int64_t> axes);
+  std::string CreateUnsqueezeNode(base::cstring_view input,
+                                  base::span<const int64_t> axes);
+  void InsertUnsqueezeNode(base::cstring_view input,
+                           base::cstring_view output,
+                           base::span<const int64_t> axes);
+
+  void AddSqueezeNode(base::cstring_view node_name,
+                      base::cstring_view input,
+                      base::cstring_view output,
+                      base::span<const int64_t> axes);
+  std::string CreateSqueezeNode(base::cstring_view input,
+                                base::span<const int64_t> axes);
+  void InsertSqueezeNode(base::cstring_view input,
+                         base::cstring_view output,
+                         base::span<const int64_t> axes);
 
   void AddSliceNode(base::cstring_view node_name,
                     base::cstring_view input,
@@ -223,12 +278,21 @@ class GraphBuilderOrt {
                            OperandDataType data_type,
                            uint32_t dim_size);
 
+  // Clamp the indices at runtime for dynamic dimension along the gather axis.
+  // Returns clamped indices operand name.
+  std::string ClampIndicesForDynamicShape(base::cstring_view node_name,
+                                          base::cstring_view input,
+                                          base::cstring_view indices,
+                                          uint32_t axis,
+                                          OperandDataType indices_data_type);
+
   // Clamp the indices to ensure that all values in indices are within bounds
   // [-s, s) along axis of size s, i.e. -input_shape[i] <= indices[..., i] <=
   // input_shape[i] - 1. The data type of indices is assumed to be int64.
-  std::string ClampGatherNDIndices(base::cstring_view indices,
-                                   base::span<const uint32_t> input_shape,
-                                   base::span<const uint32_t> indices_shape);
+  std::string ClampGatherNDIndices(base::cstring_view input_operand_name,
+                                   base::cstring_view indices_operand_name,
+                                   const OperandDescriptor& input_descriptor,
+                                   const OperandDescriptor& indices_descriptor);
 
   template <typename T>
   void AddBinaryOperation(const T& operation, base::cstring_view op_type);
@@ -287,6 +351,7 @@ class GraphBuilderOrt {
   void AddResample2dOperation(const mojom::Resample2d& resample2d);
   void AddReshapeOperation(const mojom::Reshape& reshape);
   void AddReverseOperation(const mojom::Reverse& reverse);
+  void AddShapeOperation(const mojom::Shape& shape);
   void AddScatterElementsOperation(
       const mojom::ScatterElements& scatter_elements);
   void AddScatterNDOperation(const mojom::ScatterND& scatter_nd);
@@ -297,6 +362,18 @@ class GraphBuilderOrt {
   void AddTransposeOperation(const mojom::Transpose& transpose);
   void AddTriangularOperation(const mojom::Triangular& triangular);
   void AddWhereOperation(const mojom::Where& where);
+  void AddRangeOperation(const mojom::RangeOp& range);
+  void AddDynamicReshapeOperation(const mojom::DynamicReshape& op);
+  void AddDynamicExpandOperation(const mojom::DynamicExpand& op);
+  void AddDynamicSliceOperation(const mojom::DynamicSlice& op);
+  void AddDynamicPadOperation(const mojom::DynamicPad& op);
+  void AddDynamicSplitOperation(const mojom::DynamicSplit& op);
+  void AddDynamicResample2dOperation(const mojom::DynamicResample2d& op);
+
+  // Registers any dynamic dimensions on `operand_id` into `known_dynamic_dims_`
+  // so that subsequent operations (e.g. expand) can look them up as Shape
+  // sources. Called from BuildModel() after each non-expand operation is added.
+  void RegisterOperandDynamicDims(OperandId operand_id);
 
   base::expected<std::unique_ptr<ModelEditor::ModelInfo>, mojom::ErrorPtr>
   BuildModel();
@@ -320,6 +397,10 @@ class GraphBuilderOrt {
   const ContextProperties context_properties_;
 
   std::optional<uint32_t> batched_matmul_k_dimension_limit_;
+
+  // Maps each known dynamic dimension to its source input operand and axis.
+  // Populated during construction from all graph input operands.
+  base::flat_map<DynamicDimension, DynamicDimensionInfo> known_dynamic_dims_;
 
   ModelEditor model_editor_;
 };

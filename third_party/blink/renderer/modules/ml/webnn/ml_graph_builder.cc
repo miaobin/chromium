@@ -12,6 +12,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/notimplemented.h"
 #include "base/numerics/checked_math.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
@@ -38,12 +39,14 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_transpose_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_cumulative_sum_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_dimension.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_elu_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gather_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gemm_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gru_cell_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gru_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_hard_sigmoid_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_input_operand_descriptor.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_instance_normalization_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_layer_normalization_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_leaky_relu_options.h"
@@ -57,12 +60,14 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_recurrent_network_activation.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_reduce_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_resample_2d_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_reverse_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_scatter_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_slice_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_split_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_transpose_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_triangular_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_union_mldynamicdimension_unsignedlongenforcerange.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_view.h"
 #include "third_party/blink/renderer/modules/ml/ml_context.h"
@@ -190,9 +195,55 @@ enum class MLGraphOperatorUma {
   kRoundEven = 93,
   kIsNaN = 94,
   kIsInfinite = 95,
+  kMod = 96,
+  kRange = 97,
+  kDynamicReshape = 98,
+  kDynamicExpand = 99,
+  kDynamicSlice = 100,
+  kDynamicPad = 101,
+  kDynamicSplit = 102,
+  kShape = 103,
+  kDynamicResample2d = 104,
   kMinValue = kGraphBuilt,
-  kMaxValue = kIsInfinite,
+  kMaxValue = kDynamicResample2d,
 };
+
+std::vector<webnn::Dimension> ToDimensionVector(
+    const HeapVector<Member<MLDimension>>& dimensions) {
+  std::vector<webnn::Dimension> result;
+  result.reserve(dimensions.size());
+  for (const auto& dimension : dimensions) {
+    if (dimension->IsUnsignedLongEnforceRange()) {
+      result.push_back(dimension->GetAsUnsignedLongEnforceRange());
+    } else {
+      CHECK(dimension->IsMLDynamicDimension());
+      const auto* dynamic_dim = dimension->GetAsMLDynamicDimension();
+      std::optional<uint32_t> max_size_value;
+      if (dynamic_dim->hasMaxSize()) {
+        max_size_value = dynamic_dim->maxSize();
+      }
+      result.push_back(webnn::DynamicDimension{
+          .name = dynamic_dim->name().Utf8(),
+          .max_size = max_size_value,
+          .min_size = dynamic_dim->minSize()});
+    }
+  }
+  return result;
+}
+
+std::optional<uint32_t> GetStaticOrMaxSize(
+    const Member<MLDimension>& dimension) {
+  if (dimension->IsUnsignedLongEnforceRange()) {
+    return dimension->GetAsUnsignedLongEnforceRange();
+  } else {
+    CHECK(dimension->IsMLDynamicDimension());
+    const auto* dynamic_dim = dimension->GetAsMLDynamicDimension();
+    if (dynamic_dim->hasMaxSize()) {
+      return dynamic_dim->maxSize();
+    }
+    return std::nullopt;
+  }
+}
 
 using MLGraphOperatorUmaSet = base::EnumSet<MLGraphOperatorUma,
                                             MLGraphOperatorUma::kMinValue,
@@ -256,6 +307,8 @@ MLGraphOperatorUma GetUmaValueForOperation(
           return MLGraphOperatorUma::kLogicalOr;
         case blink_mojom::ElementWiseBinary::Kind::kLogicalXor:
           return MLGraphOperatorUma::kLogicalXor;
+        case blink_mojom::ElementWiseBinary::Kind::kMod:
+          return MLGraphOperatorUma::kMod;
       }
       break;
     }
@@ -392,6 +445,8 @@ MLGraphOperatorUma GetUmaValueForOperation(
       return MLGraphOperatorUma::kScatterElements;
     case blink_mojom::Operation::Tag::kScatterNd:
       return MLGraphOperatorUma::kScatterNd;
+    case blink_mojom::Operation::Tag::kShape:
+      return MLGraphOperatorUma::kShape;
     case blink_mojom::Operation::Tag::kSigmoid:
       return MLGraphOperatorUma::kSigmoid;
     case blink_mojom::Operation::Tag::kSlice:
@@ -414,6 +469,20 @@ MLGraphOperatorUma GetUmaValueForOperation(
       return MLGraphOperatorUma::kTriangular;
     case blink_mojom::Operation::Tag::kWhere:
       return MLGraphOperatorUma::kWhere;
+    case blink_mojom::Operation::Tag::kRange:
+      return MLGraphOperatorUma::kRange;
+    case blink_mojom::Operation::Tag::kDynamicReshape:
+      return MLGraphOperatorUma::kDynamicReshape;
+    case blink_mojom::Operation::Tag::kDynamicExpand:
+      return MLGraphOperatorUma::kDynamicExpand;
+    case blink_mojom::Operation::Tag::kDynamicSlice:
+      return MLGraphOperatorUma::kDynamicSlice;
+    case blink_mojom::Operation::Tag::kDynamicPad:
+      return MLGraphOperatorUma::kDynamicPad;
+    case blink_mojom::Operation::Tag::kDynamicSplit:
+      return MLGraphOperatorUma::kDynamicSplit;
+    case blink_mojom::Operation::Tag::kDynamicResample2d:
+      return MLGraphOperatorUma::kDynamicResample2d;
   }
 }
 
@@ -1086,6 +1155,7 @@ MLOperand* BuildPool2d(MLGraphBuilder* builder,
   MLOperand* output =
       MLOperand::CreateOutput(builder, std::move(output_descriptor), pool2d);
   pool2d->Connect({input}, {output});
+  builder->RegisterOutputDynamicDimensions(output->Descriptor());
   return output;
 }
 
@@ -1408,6 +1478,8 @@ Vector<webnn::OperandId> GetInputs(const blink_mojom::Operation& operation) {
       return {operation.get_scatter_nd()->input_operand_id,
               operation.get_scatter_nd()->indices_operand_id,
               operation.get_scatter_nd()->updates_operand_id};
+    case blink_mojom::Operation::Tag::kShape:
+      return {operation.get_shape()->input_operand_id};
     case blink_mojom::Operation::Tag::kSigmoid:
       return {operation.get_sigmoid()->input_operand_id};
     case blink_mojom::Operation::Tag::kSlice:
@@ -1432,6 +1504,45 @@ Vector<webnn::OperandId> GetInputs(const blink_mojom::Operation& operation) {
       return {operation.get_where()->condition_operand_id,
               operation.get_where()->true_value_operand_id,
               operation.get_where()->false_value_operand_id};
+    case blink_mojom::Operation::Tag::kRange:
+      return {operation.get_range()->start_operand_id,
+              operation.get_range()->limit_operand_id,
+              operation.get_range()->delta_operand_id};
+    case blink_mojom::Operation::Tag::kDynamicReshape:
+      return {operation.get_dynamic_reshape()->input_operand_id,
+              operation.get_dynamic_reshape()->new_shape_operand_id};
+    case blink_mojom::Operation::Tag::kDynamicExpand:
+      return {operation.get_dynamic_expand()->input_operand_id,
+              operation.get_dynamic_expand()->new_shape_operand_id};
+    case blink_mojom::Operation::Tag::kDynamicSlice: {
+      Vector<webnn::OperandId> ids = {
+          operation.get_dynamic_slice()->input_operand_id,
+          operation.get_dynamic_slice()->starts_operand_id,
+          operation.get_dynamic_slice()->ends_operand_id};
+      if (operation.get_dynamic_slice()->axes_operand_id) {
+        ids.push_back(*operation.get_dynamic_slice()->axes_operand_id);
+      }
+      if (operation.get_dynamic_slice()->strides_operand_id) {
+        ids.push_back(*operation.get_dynamic_slice()->strides_operand_id);
+      }
+      return ids;
+    }
+    case blink_mojom::Operation::Tag::kDynamicPad: {
+      Vector<webnn::OperandId> ids = {
+          operation.get_dynamic_pad()->input_operand_id,
+          operation.get_dynamic_pad()->pads_operand_id};
+      if (operation.get_dynamic_pad()->constant_value_operand_id) {
+        ids.push_back(
+            *operation.get_dynamic_pad()->constant_value_operand_id);
+      }
+      return ids;
+    }
+    case blink_mojom::Operation::Tag::kDynamicSplit:
+      return {operation.get_dynamic_split()->input_operand_id,
+              operation.get_dynamic_split()->splits_operand_id};
+    case blink_mojom::Operation::Tag::kDynamicResample2d:
+      return {operation.get_dynamic_resample_2d()->input_operand_id,
+              operation.get_dynamic_resample_2d()->sizes_operand_id};
   }
 }
 
@@ -1606,6 +1717,94 @@ void FoldReshapableConstants(blink_mojom::GraphInfo& graph_info) {
   }
 }
 
+// Validates that every dynamic dimension in an expand output is present in
+// some other operand's shape within the graph's compute flow (i.e., it
+// originates from a graph input or an upstream operator output). Constants are
+// excluded since they always have static shapes.
+base::expected<void, String> ValidateExpandDynamicDimensions(
+    const MLNamedOperands& named_outputs) {
+  // BFS to collect all operators reachable from named_outputs, mirroring the
+  // traversal in BuildWebNNGraphInfo.
+  HeapDeque<Member<const MLOperator>> operators_queue;
+  HeapHashSet<Member<const MLOperator>> visited_operators;
+  for (const auto& [name, operand] : named_outputs) {
+    const MLOperator* op = operand->Operator();
+    if (op && !visited_operators.Contains(op)) {
+      visited_operators.insert(op);
+      operators_queue.push_back(op);
+    }
+  }
+
+  // Collect dynamic dimension names from all operands in the graph except
+  // expand outputs: graph inputs and outputs of non-expand operators.
+  HashSet<String> graph_dynamic_dim_names;
+  auto collect_dims = [&](const MLOperand* operand) {
+    for (const auto& dim : operand->Descriptor().shape()) {
+      if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+        graph_dynamic_dim_names.insert(
+            String::FromUtf8(std::get<webnn::DynamicDimension>(dim).name));
+      }
+    }
+  };
+
+  // Collect dims from named output operands produced by non-expand ops.
+  for (const auto& [name, operand] : named_outputs) {
+    if (operand->Operator() &&
+        operand->Operator()->Kind() != blink_mojom::Operation::Tag::kExpand) {
+      collect_dims(operand);
+    }
+  }
+
+  while (!operators_queue.empty()) {
+    const MLOperator* current_operator = operators_queue.TakeFirst();
+    for (const MLOperand* input : current_operator->Inputs()) {
+      // Collect dims from graph inputs and intermediate operands. Constants
+      // cannot have dynamic dimensions so they are skipped.
+      if (input->Kind() != blink_mojom::Operand::Kind::kConstant) {
+        collect_dims(input);
+      }
+      if (input->Kind() == blink_mojom::Operand::Kind::kOutput) {
+        const MLOperator* op = input->Operator();
+        if (op && !visited_operators.Contains(op)) {
+          visited_operators.insert(op);
+          operators_queue.push_back(op);
+        }
+      }
+    }
+    // Collect dims from outputs of non-expand operators.
+    if (current_operator->Kind() != blink_mojom::Operation::Tag::kExpand) {
+      for (const MLOperand* output : current_operator->Outputs()) {
+        collect_dims(output);
+      }
+    }
+  }
+
+  // Validate each expand op's output dynamic dimensions against the collected
+  // set.
+  for (const MLOperator* current_operator : visited_operators) {
+    if (current_operator->Kind() != blink_mojom::Operation::Tag::kExpand) {
+      continue;
+    }
+    const MLOperand* expand_output = current_operator->Outputs()[0];
+    const std::string label = current_operator->Options()->label().Utf8();
+    for (const auto& dim : expand_output->Descriptor().shape()) {
+      if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+        const auto& dyn_dim = std::get<webnn::DynamicDimension>(dim);
+        if (!graph_dynamic_dim_names.Contains(String::FromUtf8(dyn_dim.name))) {
+          return base::unexpected(BuildErrorMessage(
+              label, String::Format(
+                         "Dynamic dimension \"%s\" in the expand output is not "
+                         "present in the expand input shape or any upstream "
+                         "operand shape within this graph.",
+                         dyn_dim.name.c_str())));
+        }
+      }
+    }
+  }
+
+  return base::ok();
+}
+
 }  // namespace
 
 // static
@@ -1644,6 +1843,7 @@ void MLGraphBuilder::Trace(Visitor* visitor) const {
   visitor->Trace(ml_context_);
   visitor->Trace(remote_);
   visitor->Trace(pending_resolver_);
+  visitor->Trace(input_operands_);
   ScriptWrappable::Trace(visitor);
 }
 
@@ -1655,19 +1855,100 @@ MLContext* MLGraphBuilder::GetContext() const {
   return ml_context_.Get();
 }
 
+void MLGraphBuilder::RegisterOutputDynamicDimensions(
+    const webnn::OperandDescriptor& descriptor) {
+  for (const webnn::Dimension& dim : descriptor.shape()) {
+    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+      const auto& dyn = std::get<webnn::DynamicDimension>(dim);
+      String name = String::FromUtf8(dyn.name);
+      auto result = known_dynamic_dimensions_.insert(name, dyn);
+      if (!result.is_new_entry) {
+        // An existing entry means this dimension was propagated from an input.
+        // Its constraints must match — a mismatch is a logic error in our
+        // inference code, not a user error.
+        const auto& existing = result.stored_value->value;
+        DCHECK_EQ(existing.min_size, dyn.min_size);
+        DCHECK(existing.max_size == dyn.max_size);
+      }
+    }
+  }
+}
+
 MLOperand* MLGraphBuilder::input(ScriptState* script_state,
                                  String name,
-                                 const MLOperandDescriptor* desc,
+                                 const MLInputOperandDescriptor* desc,
                                  ExceptionState& exception_state) {
   THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
 
+  // Validate dynamic dimensions.
+  const auto& shape = desc->shape();
+
+  // Validate the new input's dimensions against existing dynamic dimensions.
+  for (wtf_size_t i = 0; i < shape.size(); ++i) {
+    const auto* dimension = shape[i].Get();
+    if (dimension->IsMLDynamicDimension()) {
+      const auto* dynamic_dim = dimension->GetAsMLDynamicDimension();
+      if (dynamic_dim->minSize() == 0) {
+        exception_state.ThrowTypeError(
+            String::Format("For dimension %u, minSize must be at least 1.", i));
+        return nullptr;
+      }
+      if (dynamic_dim->hasMaxSize()) {
+        if (dynamic_dim->maxSize() == 0) {
+          exception_state.ThrowTypeError(String::Format(
+              "For dimension %u, maxSize must be at least 1.", i));
+          return nullptr;
+        }
+        if (dynamic_dim->minSize() > dynamic_dim->maxSize()) {
+          exception_state.ThrowTypeError(String::Format(
+              "For dimension %u, minSize (%u) must be less than or equal to "
+              "maxSize (%u).",
+              i, dynamic_dim->minSize(), dynamic_dim->maxSize()));
+          return nullptr;
+        }
+      }
+      // Check that dynamic dimensions with the same name have the same minSize
+      // and maxSize.
+      const String& dim_name = dynamic_dim->name();
+      auto it = known_dynamic_dimensions_.find(dim_name);
+
+      std::optional<uint32_t> max_size_value;
+      if (dynamic_dim->hasMaxSize()) {
+        max_size_value = dynamic_dim->maxSize();
+      }
+
+      if (it != known_dynamic_dimensions_.end()) {
+        // Found existing dimension with same name - verify minSize and maxSize
+        // match.
+        if (it->value.min_size != dynamic_dim->minSize() ||
+            it->value.max_size != max_size_value) {
+          exception_state.ThrowTypeError(String::Format(
+              "Dynamic dimension name '%s' at dimension %u has different "
+              "constraints than a previous dimension with the same name.",
+              dim_name.Utf8().c_str(), i));
+          return nullptr;
+        }
+      } else {
+        // Add new dynamic dimension to the builder's collection.
+        known_dynamic_dimensions_.insert(
+            dim_name,
+            webnn::DynamicDimension{.name = dim_name.Utf8(),
+                                    .max_size = max_size_value,
+                                    .min_size = dynamic_dim->minSize()});
+      }
+    }
+  }
+
   auto input_operand = MLOperand::ValidateAndCreateInput(
       ml_context_->GetProperties(), this, desc->dataType().AsEnum(),
-      desc->shape(), std::move(name));
+      ToDimensionVector(desc->shape()), std::move(name));
   if (!input_operand.has_value()) {
     exception_state.ThrowTypeError(input_operand.error());
     return nullptr;
   }
+
+  // Track input operands for dynamic dimension validation.
+  input_operands_.push_back(input_operand.value());
 
   return input_operand.value();
 }
@@ -1685,7 +1966,8 @@ MLOperand* MLGraphBuilder::constant(ScriptState* script_state,
       webnn::OperandDescriptor descriptor,
       webnn::OperandDescriptor::Create(
           ml_context_->GetProperties(),
-          FromBlinkDataType(desc->dataType().AsEnum()), desc->shape(),
+          FromBlinkDataType(desc->dataType().AsEnum()),
+          webnn::ToDimensionVector(desc->shape()),
           webnn::GetErrorLabelPrefix("constant")));
 
   webnn::OperandDataType data_type = descriptor.data_type();
@@ -1783,9 +2065,10 @@ MLOperand* MLGraphBuilder::constant(
   webnn::OperandDataType data_type = FromBlinkDataType(type.AsEnum());
   ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
       webnn::OperandDescriptor descriptor,
-      webnn::OperandDescriptor::Create(ml_context_->GetProperties(), data_type,
-                                       /*shape=*/{},
-                                       webnn::GetErrorLabelPrefix("constant")));
+      webnn::OperandDescriptor::Create(
+          ml_context_->GetProperties(), data_type,
+          /*shape=*/std::vector<webnn::Dimension>(),
+          webnn::GetErrorLabelPrefix("constant")));
 
   if (!ml_context_->GetProperties().data_type_limits.constant.Supports(
           descriptor)) {
@@ -1939,6 +2222,7 @@ MLOperand* MLGraphBuilder::concat(const HeapVector<Member<MLOperand>>& inputs,
   auto* concat = MakeGarbageCollected<MLConcatOperator>(this, axis, options);
   MLOperand* output =
       MLOperand::CreateOutput(this, std::move(output_descriptor), concat);
+  RegisterOutputDynamicDimensions(output->Descriptor());
 
   concat->Connect(inputs, {output});
   return output;
@@ -2038,6 +2322,7 @@ MLOperand* MLGraphBuilder::conv2d(MLOperand* input,
       /*sub_type=*/blink_mojom::Conv2d::Kind::kDirect);
   MLOperand* output =
       MLOperand::CreateOutput(this, std::move(output_descriptor), conv2d);
+  RegisterOutputDynamicDimensions(output->Descriptor());
   conv2d->Connect(std::move(inputs), {output});
   return output;
 }
@@ -2073,6 +2358,7 @@ MLOperand* MLGraphBuilder::convTranspose2d(MLOperand* input,
       /*sub_type=*/blink_mojom::Conv2d::Kind::kTransposed);
   MLOperand* output = MLOperand::CreateOutput(
       this, std::move(output_descriptor), convTranspose2d);
+  RegisterOutputDynamicDimensions(output->Descriptor());
   convTranspose2d->Connect(std::move(inputs), {output});
   return output;
 }
@@ -2136,6 +2422,7 @@ BUILD_ELEMENTWISE_BINARY_OP(notEqual, not_equal, kNotEqual)
 BUILD_ELEMENTWISE_BINARY_OP(logicalAnd, logical_and, kLogicalAnd)
 BUILD_ELEMENTWISE_BINARY_OP(logicalOr, logical_or, kLogicalOr)
 BUILD_ELEMENTWISE_BINARY_OP(logicalXor, logical_xor, kLogicalXor)
+BUILD_ELEMENTWISE_BINARY_OP(mod, mod, kMod)
 
 #define BUILD_ELEMENTWISE_UNARY_OP(op_camel, op_snake, op_kind)                \
   MLOperand* MLGraphBuilder::op_camel(MLOperand* input,                        \
@@ -2254,17 +2541,25 @@ MLOperand* MLGraphBuilder::elu(MLOperand* input,
 }
 
 MLOperand* MLGraphBuilder::expand(MLOperand* input,
-                                  const Vector<uint32_t>& new_shape,
+                                  const MLDynamicShape& new_shape,
                                   MLOperatorOptions* options,
                                   ExceptionState& exception_state) {
   THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInput(input), nullptr);
 
+  // Convert map to vector for validation.
+  std::vector<webnn::DynamicDimension> known_dynamic_dims;
+  known_dynamic_dims.reserve(known_dynamic_dimensions_.size());
+  for (const auto& [name, dim] : known_dynamic_dimensions_) {
+    known_dynamic_dims.push_back(dim);
+  }
+
   ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
       webnn::OperandDescriptor output_descriptor,
-      webnn::ValidateExpandAndInferOutput(ml_context_->GetProperties(),
-                                          input->Descriptor(), new_shape,
-                                          options->label().Utf8()));
+      webnn::ValidateExpandAndInferOutput(
+          ml_context_->GetProperties(), input->Descriptor(),
+          ToDimensionVector(new_shape), options->label().Utf8(),
+          known_dynamic_dims));
 
   auto* expand = MakeGarbageCollected<MLOperator>(
       this, blink_mojom::Operation::Tag::kExpand, options);
@@ -2912,7 +3207,7 @@ MLOperand* MLGraphBuilder::relu(MLOperand* input,
 }
 
 MLOperand* MLGraphBuilder::reshape(MLOperand* input,
-                                   const Vector<uint32_t>& new_shape,
+                                   const MLDynamicShape& new_shape,
                                    MLOperatorOptions* options,
                                    ExceptionState& exception_state) {
   THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
@@ -2942,49 +3237,187 @@ MLOperand* MLGraphBuilder::reshape(MLOperand* input,
 
   // Setting the initial number of elements to 1 would cover the 0-D scalar with
   // empty dimensions.
+  bool all_dims_bounded = true;
   base::CheckedNumeric<size_t> checked_newshape_number_of_elements = 1;
-  Vector<uint32_t> output_shape(new_shape.size());
   for (wtf_size_t i = 0; i < new_shape.size(); ++i) {
-    auto dim = new_shape[i];
-    if (dim == 0) {
+    auto dim = GetStaticOrMaxSize(new_shape[i]);
+    if (!dim.has_value()) {
+      all_dims_bounded = false;
+      continue;
+    }
+    if (*dim == 0) {
       exception_state.ThrowTypeError(
           BuildErrorMessage(label, "The value of new shape should not be 0."));
       return nullptr;
     }
-    checked_newshape_number_of_elements *= dim;
-    output_shape[i] = dim;
+    checked_newshape_number_of_elements *= *dim;
   }
-  size_t newshape_number_of_elements;
-  if (!checked_newshape_number_of_elements.AssignIfValid(
-          &newshape_number_of_elements)) {
-    exception_state.ThrowTypeError(BuildErrorMessage(
-        label, "The number of elements implied by new shape is too large."));
-    return nullptr;
+
+  if (all_dims_bounded) {
+    size_t newshape_number_of_elements;
+    if (!checked_newshape_number_of_elements.AssignIfValid(
+            &newshape_number_of_elements)) {
+      exception_state.ThrowTypeError(BuildErrorMessage(
+          label, "The number of elements implied by new shape is too large."));
+      return nullptr;
+    }
+    DCHECK_NE(newshape_number_of_elements, size_t(0));
+
+    // The number of elements implied by new shape must be the same as the
+    // number of elements in the input tensor.
+    auto input_num_elements = input->Descriptor().NumberOfElements();
+    if (input_num_elements.has_value() &&
+        *input_num_elements != newshape_number_of_elements) {
+      exception_state.ThrowTypeError(BuildErrorMessage(
+          label,
+          String::Format(
+              "The number of elements (%zu) implied by new shape doesn't match "
+              "the number of elements (%zu) in the input tensor.",
+              newshape_number_of_elements, *input_num_elements)));
+      return nullptr;
+    }
   }
-  DCHECK_NE(newshape_number_of_elements, size_t(0));
-  // The number of elements implied by new shape must be the same as the
-  // number of elements in the input tensor.
-  if (input->NumberOfElements() != newshape_number_of_elements) {
-    exception_state.ThrowTypeError(BuildErrorMessage(
-        label,
-        String::Format(
-            "The number of elements (%zu) implied by new shape doesn't match "
-            "the number of elements (%zu) in the input tensor.",
-            newshape_number_of_elements, input->NumberOfElements())));
-    return nullptr;
-  }
+  // When unbounded dims are present, skip element count validation.
+  // Shape consistency will be validated at dispatch time.
 
   // The output tensor byte length is valid because the data type and element
   // count are the same as input.
   ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
       webnn::OperandDescriptor output_descriptor,
       webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
-                                       input->DataType(), output_shape, label));
+                                       input->DataType(),
+                                       ToDimensionVector(new_shape), label));
+
+  // For a dynamic dimension in output shape, validate input shape has it
+  // uniquely.
+  auto available_input_shape = input->Descriptor().shape();
+  auto available_output_shape = output_descriptor.shape();
+  // First pass: eliminate directly matching dynamic dimensions.
+  for (auto out_it = available_output_shape.begin();
+       out_it != available_output_shape.end();) {
+    if (std::holds_alternative<webnn::DynamicDimension>(*out_it)) {
+      auto in_it = std::find(available_input_shape.begin(),
+                             available_input_shape.end(), *out_it);
+      if (in_it != available_input_shape.end()) {
+        available_input_shape.erase(in_it);
+        out_it = available_output_shape.erase(out_it);
+        continue;
+      }
+    }
+    ++out_it;
+  }
+
+  // Count remaining dynamic dimensions on each side.
+  size_t remaining_input_dynamic_count = 0;
+  size_t remaining_output_dynamic_count = 0;
+  base::CheckedNumeric<size_t> input_static_product = 1;
+  base::CheckedNumeric<size_t> output_static_product = 1;
+  const webnn::DynamicDimension* remaining_input_dyn = nullptr;
+  const webnn::DynamicDimension* remaining_output_dyn = nullptr;
+
+  for (const auto& dim : available_input_shape) {
+    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+      ++remaining_input_dynamic_count;
+      remaining_input_dyn = &std::get<webnn::DynamicDimension>(dim);
+    } else {
+      input_static_product *= std::get<uint32_t>(dim);
+    }
+  }
+  for (const auto& dim : available_output_shape) {
+    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+      ++remaining_output_dynamic_count;
+      remaining_output_dyn = &std::get<webnn::DynamicDimension>(dim);
+    } else {
+      output_static_product *= std::get<uint32_t>(dim);
+    }
+  }
+
+  if (remaining_input_dynamic_count == 0 &&
+      remaining_output_dynamic_count == 0) {
+    // All dynamic dims were directly matched. Remaining are all static.
+    // Element count equality is already verified above.
+  } else if (remaining_input_dynamic_count == 1 &&
+             remaining_output_dynamic_count == 1) {
+    // One unmatched dynamic dim on each side: verify algebraic relationship
+    // only if both sides have max_size (bounded).
+    if (remaining_input_dyn->max_size.has_value() &&
+        remaining_output_dyn->max_size.has_value()) {
+      // input_dyn.max * S_in == output_dyn.max * S_out
+      // input_dyn.min * S_in == output_dyn.min * S_out
+      size_t s_in, s_out;
+      if (!input_static_product.AssignIfValid(&s_in) ||
+          !output_static_product.AssignIfValid(&s_out)) {
+        exception_state.ThrowTypeError(BuildErrorMessage(
+            label, "Static dimension product overflow in reshape."));
+        return nullptr;
+      }
+      base::CheckedNumeric<size_t> input_max_total =
+          base::CheckedNumeric<size_t>(*remaining_input_dyn->max_size) * s_in;
+      base::CheckedNumeric<size_t> output_max_total =
+          base::CheckedNumeric<size_t>(*remaining_output_dyn->max_size) * s_out;
+      base::CheckedNumeric<size_t> input_min_total =
+          base::CheckedNumeric<size_t>(remaining_input_dyn->min_size) * s_in;
+      base::CheckedNumeric<size_t> output_min_total =
+          base::CheckedNumeric<size_t>(remaining_output_dyn->min_size) * s_out;
+
+      size_t in_max, out_max, in_min, out_min;
+      if (!input_max_total.AssignIfValid(&in_max) ||
+          !output_max_total.AssignIfValid(&out_max) ||
+          !input_min_total.AssignIfValid(&in_min) ||
+          !output_min_total.AssignIfValid(&out_min)) {
+        exception_state.ThrowTypeError(
+            BuildErrorMessage(label, "Element count overflow in reshape."));
+        return nullptr;
+      }
+      if (in_max != out_max || in_min != out_min) {
+        exception_state.ThrowTypeError(BuildErrorMessage(
+            label,
+            "The unmatched dynamic dimensions are not compatible for "
+            "reshape."));
+        return nullptr;
+      }
+    }
+    // When either side is unbounded (no max_size), skip algebraic verification.
+    // Shape consistency will be validated at dispatch time with real values.
+  } else if (remaining_input_dynamic_count >= 1 ||
+             remaining_output_dynamic_count >= 1) {
+    // Multiple unmatched dynamic dims: skip build-time validation when any
+    // are unbounded. Trust the user-specified output shape and defer
+    // verification to dispatch time.
+    bool all_bounded = true;
+    for (const auto& dim : available_input_shape) {
+      if (std::holds_alternative<webnn::DynamicDimension>(dim) &&
+          !std::get<webnn::DynamicDimension>(dim).max_size.has_value()) {
+        all_bounded = false;
+        break;
+      }
+    }
+    if (all_bounded) {
+      for (const auto& dim : available_output_shape) {
+        if (std::holds_alternative<webnn::DynamicDimension>(dim) &&
+            !std::get<webnn::DynamicDimension>(dim).max_size.has_value()) {
+          all_bounded = false;
+          break;
+        }
+      }
+    }
+    if (all_bounded) {
+      // All dims are bounded but there are multiple unmatched — this is
+      // unsupported even with bounded dims.
+      exception_state.ThrowTypeError(BuildErrorMessage(
+          label,
+          "Cannot reshape when there are multiple unmatched dynamic "
+          "dimensions between input and output shapes."));
+      return nullptr;
+    }
+    // Unbounded dims present: defer validation to dispatch time.
+  }
 
   auto* reshape = MakeGarbageCollected<MLOperator>(
       this, blink_mojom::Operation::Tag::kReshape, options);
   MLOperand* output =
       MLOperand::CreateOutput(this, std::move(output_descriptor), reshape);
+  RegisterOutputDynamicDimensions(output->Descriptor());
 
   reshape->Connect({input}, {output});
   return output;
@@ -3102,6 +3535,27 @@ MLOperand* MLGraphBuilder::scatterND(MLOperand* input,
       MLOperand::CreateOutput(this, std::move(output_descriptor), scatter_nd);
 
   scatter_nd->Connect(std::move(inputs), {output});
+  return output;
+}
+
+MLOperand* MLGraphBuilder::shape(MLOperand* input,
+                                 MLOperatorOptions* options,
+                                 ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInput(input), nullptr);
+
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::ValidateShapeAndInferOutput(ml_context_->GetProperties(),
+                                         input->Descriptor(),
+                                         options->label().Utf8()));
+
+  auto* shape = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kShape, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), shape);
+
+  shape->Connect({input}, {output});
   return output;
 }
 
@@ -3386,6 +3840,387 @@ MLOperand* MLGraphBuilder::where(MLOperand* condition,
   return output;
 }
 
+MLOperand* MLGraphBuilder::range(MLOperand* start,
+                                 MLOperand* limit,
+                                 MLOperand* delta,
+                                 MLOperatorOptions* options,
+                                 ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+
+  HeapVector<Member<MLOperand>> inputs = {start, limit, delta};
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
+
+  // All inputs must be scalar and have the same data type.
+  if (start->Descriptor().Rank() != 0 || limit->Descriptor().Rank() != 0 ||
+      delta->Descriptor().Rank() != 0) {
+    exception_state.ThrowTypeError(
+        "All inputs of range must be scalar operands.");
+    return nullptr;
+  }
+  if (start->Descriptor().data_type() != limit->Descriptor().data_type() ||
+      start->Descriptor().data_type() != delta->Descriptor().data_type()) {
+    exception_state.ThrowTypeError(
+        "All inputs of range must have the same data type.");
+    return nullptr;
+  }
+
+  // Output is 1D with dynamic shape (data-dependent size).
+  // Use a dynamic dimension with no max_size since the output size depends
+  // on runtime values of start, limit, delta. The name must be unique per
+  // call so multiple range() invocations don't share a symbol.
+  const uint64_t inst = dynamic_dim_counter_++;
+  std::vector<webnn::Dimension> output_shape;
+  output_shape.push_back(webnn::DynamicDimension{
+      .name = "range_" + base::NumberToString(inst) + "_output_size"});
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
+                                       start->Descriptor().data_type(),
+                                       output_shape,
+                                       options->label().Utf8()));
+
+  auto* range_op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kRange, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), range_op);
+  range_op->Connect(std::move(inputs), {output});
+  return output;
+}
+
+MLOperand* MLGraphBuilder::dynamicReshape(MLOperand* input,
+                                          MLOperand* new_shape,
+                                          MLOperatorOptions* options,
+                                          ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+
+  HeapVector<Member<MLOperand>> inputs = {input, new_shape};
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
+
+  // new_shape must be a 1-D int64 tensor.
+  if (new_shape->Descriptor().Rank() != 1 ||
+      new_shape->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+    exception_state.ThrowTypeError(
+        "The new_shape operand must be a 1-D int64 tensor.");
+    return nullptr;
+  }
+
+  // Output has dynamic shape (determined by the new_shape tensor values).
+  // Use a dynamic dimension for each output dimension.
+  // The number of output dimensions equals the size of new_shape.
+  auto new_shape_static = new_shape->Descriptor().StaticShape();
+  if (!new_shape_static.has_value()) {
+    exception_state.ThrowTypeError(
+        "The new_shape operand must have a static shape.");
+    return nullptr;
+  }
+  uint32_t output_rank = (*new_shape_static)[0];
+  // Per-call unique name so each dynamicReshape() instance gets its own
+  // dynamic dim symbols.
+  const uint64_t inst = dynamic_dim_counter_++;
+  std::vector<webnn::Dimension> output_shape;
+  output_shape.reserve(output_rank);
+  for (uint32_t i = 0; i < output_rank; ++i) {
+    output_shape.push_back(webnn::DynamicDimension{
+        .name = "dynamic_reshape_" + base::NumberToString(inst) +
+                "_dim_" + base::NumberToString(i)});
+  }
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
+                                       input->Descriptor().data_type(),
+                                       output_shape,
+                                       options->label().Utf8()));
+
+  auto* op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kDynamicReshape, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), op);
+  op->Connect(std::move(inputs), {output});
+  return output;
+}
+
+MLOperand* MLGraphBuilder::dynamicExpand(MLOperand* input,
+                                         MLOperand* new_shape,
+                                         MLOperatorOptions* options,
+                                         ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+
+  HeapVector<Member<MLOperand>> inputs = {input, new_shape};
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
+
+  if (new_shape->Descriptor().Rank() != 1 ||
+      new_shape->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+    exception_state.ThrowTypeError(
+        "The new_shape operand must be a 1-D int64 tensor.");
+    return nullptr;
+  }
+
+  auto new_shape_static = new_shape->Descriptor().StaticShape();
+  if (!new_shape_static.has_value()) {
+    exception_state.ThrowTypeError(
+        "The new_shape operand must have a static shape.");
+    return nullptr;
+  }
+  uint32_t output_rank = (*new_shape_static)[0];
+  // Per-call unique name so each dynamicExpand() instance gets its own
+  // dynamic dim symbols.
+  const uint64_t inst = dynamic_dim_counter_++;
+  std::vector<webnn::Dimension> output_shape;
+  output_shape.reserve(output_rank);
+  for (uint32_t i = 0; i < output_rank; ++i) {
+    output_shape.push_back(webnn::DynamicDimension{
+        .name = "dynamic_expand_" + base::NumberToString(inst) +
+                "_dim_" + base::NumberToString(i)});
+  }
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
+                                       input->Descriptor().data_type(),
+                                       output_shape,
+                                       options->label().Utf8()));
+
+  auto* op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kDynamicExpand, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), op);
+  op->Connect(std::move(inputs), {output});
+  return output;
+}
+
+MLOperand* MLGraphBuilder::dynamicSlice(MLOperand* input,
+                                        MLOperand* starts,
+                                        MLOperand* ends,
+                                        MLOperatorOptions* options,
+                                        ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+
+  HeapVector<Member<MLOperand>> inputs = {input, starts, ends};
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
+
+  // starts and ends must be 1-D int64 tensors.
+  if (starts->Descriptor().Rank() != 1 ||
+      starts->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+    exception_state.ThrowTypeError(
+        "The starts operand must be a 1-D int64 tensor.");
+    return nullptr;
+  }
+  if (ends->Descriptor().Rank() != 1 ||
+      ends->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+    exception_state.ThrowTypeError(
+        "The ends operand must be a 1-D int64 tensor.");
+    return nullptr;
+  }
+
+  // Output has same rank as input but dynamic dimensions. Per-call unique
+  // name so each dynamicSlice() instance gets its own dynamic dim symbols
+  // (otherwise multiple unrelated slices would collide on the same name and
+  // downstream shape inference would incorrectly merge their sizes).
+  uint32_t output_rank = input->Descriptor().Rank();
+  const uint64_t inst = dynamic_dim_counter_++;
+  std::vector<webnn::Dimension> output_shape;
+  output_shape.reserve(output_rank);
+  for (uint32_t i = 0; i < output_rank; ++i) {
+    output_shape.push_back(webnn::DynamicDimension{
+        .name = "dynamic_slice_" + base::NumberToString(inst) +
+                "_dim_" + base::NumberToString(i)});
+  }
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
+                                       input->Descriptor().data_type(),
+                                       output_shape,
+                                       options->label().Utf8()));
+
+  auto* op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kDynamicSlice, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), op);
+  op->Connect(std::move(inputs), {output});
+  return output;
+}
+
+MLOperand* MLGraphBuilder::dynamicPad(MLOperand* input,
+                                      MLOperand* pads,
+                                      MLOperatorOptions* options,
+                                      ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+
+  HeapVector<Member<MLOperand>> inputs = {input, pads};
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
+
+  // pads must be 1-D int64 tensor of length 2 * input_rank.
+  if (pads->Descriptor().Rank() != 1 ||
+      pads->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+    exception_state.ThrowTypeError(
+        "The pads operand must be a 1-D int64 tensor.");
+    return nullptr;
+  }
+
+  // Output has same rank as input but dynamic dimensions. Per-call unique
+  // name so each dynamicPad() instance gets its own dynamic dim symbols.
+  uint32_t output_rank = input->Descriptor().Rank();
+  const uint64_t inst = dynamic_dim_counter_++;
+  std::vector<webnn::Dimension> output_shape;
+  output_shape.reserve(output_rank);
+  for (uint32_t i = 0; i < output_rank; ++i) {
+    output_shape.push_back(webnn::DynamicDimension{
+        .name = "dynamic_pad_" + base::NumberToString(inst) +
+                "_dim_" + base::NumberToString(i)});
+  }
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
+                                       input->Descriptor().data_type(),
+                                       output_shape,
+                                       options->label().Utf8()));
+
+  auto* op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kDynamicPad, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), op);
+  op->Connect(std::move(inputs), {output});
+  return output;
+}
+
+HeapVector<Member<MLOperand>> MLGraphBuilder::dynamicSplit(
+    MLOperand* input,
+    MLOperand* splits,
+    uint32_t num_outputs,
+    MLOperatorOptions* options,
+    ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(),
+                            HeapVector<Member<MLOperand>>());
+
+  HeapVector<Member<MLOperand>> inputs = {input, splits};
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs),
+                                 HeapVector<Member<MLOperand>>());
+
+  // splits must be a 1-D int64 tensor.
+  if (splits->Descriptor().Rank() != 1 ||
+      splits->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+    exception_state.ThrowTypeError(
+        "The splits operand must be a 1-D int64 tensor.");
+    return {};
+  }
+  if (num_outputs == 0) {
+    exception_state.ThrowTypeError("numOutputs must be greater than 0.");
+    return {};
+  }
+  auto* op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kDynamicSplit, options);
+
+  // Each output has the same rank as input but with the split axis dynamic.
+  // Per-call unique name so each dynamicSplit() instance gets its own dynamic
+  // dim symbols across all of its outputs.
+  const uint64_t inst = dynamic_dim_counter_++;
+  HeapVector<Member<MLOperand>> outputs;
+  outputs.reserve(num_outputs);
+  for (uint32_t i = 0; i < num_outputs; ++i) {
+    std::vector<webnn::Dimension> output_shape;
+    output_shape.reserve(input->Descriptor().Rank());
+    for (uint32_t d = 0; d < input->Descriptor().Rank(); ++d) {
+      output_shape.push_back(webnn::DynamicDimension{
+          .name = "dynamic_split_" + base::NumberToString(inst) + "_out_" +
+                  base::NumberToString(i) + "_dim_" +
+                  base::NumberToString(d)});
+    }
+    auto output_descriptor_result =
+        webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
+                                         input->Descriptor().data_type(),
+                                         output_shape,
+                                         options->label().Utf8());
+    if (!output_descriptor_result.has_value()) {
+      exception_state.ThrowTypeError(
+          String::FromUtf8(output_descriptor_result.error()));
+      return {};
+    }
+    outputs.push_back(MLOperand::CreateOutput(
+        this, std::move(output_descriptor_result.value()), op));
+  }
+  op->Connect(std::move(inputs), outputs);
+  return outputs;
+}
+
+MLOperand* MLGraphBuilder::dynamicResample2d(
+    MLOperand* input,
+    MLOperand* sizes,
+    MLDynamicResample2dOptions* options,
+    ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+
+  HeapVector<Member<MLOperand>> inputs = {input, sizes};
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
+
+  // Input must be a 4-D tensor.
+  if (input->Descriptor().Rank() != 4) {
+    exception_state.ThrowTypeError(
+        "The input operand must be a 4-D tensor.");
+    return nullptr;
+  }
+
+  // Sizes must be a 1-D int32/uint32/int64 tensor of length 2.
+  const auto sizes_dt = sizes->Descriptor().data_type();
+  const auto sizes_shape = sizes->Descriptor().shape();
+  const auto* sizes_static_len =
+      sizes_shape.size() == 1 ? std::get_if<uint32_t>(&sizes_shape[0]) : nullptr;
+  if (sizes_shape.size() != 1 || !sizes_static_len || *sizes_static_len != 2 ||
+      (sizes_dt != webnn::OperandDataType::kInt32 &&
+       sizes_dt != webnn::OperandDataType::kUint32 &&
+       sizes_dt != webnn::OperandDataType::kInt64)) {
+    exception_state.ThrowTypeError(
+        "The sizes operand must be a 1-D int32/uint32/int64 tensor of length "
+        "2.");
+    return nullptr;
+  }
+
+  // Resolve axes (default is [2, 3]).
+  std::array<uint32_t, 2> axes = {2u, 3u};
+  if (options->hasAxes()) {
+    if (options->axes().size() != 2) {
+      exception_state.ThrowTypeError(
+          "The axes must contain exactly 2 values.");
+      return nullptr;
+    }
+    axes[0] = options->axes()[0];
+    axes[1] = options->axes()[1];
+    if (axes[0] >= 4 || axes[1] >= 4 || axes[0] == axes[1]) {
+      exception_state.ThrowTypeError(
+          "The axes must be two distinct dimensions in [0, 4).");
+      return nullptr;
+    }
+  }
+
+  // Output has same rank as input but the two resample axes become dynamic
+  // dimensions. Per-call unique name so each dynamicResample2d() instance gets
+  // its own dynamic dim symbols.
+  const uint64_t inst = dynamic_dim_counter_++;
+  std::vector<webnn::Dimension> output_shape;
+  output_shape.reserve(4);
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (i == axes[0] || i == axes[1]) {
+      output_shape.push_back(webnn::DynamicDimension{
+          .name = "dynamic_resample_2d_" + base::NumberToString(inst) +
+                  "_dim_" + base::NumberToString(i)});
+    } else {
+      output_shape.push_back(input->Descriptor().shape()[i]);
+    }
+  }
+
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
+                                       input->Descriptor().data_type(),
+                                       output_shape,
+                                       options->label().Utf8()));
+
+  auto* op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kDynamicResample2d, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), op);
+  op->Connect(std::move(inputs), {output});
+  return output;
+}
+
 ScriptPromise<MLGraph> MLGraphBuilder::build(ScriptState* script_state,
                                              MLNamedOperands& named_outputs,
                                              ExceptionState& exception_state) {
@@ -3444,6 +4279,10 @@ ScriptPromise<MLGraph> MLGraphBuilder::build(ScriptState* script_state,
     // *constraint)` once we fix the `webnn::OperandDescriptor`.
     CHECK(operand->Descriptor() == *constraint);
   }
+
+  scoped_trace.AddStep("ValidateExpandDynamicDimensions");
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateExpandDynamicDimensions(named_outputs),
+                                 ScriptPromise<MLGraph>());
 
   scoped_trace.AddStep("BuildWebNNGraphInfo");
   blink_mojom::GraphInfoPtr graph_info =

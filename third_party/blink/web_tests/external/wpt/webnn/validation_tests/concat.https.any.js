@@ -83,6 +83,54 @@ const tests = [
     ],
     axis: 1,
   },
+  {
+    name:
+        '[concat] Test building concat with valid dynamic dimensions on concat axis',
+    inputs: [
+      {
+        dataType: 'float32',
+        shape: [2, {name: 'N', maxSize: 10, minSize: 1}, 3]
+      },
+      {dataType: 'float32', shape: [2, {name: 'M', maxSize: 8, minSize: 2}, 3]}
+    ],
+    axis: 1,
+    output: {
+      dataType: 'float32',
+      shape: [2, {name: 'N+M', maxSize: 18, minSize: 3}, 3]
+    }
+  },
+  {
+    name:
+        '[concat] Test building concat with matching dynamic dimensions on non-concat axis',
+    inputs: [
+      {
+        dataType: 'float32',
+        shape: [{name: 'N', maxSize: 10, minSize: 1}, 2, 3]
+      },
+      {dataType: 'float32', shape: [{name: 'N', maxSize: 10, minSize: 1}, 4, 3]}
+    ],
+    axis: 1,
+    output: {
+      dataType: 'float32',
+      shape: [{name: 'N', maxSize: 10, minSize: 1}, 6, 3]
+    }
+  },
+  {
+    name:
+        '[concat] Test building concat with dynamic dimension and static dimension on concat axis',
+    inputs: [
+      {
+        dataType: 'float32',
+        shape: [2, {name: 'N', maxSize: 10, minSize: 1}, 3]
+      },
+      {dataType: 'float32', shape: [2, 4, 3]}
+    ],
+    axis: 1,
+    output: {
+      dataType: 'float32',
+      shape: [2, {name: 'N+4', maxSize: 14, minSize: 5}, 3]
+    }
+  },
 ];
 
 tests.forEach(
@@ -97,7 +145,31 @@ tests.forEach(
       if (test.output) {
         const output = builder.concat(inputs, test.axis);
         assert_equals(output.dataType, test.output.dataType);
-        assert_array_equals(output.shape, test.output.shape);
+        // Compare shapes element by element to handle dynamic dimensions
+        assert_equals(output.shape.length, test.output.shape.length);
+        for (let i = 0; i < output.shape.length; i++) {
+          const outputDim = output.shape[i];
+          const expectedDim = test.output.shape[i];
+          if (typeof expectedDim === 'object') {
+            // Dynamic dimension
+            assert_equals(
+                typeof outputDim, 'object',
+                `Dimension ${i} should be a dynamic dimension`);
+            assert_equals(
+                outputDim.name, expectedDim.name,
+                `Dimension ${i} name mismatch`);
+            assert_equals(
+                outputDim.maxSize, expectedDim.maxSize,
+                `Dimension ${i} maxSize mismatch`);
+            assert_equals(
+                outputDim.minSize, expectedDim.minSize,
+                `Dimension ${i} minSize mismatch`);
+          } else {
+            // Fixed dimension
+            assert_equals(
+                outputDim, expectedDim, `Dimension ${i} value mismatch`);
+          }
+        }
       } else {
         const options = {label};
         const regrexp = new RegExp('\\[' + label + '\\]');

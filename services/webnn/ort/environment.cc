@@ -570,6 +570,7 @@ base::expected<scoped_refptr<Environment>, std::string> Environment::Create(
     }
   }
 
+  GetLock().AssertAcquired();
   // Register EPs from `ep_package_info_map` if they are not registered yet.
   // Failure is ignored.
   for (const auto& [ep_name, package_info] : ep_package_info_map) {
