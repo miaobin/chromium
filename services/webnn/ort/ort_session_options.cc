@@ -155,6 +155,15 @@ scoped_refptr<SessionOptions> SessionOptions::Create(
       /*config_key=*/kOrtSessionOptionsConfigStrictShapeTypeInference,
       /*config_value=*/"1"));
 
+  // Enable Cast chain elimination optimization. We need to insert bool <->
+  // uint8 Cast nodes in some cases since WebNN doesn't support bool data type
+  // but ONNX models may use bool type for some control flow. This optimization
+  // can help eliminate unnecessary Cast operations in the chain for bool type.
+  CHECK_STATUS(ort_api->AddSessionConfigEntry(
+      session_options.get(),
+      /*config_key=*/kOrtSessionOptionsEnableCastChainElimination,
+      /*config_value=*/"1"));
+
   // Only set graph optimization level if user provides a valid input.
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kWebNNOrtGraphOptimizationLevel)) {
@@ -176,6 +185,20 @@ scoped_refptr<SessionOptions> SessionOptions::Create(
         session_options.get(),
         /*config_key=*/config_entry.key.c_str(),
         /*config_value=*/config_entry.value.c_str()));
+  }
+
+  // Enable OpenVINO EP causal language model optimization for stateful
+  // KV-Cache when the command line switch is set. By default, the stateless
+  // path is used.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kWebNNOrtOvepEnableCausallm)) {
+    LOG(ERROR) << "[WebNN] OpenVINO EP causallm enabled: statefull mode.";
+    CHECK_STATUS(ort_api->AddSessionConfigEntry(
+        session_options.get(),
+        /*config_key=*/"ep.openvinoexecutionprovider.enable_causallm",
+        /*config_value=*/"true"));
+  } else {
+    LOG(ERROR) << "[WebNN] OpenVINO EP causallm disabled: stateless moide.";
   }
 
   return base::MakeRefCounted<SessionOptions>(base::PassKey<SessionOptions>(),

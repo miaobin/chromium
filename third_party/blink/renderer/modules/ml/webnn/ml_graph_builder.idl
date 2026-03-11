@@ -198,6 +198,11 @@ dictionary MLResample2dOptions : MLOperatorOptions {
   sequence<[EnforceRange] unsigned long> axes;
 };
 
+dictionary MLDynamicResample2dOptions : MLOperatorOptions {
+  MLInterpolationMode mode = "nearest-neighbor";
+  sequence<[EnforceRange] unsigned long> axes;
+};
+
 dictionary MLReverseOptions : MLOperatorOptions {
   sequence<[EnforceRange] unsigned long> axes;
 };
@@ -235,7 +240,7 @@ dictionary MLTriangularOptions : MLOperatorOptions {
   [
     CallWith=ScriptState,
     RaisesException
-  ] MLOperand input(USVString name, MLOperandDescriptor desc);
+  ] MLOperand input(USVString name, MLInputOperandDescriptor desc);
 
   [
     CallWith=ScriptState,
@@ -283,6 +288,7 @@ dictionary MLTriangularOptions : MLOperatorOptions {
   [RaisesException] MLOperand logicalAnd(MLOperand a, MLOperand b, optional MLOperatorOptions options = {});
   [RaisesException] MLOperand logicalOr(MLOperand a, MLOperand b, optional MLOperatorOptions options = {});
   [RaisesException] MLOperand logicalXor(MLOperand a, MLOperand b, optional MLOperatorOptions options = {});
+  [RaisesException] MLOperand mod(MLOperand a, MLOperand b, optional MLOperatorOptions options = {});
 
   // Element-wise unary operations
   [RaisesException] MLOperand abs(MLOperand x, optional MLOperatorOptions options = {});
@@ -310,7 +316,7 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand elu(MLOperand x, optional MLEluOptions options = {});
 
-  [RaisesException] MLOperand expand(MLOperand input, sequence<[EnforceRange] unsigned long> newShape, optional MLOperatorOptions options = {});
+  [RaisesException] MLOperand expand(MLOperand input, sequence<MLDimension> newShape, optional MLOperatorOptions options = {});
 
   [RaisesException] MLOperand gather(MLOperand input, MLOperand indices, optional MLGatherOptions options = {});
 
@@ -379,7 +385,7 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand relu(MLOperand input, optional MLOperatorOptions options = {});
 
-  [RaisesException] MLOperand reshape(MLOperand input, sequence<[EnforceRange] unsigned long> newShape, optional MLOperatorOptions options = {});
+  [RaisesException] MLOperand reshape(MLOperand input, sequence<MLDimension> newShape, optional MLOperatorOptions options = {});
 
   [RaisesException] MLOperand reverse(MLOperand input, optional MLReverseOptions options = {});
 
@@ -390,6 +396,8 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand scatterElements(MLOperand input, MLOperand indices, MLOperand updates, optional MLScatterOptions options = {});
   [RaisesException] MLOperand scatterND(MLOperand input, MLOperand indices, MLOperand updates, optional MLOperatorOptions options = {});
+
+  [RaisesException] MLOperand shape(MLOperand input, optional MLOperatorOptions options = {});
 
   [RaisesException] MLOperand sigmoid(MLOperand input, optional MLOperatorOptions options = {});
 
@@ -418,6 +426,20 @@ dictionary MLTriangularOptions : MLOperatorOptions {
   [RaisesException] MLOperand triangular(MLOperand input, optional MLTriangularOptions options = {});
 
   [RaisesException] MLOperand where(MLOperand condition, MLOperand trueValue, MLOperand falseValue, optional MLOperatorOptions options = {});
+
+  [RaisesException] MLOperand range(MLOperand start, MLOperand limit, MLOperand delta, optional MLOperatorOptions options = {});
+
+  [RaisesException] MLOperand dynamicReshape(MLOperand input, MLOperand newShape, optional MLOperatorOptions options = {});
+
+  [RaisesException] MLOperand dynamicExpand(MLOperand input, MLOperand newShape, optional MLOperatorOptions options = {});
+
+  [RaisesException] MLOperand dynamicSlice(MLOperand input, MLOperand starts, MLOperand ends, optional MLOperatorOptions options = {});
+
+  [RaisesException] MLOperand dynamicPad(MLOperand input, MLOperand pads, optional MLOperatorOptions options = {});
+
+  [RaisesException] sequence<MLOperand> dynamicSplit(MLOperand input, MLOperand splits, unsigned long numOutputs, optional MLOperatorOptions options = {});
+
+  [RaisesException] MLOperand dynamicResample2d(MLOperand input, MLOperand sizes, optional MLDynamicResample2dOptions options = {});
 
   [
     CallWith=ScriptState,

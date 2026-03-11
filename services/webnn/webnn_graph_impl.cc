@@ -25,19 +25,45 @@
 
 namespace webnn {
 
+namespace {
+
+// Returns true if any input descriptor contains a DynamicDimension.
+bool InputsHaveDynamicDimensions(
+    const base::flat_map<std::string, OperandDescriptor>&
+        input_names_to_descriptors) {
+  for (const auto& [name, descriptor] : input_names_to_descriptors) {
+    if (!descriptor.StaticShape().has_value()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 WebNNGraphImpl::ComputeResourceInfo::ComputeResourceInfo(
     base::flat_map<std::string, OperandDescriptor> input_names_to_descriptors,
     base::flat_map<std::string, OperandDescriptor> output_names_to_descriptors,
     base::flat_map<OperandId, base::flat_set<OperationId>>
         operand_to_dependent_operations,
     base::flat_map<OperandId, OperationId> operand_to_producing_operation,
+    std::vector<mojom::OperandPtr> graph_operands,
+    std::vector<mojom::OperationPtr> graph_operations,
+    std::vector<OperandId> graph_input_operand_ids,
+    base::flat_map<OperandId, std::vector<uint8_t>> integer_constant_data,
     base::PassKey<WebNNGraphBuilderImpl> pass_key)
     : input_names_to_descriptors(std::move(input_names_to_descriptors)),
       output_names_to_descriptors(std::move(output_names_to_descriptors)),
       operand_to_dependent_operations(
           std::move(operand_to_dependent_operations)),
       operand_to_producing_operation(
-          std::move(operand_to_producing_operation)) {}
+          std::move(operand_to_producing_operation)),
+      has_dynamic_inputs(
+          InputsHaveDynamicDimensions(this->input_names_to_descriptors)),
+      graph_operands(std::move(graph_operands)),
+      graph_operations(std::move(graph_operations)),
+      graph_input_operand_ids(std::move(graph_input_operand_ids)),
+      integer_constant_data(std::move(integer_constant_data)) {}
 
 WebNNGraphImpl::ComputeResourceInfo::ComputeResourceInfo(
     ComputeResourceInfo&&) = default;

@@ -51,11 +51,16 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNTensorImpl
   WebNNTensorImpl& operator=(const WebNNTensorImpl&) = delete;
 
   OperandDataType data_type() const { return descriptor_.data_type(); }
-  const std::vector<uint32_t>& shape() const { return descriptor_.shape(); }
+  const std::vector<uint32_t> shape() const {
+    return descriptor_.StaticShape().value();
+  }
   MLTensorUsage usage() const { return usage_; }
 
   size_t PackedByteLength() const { return descriptor_.PackedByteLength(); }
-  size_t NumberOfElements() const { return descriptor_.NumberOfElements(); }
+  size_t NumberOfElements() const {
+    // Tensors always have static shapes, so NumberOfElements is always valid.
+    return descriptor_.NumberOfElements().value();
+  }
 
   bool IsValidWithDescriptor(const OperandDescriptor& descriptor) const;
 

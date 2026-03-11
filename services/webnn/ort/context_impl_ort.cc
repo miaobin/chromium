@@ -312,6 +312,7 @@ ContextProperties ContextImplOrt::GetContextProperties(
        /*min_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
        /*pow_input=*/{kFloat16To32Int32To64, kMaxRank},
+       /*mod_input=*/{DataTypeConstraint::kInts8To64, kMaxRank},
        /*equal_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
        /*greater_input=*/
@@ -467,7 +468,52 @@ ContextProperties ContextImplOrt::GetContextProperties(
        // TODO(crbug.com/429859156): ORT CPU EP should support int8, uint32, and
        // uint64 for where operation.
        /*where_value=*/
-       {kFloat16To32Uint8Int32To64, kMaxRank}});
+       {kFloat16To32Uint8Int32To64, kMaxRank},
+       /*range_input=*/
+       {kFloat16To32Int32To64, SupportedRanks::Exactly(0)},
+       /*range_output=*/
+       {kFloat16To32Int32To64, SupportedRanks::Exactly(1)},
+       /*shape_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       /*shape_output=*/
+       {SupportedDataTypes{OperandDataType::kInt64, OperandDataType::kInt32,
+                           OperandDataType::kUint32},
+        SupportedRanks::Exactly(1)},
+       /*dynamic_reshape_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       /*dynamic_reshape_new_shape=*/
+       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
+                           OperandDataType::kInt64},
+        SupportedRanks::Exactly(1)},
+       /*dynamic_expand_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       /*dynamic_expand_new_shape=*/
+       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
+                           OperandDataType::kInt64},
+        SupportedRanks::Exactly(1)},
+       /*dynamic_slice_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       /*dynamic_slice_starts=*/
+       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kInt64},
+        SupportedRanks::Exactly(1)},
+       /*dynamic_pad_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       /*dynamic_pad_pads=*/
+       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
+                           OperandDataType::kInt64},
+        SupportedRanks::Exactly(1)},
+       /*dynamic_split_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxNonScalarRank},
+       /*dynamic_split_splits=*/
+       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
+                           OperandDataType::kInt64},
+        SupportedRanks::Exactly(1)},
+       /*dynamic_resample_2d_input=*/
+       {kFloat16To32Uint8Int8To32, SupportedRanks::Exactly(4)},
+       /*dynamic_resample_2d_sizes=*/
+       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
+                           OperandDataType::kInt64},
+        SupportedRanks::Exactly(1)}});
 }
 
 base::WeakPtr<WebNNContextImpl> ContextImplOrt::AsWeakPtr() {

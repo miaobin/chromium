@@ -44,6 +44,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_recurrent_network_activation.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_reduce_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_resample_2d_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_scatter_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_slice_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_split_options.h"
@@ -169,13 +170,13 @@ TypeConverter<blink_mojom::OperandPtr, blink::MLOperand*>::Convert(
 }
 
 // Get height and width of input operand.
-webnn::Size2d<uint32_t> GetInputOperandSize2d(
+webnn::Size2d<webnn::Dimension> GetInputOperandSize2d(
     const blink::MLOperand* input,
     blink::V8MLInputOperandLayout::Enum type) {
   CHECK(input);
   const auto input_shape = input->Shape();
   CHECK_EQ(input_shape.size(), 4u);
-  uint32_t input_height, input_width;
+  webnn::Dimension input_height, input_width;
   switch (type) {
     case blink::V8MLInputOperandLayout::Enum::kNchw:
       // "nchw": [batches, channels, height, width]
@@ -260,6 +261,23 @@ OperationPtr CreateExpandOperation(const OperandToIdMap& operand_to_id_map,
   expand_mojo->input_operand_id = GetOperatorInputId(expand, operand_to_id_map);
   expand_mojo->output_operand_id =
       GetOperatorOutputId(expand, operand_to_id_map);
+
+  // The expand output shape equals the new_shape (ExpandShape always outputs
+  // dim_new). Use the output operand's descriptor shape as the new_shape.
+  const MLOperand* output = expand->Outputs()[0].Get();
+  for (const auto& dim : output->Descriptor().shape()) {
+    if (std::holds_alternative<uint32_t>(dim)) {
+      expand_mojo->new_shape.push_back(
+          blink_mojom::Dimension::NewSize(std::get<uint32_t>(dim)));
+    } else {
+      const auto& dyn = std::get<webnn::DynamicDimension>(dim);
+      expand_mojo->new_shape.push_back(
+          blink_mojom::Dimension::NewDynamicDimension(
+              blink_mojom::DynamicDimension::New(
+                  String::FromUtf8(dyn.name), dyn.max_size, dyn.min_size)));
+    }
+  }
+
   expand_mojo->label = expand->Options()->label();
   return blink_mojom::Operation::NewExpand(std::move(expand_mojo));
 }
@@ -956,22 +974,14 @@ OperationPtr CreatePool2dOperation(const OperandToIdMap& operand_to_id_map,
   CHECK_EQ(dilations.size(), 2u);
   pool2d_mojo->dilations = Size2d::New(dilations[0], dilations[1]);
 
-  // Get height and width of input for calculating padding.
-  auto input_size = mojo::GetInputOperandSize2d(
-      pool2d->PositionalInputs()[0].Get(), options->layout().AsEnum());
   // The dimensions of the sliding window are the height and width of input
   // operand if they are not supplied by user.
-  uint32_t window_height = input_size.height;
-  uint32_t window_width = input_size.width;
   if (options->hasWindowDimensions()) {
     auto& window_dimensions = options->windowDimensions();
     CHECK_EQ(window_dimensions.size(), 2u);
-    window_height = window_dimensions[0];
-    window_width = window_dimensions[1];
+    pool2d_mojo->window_dimensions =
+        Size2d::New(window_dimensions[0], window_dimensions[1]);
   }
-
-  pool2d_mojo->window_dimensions = Size2d::New(window_height, window_width);
-
   // Set the padding from WebNN explicit padding that is in
   // [beginning_height, ending_height, beginning_width, ending_width],
   // default to 0.
@@ -1148,6 +1158,16 @@ OperationPtr CreateScatterNDOperation(const OperandToIdMap& operand_to_id_map,
       std::move(scatter_nd_mojo));
 }
 
+OperationPtr CreateShapeOperation(const OperandToIdMap& operand_to_id_map,
+                                  const MLOperator* shape) {
+  auto shape_mojo = blink_mojom::Shape::New();
+  shape_mojo->input_operand_id = GetOperatorInputId(shape, operand_to_id_map);
+  shape_mojo->output_operand_id =
+      GetOperatorOutputId(shape, operand_to_id_map);
+  shape_mojo->label = shape->Options()->label();
+  return blink_mojom::Operation::NewShape(std::move(shape_mojo));
+}
+
 OperationPtr CreateSigmoidOperation(const OperandToIdMap& operand_to_id_map,
                                     const MLOperator* sigmoid) {
   auto sigmoid_mojo = blink_mojom::Sigmoid::New();
@@ -1282,6 +1302,127 @@ OperationPtr CreateWhereOperation(const OperandToIdMap& operand_to_id_map,
   where_mojo->output_operand_id = GetOperatorOutputId(where, operand_to_id_map);
   where_mojo->label = where->Options()->label();
   return blink_mojom::Operation::NewWhere(std::move(where_mojo));
+}
+
+OperationPtr CreateRangeOperation(const OperandToIdMap& operand_to_id_map,
+                                  const MLOperator* range) {
+  auto range_mojo = blink_mojom::RangeOp::New();
+  range_mojo->start_operand_id =
+      GetOperatorInputId(range, operand_to_id_map, 0);
+  range_mojo->limit_operand_id =
+      GetOperatorInputId(range, operand_to_id_map, 1);
+  range_mojo->delta_operand_id =
+      GetOperatorInputId(range, operand_to_id_map, 2);
+  range_mojo->output_operand_id =
+      GetOperatorOutputId(range, operand_to_id_map);
+  range_mojo->label = range->Options()->label();
+  return blink_mojom::Operation::NewRange(std::move(range_mojo));
+}
+
+OperationPtr CreateDynamicReshapeOperation(
+    const OperandToIdMap& operand_to_id_map,
+    const MLOperator* op) {
+  auto mojo = blink_mojom::DynamicReshape::New();
+  mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
+  mojo->new_shape_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+  mojo->output_operand_id = GetOperatorOutputId(op, operand_to_id_map);
+  mojo->label = op->Options()->label();
+  return blink_mojom::Operation::NewDynamicReshape(std::move(mojo));
+}
+
+OperationPtr CreateDynamicExpandOperation(
+    const OperandToIdMap& operand_to_id_map,
+    const MLOperator* op) {
+  auto mojo = blink_mojom::DynamicExpand::New();
+  mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
+  mojo->new_shape_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+  mojo->output_operand_id = GetOperatorOutputId(op, operand_to_id_map);
+  mojo->label = op->Options()->label();
+  return blink_mojom::Operation::NewDynamicExpand(std::move(mojo));
+}
+
+OperationPtr CreateDynamicSliceOperation(
+    const OperandToIdMap& operand_to_id_map,
+    const MLOperator* op) {
+  auto mojo = blink_mojom::DynamicSlice::New();
+  mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
+  mojo->starts_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+  mojo->ends_operand_id = GetOperatorInputId(op, operand_to_id_map, 2);
+  // Optional axes at index 3.
+  if (op->Inputs().size() > 3 && op->Inputs()[3]) {
+    mojo->axes_operand_id = GetOperatorInputId(op, operand_to_id_map, 3);
+  }
+  // Optional strides at index 4.
+  if (op->Inputs().size() > 4 && op->Inputs()[4]) {
+    mojo->strides_operand_id = GetOperatorInputId(op, operand_to_id_map, 4);
+  }
+  mojo->output_operand_id = GetOperatorOutputId(op, operand_to_id_map);
+  mojo->label = op->Options()->label();
+  return blink_mojom::Operation::NewDynamicSlice(std::move(mojo));
+}
+
+OperationPtr CreateDynamicPadOperation(
+    const OperandToIdMap& operand_to_id_map,
+    const MLOperator* op) {
+  auto mojo = blink_mojom::DynamicPad::New();
+  mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
+  mojo->pads_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+  // Optional constant_value at index 2.
+  if (op->Inputs().size() > 2 && op->Inputs()[2]) {
+    mojo->constant_value_operand_id =
+        GetOperatorInputId(op, operand_to_id_map, 2);
+  }
+  mojo->mode = blink_mojom::PaddingMode::NewConstant(
+      blink_mojom::ConstantPadding::New());
+  mojo->output_operand_id = GetOperatorOutputId(op, operand_to_id_map);
+  mojo->label = op->Options()->label();
+  return blink_mojom::Operation::NewDynamicPad(std::move(mojo));
+}
+
+OperationPtr CreateDynamicSplitOperation(
+    const OperandToIdMap& operand_to_id_map,
+    const MLOperator* op) {
+  auto mojo = blink_mojom::DynamicSplit::New();
+  mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
+  mojo->splits_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+  mojo->axis = 0;
+  for (uint32_t i = 0; i < op->Outputs().size(); ++i) {
+    mojo->output_operand_ids.push_back(
+        GetOperatorOutputId(op, operand_to_id_map, i));
+  }
+  mojo->label = op->Options()->label();
+  return blink_mojom::Operation::NewDynamicSplit(std::move(mojo));
+}
+
+OperationPtr CreateDynamicResample2dOperation(
+    const OperandToIdMap& operand_to_id_map,
+    const MLOperator* op) {
+  auto* options =
+      static_cast<const MLDynamicResample2dOptions*>(op->Options());
+  auto mojo = blink_mojom::DynamicResample2d::New();
+  mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
+  mojo->sizes_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+
+  // `axes` default is [2, 3] per the WebNN spec.
+  Vector<uint32_t> axes = {2u, 3u};
+  if (options->hasAxes() && options->axes().size() == 2) {
+    axes = options->axes();
+  }
+  mojo->axes = axes;
+
+  switch (options->mode().AsEnum()) {
+    case blink::V8MLInterpolationMode::Enum::kNearestNeighbor:
+      mojo->mode =
+          blink_mojom::Resample2d::InterpolationMode::kNearestNeighbor;
+      break;
+    case blink::V8MLInterpolationMode::Enum::kLinear:
+      mojo->mode = blink_mojom::Resample2d::InterpolationMode::kLinear;
+      break;
+  }
+
+  mojo->output_operand_id = GetOperatorOutputId(op, operand_to_id_map);
+  mojo->label = op->Options()->label();
+  return blink_mojom::Operation::NewDynamicResample2d(std::move(mojo));
 }
 
 }  // namespace
@@ -1470,6 +1611,10 @@ void SerializeMojoOperation(
       graph_info->operations.push_back(
           CreateScatterNDOperation(operand_to_id_map, op));
       break;
+    case blink_mojom::Operation::Tag::kShape:
+      graph_info->operations.push_back(
+          CreateShapeOperation(operand_to_id_map, op));
+      break;
     case blink_mojom::Operation::Tag::kSigmoid:
       graph_info->operations.push_back(
           CreateSigmoidOperation(operand_to_id_map, op));
@@ -1512,6 +1657,34 @@ void SerializeMojoOperation(
     case blink_mojom::Operation::Tag::kWhere:
       graph_info->operations.push_back(
           CreateWhereOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kRange:
+      graph_info->operations.push_back(
+          CreateRangeOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kDynamicReshape:
+      graph_info->operations.push_back(
+          CreateDynamicReshapeOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kDynamicExpand:
+      graph_info->operations.push_back(
+          CreateDynamicExpandOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kDynamicSlice:
+      graph_info->operations.push_back(
+          CreateDynamicSliceOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kDynamicPad:
+      graph_info->operations.push_back(
+          CreateDynamicPadOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kDynamicSplit:
+      graph_info->operations.push_back(
+          CreateDynamicSplitOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kDynamicResample2d:
+      graph_info->operations.push_back(
+          CreateDynamicResample2dOperation(operand_to_id_map, op));
       break;
   }
 }

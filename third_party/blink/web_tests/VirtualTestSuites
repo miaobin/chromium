@@ -4218,6 +4218,7 @@
       "external/wpt/webnn/idlharness.https.any.serviceworker.html",
       "external/wpt/webnn/idlharness.https.any.sharedworker.html",
       "external/wpt/webnn/idlharness.https.any.worker.html",
+      "external/wpt/webnn/conformance_tests/dynamic_shape.https.any.html?cpu",
       "external/wpt/webnn/conformance_tests/abs.https.any.html?cpu",
       "external/wpt/webnn/conformance_tests/add.https.any.html?cpu",
       "external/wpt/webnn/conformance_tests/arg_min_max.https.any.html?cpu",
@@ -4488,6 +4489,7 @@
       "Win"
     ],
     "bases": [
+      "external/wpt/webnn/conformance_tests/dynamic_shape.https.any.html?npu",
       "external/wpt/webnn/conformance_tests/abs.https.any.html?npu",
       "external/wpt/webnn/conformance_tests/add.https.any.html?npu",
       "external/wpt/webnn/conformance_tests/arg_min_max.https.any.html?npu",
@@ -4759,6 +4761,7 @@
       "Mac"
     ],
     "bases": [
+      "external/wpt/webnn/conformance_tests/dynamic_shape.https.any.html?gpu",
       "external/wpt/webnn/conformance_tests/abs.https.any.html?gpu",
       "external/wpt/webnn/conformance_tests/add.https.any.html?gpu",
       "external/wpt/webnn/conformance_tests/arg_min_max.https.any.html?gpu",

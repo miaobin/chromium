@@ -1887,8 +1887,7 @@ const clampTests = [
       },
       'operators': [{
         'name': 'clamp',
-        'arguments':
-            [{'input': 'clampInput'}, {'options': {'minValue': NaN}}],
+        'arguments': [{'input': 'clampInput'}, {'options': {'minValue': NaN}}],
         'outputs': 'clampOutput'
       }],
       'expectedOutputs': {
@@ -1911,8 +1910,7 @@ const clampTests = [
       },
       'operators': [{
         'name': 'clamp',
-        'arguments':
-            [{'input': 'clampInput'}, {'options': {'maxValue': NaN}}],
+        'arguments': [{'input': 'clampInput'}, {'options': {'maxValue': NaN}}],
         'outputs': 'clampOutput'
       }],
       'expectedOutputs': {
@@ -1923,6 +1921,107 @@ const clampTests = [
       }
     }
   },
+  {
+    'name':
+        'clamp float32 2D tensor with dynamic shape (concrete shape [1, 6])',
+    'graph': {
+      'inputs': {
+        'clampInput': {
+          'data': [-9.81, -6.02, -4.07, 9.52, 3.72, 6.48],
+          'shape': [1, 6],
+          'descriptor': {
+            shape: [{'name': 'batch', 'maxSize': 10}, 6],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'clamp',
+        'arguments': [
+          {'input': 'clampInput'},
+          {'options': {'minValue': -5.0, 'maxValue': 5.0}}
+        ],
+        'outputs': 'clampOutput'
+      }],
+      'expectedOutputs': {
+        'clampOutput': {
+          'data': [-5.0, -5.0, -4.07, 5.0, 3.72, 5.0],
+          'shape': [1, 6],
+          'descriptor': {
+            shape: [{'name': 'batch', 'maxSize': 10}, 6],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'clamp float32 2D tensor with dynamic shape (concrete shape [3, 6])',
+    'graph': {
+      'inputs': {
+        'clampInput': {
+          'data': [
+            -9.81, -6.02, -4.07, 9.52, 3.72, 6.48, -1.53, -7.34, 7.88, -2.05,
+            6.34, 5.52, 0.84, -8.19, -7.78, 9.28, -2.31, 9.54
+          ],
+          'shape': [3, 6],
+          'descriptor': {
+            shape: [{'name': 'batch', 'maxSize': 10}, 6],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'clamp',
+        'arguments': [
+          {'input': 'clampInput'},
+          {'options': {'minValue': -5.0, 'maxValue': 5.0}}
+        ],
+        'outputs': 'clampOutput'
+      }],
+      'expectedOutputs': {
+        'clampOutput': {
+          'data': [
+            -5.0, -5.0, -4.07, 5.0, 3.72, 5.0, -1.53, -5.0, 5.0, -2.05, 5.0,
+            5.0, 0.84, -5.0, -5.0, 5.0, -2.31, 5.0
+          ],
+          'shape': [3, 6],
+          'descriptor': {
+            shape: [{'name': 'batch', 'maxSize': 10}, 6],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'clamp float32 2D tensor with dynamic shape default options (concrete shape [2, 4])',
+    'graph': {
+      'inputs': {
+        'clampInput': {
+          'data': [-10.5, 20.3, -30.8, 40.1, -50.2, 60.9, -70.4, 80.7],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 8}, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'clamp',
+        'arguments': [{'input': 'clampInput'}],
+        'outputs': 'clampOutput'
+      }],
+      'expectedOutputs': {
+        'clampOutput': {
+          'data': [-10.5, 20.3, -30.8, 40.1, -50.2, 60.9, -70.4, 80.7],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 8}, 4], dataType: 'float32'}
+        }
+      }
+    }
+  }
 ];
 
 webnn_conformance_test(clampTests, buildAndExecuteGraph, getPrecisionTolerance);

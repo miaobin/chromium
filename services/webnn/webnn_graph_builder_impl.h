@@ -10,6 +10,8 @@
 
 #include "base/component_export.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
@@ -61,6 +63,29 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphBuilderImpl
                               IsValidGraphForTestingCallback callback) override;
 
   void SetId(mojo::ReceiverId id, base::PassKey<GraphBuilderContext> pass_key);
+
+  // Re-validates the graph operations with concrete (all-static) operand
+  // shapes. Used at dispatch time (Phase B Step 3-4) when dynamic input
+  // dimensions have been substituted with actual values.
+  // Returns true if the graph is valid with the given concrete shapes.
+  static bool RevalidateGraphWithConcreteShapes(
+      const ContextProperties& context_properties,
+      base::span<const mojom::OperandPtr> operands,
+      const std::vector<mojom::OperationPtr>& operations,
+      const base::flat_set<OperandId>& processed_operands);
+
+  // Validates operations in "infer output shapes" mode: only input operands
+  // have concrete shapes; intermediate/output shapes are forward-propagated
+  // by writing inferred descriptors back into `operands`.
+  // Returns true if the graph is valid with the inferred shapes.
+  static bool InferAndValidateConcreteShapes(
+      const ContextProperties& context_properties,
+      std::vector<mojom::OperandPtr>& operands,
+      const std::vector<mojom::OperationPtr>& operations,
+      const base::flat_set<OperandId>& processed_operands,
+      const base::flat_map<OperandId, std::vector<uint8_t>>&
+          integer_constant_data,
+      const base::flat_map<std::string, uint32_t>& dim_name_to_value = {});
 
  protected:
   struct ValidateGraphSuccessResult {

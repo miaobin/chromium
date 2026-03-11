@@ -457,4 +457,111 @@ TEST_F(WebNNGraphBuilderImplTest, TransposePendingPermutation7DConstant) {
                   base::allow_nonunique_obj, kExpectedTransposedData)));
 }
 
+TEST_F(WebNNGraphBuilderImplTest,
+       CreateInvalidGraphDynamicDimensionMinSizeZero) {
+  // Manually create an input operand with dynamic dimension where minSize = 0.
+  mojom::OperandPtr input_operand = mojom::Operand::New();
+  input_operand->kind = mojom::Operand::Kind::kInput;
+  input_operand->name = "input";
+
+  // Create shape [2, {name: 'N', maxSize: 5, minSize: 0}]
+  std::vector<Dimension> shape;
+  shape.push_back(Dimension(uint32_t{2}));
+  shape.push_back(
+      Dimension(DynamicDimension{"N", 5, 0}));  // Invalid: minSize cannot be 0
+
+  input_operand->descriptor = OperandDescriptor::UnsafeCreateForTesting(
+      OperandDataType::kFloat32, shape);
+
+  OperandId input_operand_id(0);
+  mojom::GraphInfoPtr graph_info = mojom::GraphInfo::New();
+  graph_info->operands.push_back(std::move(input_operand));
+  graph_info->input_operands.push_back(input_operand_id);
+
+  // Create output operand
+  mojom::OperandPtr output_operand = mojom::Operand::New();
+  output_operand->kind = mojom::Operand::Kind::kOutput;
+  output_operand->name = "output";
+
+  std::vector<Dimension> output_shape;
+  output_shape.push_back(Dimension(uint32_t{2}));
+  output_shape.push_back(Dimension(DynamicDimension{"N", 5, 1}));
+
+  output_operand->descriptor = OperandDescriptor::UnsafeCreateForTesting(
+      OperandDataType::kFloat32, output_shape);
+
+  OperandId output_operand_id(1);
+  graph_info->operands.push_back(std::move(output_operand));
+  graph_info->output_operands.push_back(output_operand_id);
+
+  // Add an identity operation
+  mojom::ElementWiseUnaryPtr identity = mojom::ElementWiseUnary::New();
+  identity->kind = mojom::ElementWiseUnary::Kind::kIdentity;
+  identity->input_operand_id = input_operand_id;
+  identity->output_operand_id = output_operand_id;
+  graph_info->operations.push_back(
+      mojom::Operation::NewElementWiseUnary(std::move(identity)));
+
+  base::test::TestFuture<bool> is_valid_future;
+  graph_builder_remote()->IsValidGraphForTesting(
+      GetContextPropertiesForTesting(), std::move(graph_info),
+      is_valid_future.GetCallback());
+  EXPECT_FALSE(is_valid_future.Get());
+}
+
+TEST_F(WebNNGraphBuilderImplTest,
+       CreateInvalidGraphDynamicDimensionMinSizeGreaterThanMaxSize) {
+  // Manually create an input operand with dynamic dimension where minSize >
+  // maxSize.
+  mojom::OperandPtr input_operand = mojom::Operand::New();
+  input_operand->kind = mojom::Operand::Kind::kInput;
+  input_operand->name = "input";
+
+  // Create shape [2, {name: 'N', maxSize: 3, minSize: 5}, 4]
+  std::vector<Dimension> shape;
+  shape.push_back(Dimension(uint32_t{2}));
+  shape.push_back(
+      Dimension(DynamicDimension{"N", 3, 5}));  // Invalid: minSize > maxSize
+  shape.push_back(Dimension(uint32_t{4}));
+
+  input_operand->descriptor = OperandDescriptor::UnsafeCreateForTesting(
+      OperandDataType::kFloat32, shape);
+
+  OperandId input_operand_id(0);
+  mojom::GraphInfoPtr graph_info = mojom::GraphInfo::New();
+  graph_info->operands.push_back(std::move(input_operand));
+  graph_info->input_operands.push_back(input_operand_id);
+
+  // Create output operand
+  mojom::OperandPtr output_operand = mojom::Operand::New();
+  output_operand->kind = mojom::Operand::Kind::kOutput;
+  output_operand->name = "output";
+
+  std::vector<Dimension> output_shape;
+  output_shape.push_back(Dimension(uint32_t{2}));
+  output_shape.push_back(Dimension(DynamicDimension{"N", 5, 1}));
+  output_shape.push_back(Dimension(uint32_t{4}));
+
+  output_operand->descriptor = OperandDescriptor::UnsafeCreateForTesting(
+      OperandDataType::kFloat32, output_shape);
+
+  OperandId output_operand_id(1);
+  graph_info->operands.push_back(std::move(output_operand));
+  graph_info->output_operands.push_back(output_operand_id);
+
+  // Add an identity operation
+  mojom::ElementWiseUnaryPtr identity = mojom::ElementWiseUnary::New();
+  identity->kind = mojom::ElementWiseUnary::Kind::kIdentity;
+  identity->input_operand_id = input_operand_id;
+  identity->output_operand_id = output_operand_id;
+  graph_info->operations.push_back(
+      mojom::Operation::NewElementWiseUnary(std::move(identity)));
+
+  base::test::TestFuture<bool> is_valid_future;
+  graph_builder_remote()->IsValidGraphForTesting(
+      GetContextPropertiesForTesting(), std::move(graph_info),
+      is_valid_future.GetCallback());
+  EXPECT_FALSE(is_valid_future.Get());
+}
+
 }  // namespace webnn

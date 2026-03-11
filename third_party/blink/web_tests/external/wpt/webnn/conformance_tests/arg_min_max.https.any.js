@@ -906,8 +906,8 @@ const argMinMaxTests = [
       'inputs': {
         'argMinInput': {
           'data': [
-            0n,  0n,  254n, 10n,  1n,  512n, 1n,   11n,
-            21n, 50n, 128n, 254n, 20n, 50n,  127n, 512n
+            0n, 0n, 254n, 10n, 1n, 512n, 1n, 11n, 21n, 50n, 128n, 254n, 20n,
+            50n, 127n, 512n
           ],
           'descriptor': {shape: [2, 2, 2, 2], dataType: 'uint64'}
         }
@@ -1800,8 +1800,8 @@ const argMinMaxTests = [
       'inputs': {
         'argMaxInput': {
           'data': [
-            0n,  0n,  254n, 10n,  1n,  512n, 1n,   11n,
-            21n, 50n, 128n, 254n, 20n, 50n,  127n, 512n
+            0n, 0n, 254n, 10n, 1n, 512n, 1n, 11n, 21n, 50n, 128n, 254n, 20n,
+            50n, 127n, 512n
           ],
           'descriptor': {shape: [2, 2, 2, 2], dataType: 'uint64'}
         }
@@ -1818,6 +1818,255 @@ const argMinMaxTests = [
         'argMaxOutput': {
           'data': [1, 1, 0, 1, 0, 0, 0, 1],
           'descriptor': {shape: [2, 1, 2, 2], dataType: 'int32'}
+        }
+      }
+    }
+  },
+  // Dynamic shape tests
+  {
+    'name':
+        'argMin float32 2D tensor with dynamic batch dimension, axis=0 (concrete shape [2, 12])',
+    'graph': {
+      'inputs': {
+        'argMinInput': {
+          'data': [
+            3.8301241397857666, -24.986488342285156, 5.29998254776001,
+            -48.54866027832031, 40.308868408203125,  60.184295654296875,
+            -82.78385925292969, -96.50904083251953,  71.87028503417969,
+            38.86639404296875,  -39.14372634887695,  31.444366455078125,
+            -82.78385925292969, -96.50904083251953,  -25.533889770507812,
+            -16.14226531982422, 66.63677215576172,   82.51197814941406,
+            -82.78385925292969, -96.50904083251953,  39.76872634887695,
+            42.1504020690918,   82.66864013671875,   85.45269012451172
+          ],
+          'shape': [2, 12],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 12], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'argMin',
+        'arguments': [{'input': 'argMinInput'}, {'axis': 0}],
+        'outputs': 'argMinOutput'
+      }],
+      'expectedOutputs': {
+        'argMinOutput': {
+          'data': [1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+          'shape': [12],
+          'descriptor': {shape: [12], dataType: 'int32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'argMin float32 3D tensor with dynamic dimensions, axis=1 (concrete shape [2, 4, 3])',
+    'graph': {
+      'inputs': {
+        'argMinInput': {
+          'data': [
+            3.8301241397857666, -24.986488342285156, 5.29998254776001,
+            -48.54866027832031, 40.308868408203125,  60.184295654296875,
+            -82.78385925292969, -96.50904083251953,  71.87028503417969,
+            38.86639404296875,  -39.14372634887695,  31.444366455078125,
+            -82.78385925292969, -96.50904083251953,  -25.533889770507812,
+            -16.14226531982422, 66.63677215576172,   82.51197814941406,
+            -82.78385925292969, -96.50904083251953,  39.76872634887695,
+            42.1504020690918,   82.66864013671875,   85.45269012451172
+          ],
+          'shape': [2, 4, 3],
+          'descriptor': {
+            shape: [
+              {name: 'batch', maxSize: 10}, {name: 'sequence', maxSize: 20}, 3
+            ],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'argMin',
+        'arguments': [{'input': 'argMinInput'}, {'axis': 1}],
+        'outputs': 'argMinOutput'
+      }],
+      'expectedOutputs': {
+        'argMinOutput': {
+          'data': [2, 2, 0, 0, 0, 0],
+          'shape': [2, 3],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 3], dataType: 'int32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'argMin float32 4D tensor with dynamic dimensions, axis=2, keepDimensions=true (concrete shape [2, 1, 4, 3])',
+    'graph': {
+      'inputs': {
+        'argMinInput': {
+          'data': [
+            3.8301241397857666, -24.986488342285156, 5.29998254776001,
+            -48.54866027832031, 40.308868408203125,  60.184295654296875,
+            -82.78385925292969, -96.50904083251953,  71.87028503417969,
+            38.86639404296875,  -39.14372634887695,  31.444366455078125,
+            -82.78385925292969, -96.50904083251953,  -25.533889770507812,
+            -16.14226531982422, 66.63677215576172,   82.51197814941406,
+            -82.78385925292969, -96.50904083251953,  39.76872634887695,
+            42.1504020690918,   82.66864013671875,   85.45269012451172
+          ],
+          'shape': [2, 1, 4, 3],
+          'descriptor': {
+            shape: [
+              {name: 'batch', maxSize: 10}, 1, {name: 'height', maxSize: 10}, 3
+            ],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'argMin',
+        'arguments': [
+          {'input': 'argMinInput'}, {'axis': 2},
+          {'options': {'keepDimensions': true}}
+        ],
+        'outputs': 'argMinOutput'
+      }],
+      'expectedOutputs': {
+        'argMinOutput': {
+          'data': [2, 2, 0, 0, 0, 0],
+          'shape': [2, 1, 1, 3],
+          'descriptor': {
+            shape: [{name: 'batch', maxSize: 10}, 1, 1, 3],
+            dataType: 'int32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'argMax float32 2D tensor with dynamic batch dimension, axis=1 (concrete shape [2, 12])',
+    'graph': {
+      'inputs': {
+        'argMaxInput': {
+          'data': [
+            3.8301241397857666, -24.986488342285156, 5.29998254776001,
+            -48.54866027832031, 40.308868408203125,  60.184295654296875,
+            -82.78385925292969, -96.50904083251953,  71.87028503417969,
+            38.86639404296875,  -39.14372634887695,  31.444366455078125,
+            -82.78385925292969, -96.50904083251953,  -25.533889770507812,
+            -16.14226531982422, 66.63677215576172,   82.51197814941406,
+            -82.78385925292969, -96.50904083251953,  39.76872634887695,
+            42.1504020690918,   82.66864013671875,   85.45269012451172
+          ],
+          'shape': [2, 12],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 12], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'argMax',
+        'arguments': [{'input': 'argMaxInput'}, {'axis': 1}],
+        'outputs': 'argMaxOutput'
+      }],
+      'expectedOutputs': {
+        'argMaxOutput': {
+          'data': [8, 11],
+          'shape': [2],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}], dataType: 'int32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'argMax float32 3D tensor with dynamic dimensions, axis=0, keepDimensions=true (concrete shape [2, 4, 3])',
+    'graph': {
+      'inputs': {
+        'argMaxInput': {
+          'data': [
+            3.8301241397857666, -24.986488342285156, 5.29998254776001,
+            -48.54866027832031, 40.308868408203125,  60.184295654296875,
+            -82.78385925292969, -96.50904083251953,  71.87028503417969,
+            38.86639404296875,  -39.14372634887695,  31.444366455078125,
+            -82.78385925292969, -96.50904083251953,  -25.533889770507812,
+            -16.14226531982422, 66.63677215576172,   82.51197814941406,
+            -82.78385925292969, -96.50904083251953,  39.76872634887695,
+            42.1504020690918,   82.66864013671875,   85.45269012451172
+          ],
+          'shape': [2, 4, 3],
+          'descriptor': {
+            shape: [
+              {name: 'batch', maxSize: 10}, {name: 'sequence', maxSize: 20}, 3
+            ],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'argMax',
+        'arguments': [
+          {'input': 'argMaxInput'}, {'axis': 0},
+          {'options': {'keepDimensions': true}}
+        ],
+        'outputs': 'argMaxOutput'
+      }],
+      'expectedOutputs': {
+        'argMaxOutput': {
+          'data': [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1],
+          'shape': [1, 4, 3],
+          'descriptor': {
+            shape: [1, {name: 'sequence', maxSize: 20}, 3],
+            dataType: 'int32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'argMax float32 4D tensor with dynamic dimensions, axis=3, outputDataType=int64 (concrete shape [2, 1, 4, 3])',
+    'graph': {
+      'inputs': {
+        'argMaxInput': {
+          'data': [
+            3.8301241397857666, -24.986488342285156, 5.29998254776001,
+            -48.54866027832031, 40.308868408203125,  60.184295654296875,
+            -82.78385925292969, -96.50904083251953,  71.87028503417969,
+            38.86639404296875,  -39.14372634887695,  31.444366455078125,
+            -82.78385925292969, -96.50904083251953,  -25.533889770507812,
+            -16.14226531982422, 66.63677215576172,   82.51197814941406,
+            -82.78385925292969, -96.50904083251953,  39.76872634887695,
+            42.1504020690918,   82.66864013671875,   85.45269012451172
+          ],
+          'shape': [2, 1, 4, 3],
+          'descriptor': {
+            shape: [
+              {name: 'batch', maxSize: 10}, 1, {name: 'height', maxSize: 10}, 3
+            ],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'argMax',
+        'arguments': [
+          {'input': 'argMaxInput'}, {'axis': 3},
+          {'options': {'outputDataType': 'int64'}}
+        ],
+        'outputs': 'argMaxOutput'
+      }],
+      'expectedOutputs': {
+        'argMaxOutput': {
+          'data': [2n, 2n, 2n, 0n, 2n, 2n, 2n, 2n],
+          'shape': [2, 1, 4],
+          'descriptor': {
+            shape: [
+              {name: 'batch', maxSize: 10}, 1, {name: 'height', maxSize: 10}
+            ],
+            dataType: 'int64'
+          }
         }
       }
     }

@@ -44,6 +44,10 @@ class GraphInfoBuilder final {
                        const std::vector<uint32_t>& dimensions,
                        OperandDataType type);
 
+  OperandId BuildDynamicInput(const std::string& name,
+                              const std::vector<Dimension>& dimensions,
+                              OperandDataType type);
+
   // Optionally provide `handle` to identify this constant operand; otherwise a
   // handle will be generated automatically.
   OperandId BuildConstant(
@@ -59,6 +63,10 @@ class GraphInfoBuilder final {
   OperandId BuildOutput(const std::string& name,
                         const std::vector<uint32_t>& dimensions,
                         OperandDataType type);
+
+  OperandId BuildDynamicOutput(const std::string& name,
+                               const std::vector<Dimension>& dimensions,
+                               OperandDataType type);
 
   void BuildArgMinMax(mojom::ArgMinMax::Kind kind,
                       OperandId input_operand_id,
@@ -169,7 +177,9 @@ class GraphInfoBuilder final {
                              OperandId input_operand,
                              OperandId output_operand);
 
-  void BuildExpand(OperandId input_operand_id, OperandId output_operand_id);
+  void BuildExpand(OperandId input_operand_id,
+                   OperandId output_operand_id,
+                   std::vector<webnn::Dimension> new_shape);
 
   void BuildGather(OperandId input_operand_id,
                    OperandId indices_operand_id,
@@ -515,6 +525,8 @@ class GraphInfoBuilder final {
                     OperandId output_operand_id,
                     std::vector<uint32_t> axes);
 
+  void BuildShape(OperandId input_operand_id, OperandId output_operand_id);
+
   void BuildScatterElements(OperandId input_operand_id,
                             OperandId indices_operand_id,
                             OperandId updates_operand_id,
@@ -566,6 +578,14 @@ class GraphInfoBuilder final {
                   base::span<const uint32_t> sizes,
                   base::span<const uint32_t> strides);
 
+  void BuildDynamicReshape(OperandId input_operand_id,
+                           OperandId new_shape_operand_id,
+                           OperandId output_operand_id);
+
+  void BuildDynamicExpand(OperandId input_operand_id,
+                          OperandId new_shape_operand_id,
+                          OperandId output_operand_id);
+
   const mojom::GraphInfo& GetGraphInfo() const { return *graph_info_; }
 
   // Prefer `TakeGraphInfo()` when possible. Cloning can be expensive and should
@@ -580,6 +600,11 @@ class GraphInfoBuilder final {
  private:
   OperandId BuildOperand(
       const std::vector<uint32_t>& dimensions,
+      OperandDataType type,
+      mojom::Operand::Kind kind = mojom::Operand::Kind::kOutput);
+
+  OperandId BuildDynamicOperand(
+      const std::vector<Dimension>& dimensions,
       OperandDataType type,
       mojom::Operand::Kind kind = mojom::Operand::Kind::kOutput);
 

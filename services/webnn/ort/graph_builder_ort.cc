@@ -4,6 +4,7 @@
 
 #include "services/webnn/ort/graph_builder_ort.h"
 
+#include <algorithm>
 #include <array>
 #include <numeric>
 #include <ranges>
@@ -34,6 +35,7 @@ constexpr base::cstring_view kOpTypeAdd = "Add";
 constexpr base::cstring_view kOpTypeSub = "Sub";
 constexpr base::cstring_view kOpTypeMul = "Mul";
 constexpr base::cstring_view kOpTypeDiv = "Div";
+constexpr base::cstring_view kOpTypeMod = "Mod";
 constexpr base::cstring_view kOpTypeMax = "Max";
 constexpr base::cstring_view kOpTypeMin = "Min";
 constexpr base::cstring_view kOpTypePow = "Pow";
@@ -97,6 +99,9 @@ constexpr base::cstring_view kOpTypeRelu = "Relu";
 constexpr base::cstring_view kOpTypeResize = "Resize";
 constexpr base::cstring_view kOpTypeReshape = "Reshape";
 constexpr base::cstring_view kOpTypeScatterElements = "ScatterElements";
+constexpr base::cstring_view kOpTypeShape = "Shape";
+constexpr base::cstring_view kOpTypeSqueeze = "Squeeze";
+constexpr base::cstring_view kOpTypeUnsqueeze = "Unsqueeze";
 constexpr base::cstring_view kOpTypeScatterND = "ScatterND";
 constexpr base::cstring_view kOpTypeSigmoid = "Sigmoid";
 constexpr base::cstring_view kOpTypeSlice = "Slice";
@@ -375,6 +380,19 @@ GraphBuilderOrt::CreateAndBuild(
   return graph_builder.BuildModel();
 }
 
+DynamicDimensionInfo::DynamicDimensionInfo() = default;
+DynamicDimensionInfo::DynamicDimensionInfo(std::string input_operand_name,
+                                           uint32_t axis)
+    : input_operand_name(std::move(input_operand_name)), axis(axis) {}
+DynamicDimensionInfo::~DynamicDimensionInfo() = default;
+DynamicDimensionInfo::DynamicDimensionInfo(const DynamicDimensionInfo&) =
+    default;
+DynamicDimensionInfo& DynamicDimensionInfo::operator=(
+    const DynamicDimensionInfo&) = default;
+DynamicDimensionInfo::DynamicDimensionInfo(DynamicDimensionInfo&&) = default;
+DynamicDimensionInfo& DynamicDimensionInfo::operator=(DynamicDimensionInfo&&) =
+    default;
+
 GraphBuilderOrt::GraphBuilderOrt(
     const mojom::GraphInfo& graph_info,
     ContextProperties context_properties,
@@ -385,7 +403,15 @@ GraphBuilderOrt::GraphBuilderOrt(
       constant_operands_(std::move(constant_operands)),
       context_properties_(std::move(context_properties)),
       batched_matmul_k_dimension_limit_(
-          std::move(batched_matmul_k_dimension_limit)) {}
+          std::move(batched_matmul_k_dimension_limit)) {
+  // Register dynamic dimensions from graph input operands. Dynamic dims that
+  // first appear on intermediate operands (e.g. the output of concat) are
+  // registered lazily in BuildModel() as each operation is processed, so that
+  // only operands that have already been produced are used as Shape sources.
+  for (OperandId input_operand_id : graph_info_->input_operands) {
+    RegisterOperandDynamicDims(input_operand_id);
+  }
+}
 
 GraphBuilderOrt::~GraphBuilderOrt() = default;
 
@@ -464,6 +490,67 @@ std::string GraphBuilderOrt::CreateInt64InitializerForUint32Array(
       base::checked_cast<int64_t>(array.size())};
   base::FixedArray<int64_t> array_value(array.begin(), array.end());
   return CreateInitializer<int64_t>(array_dims, array_value);
+}
+
+std::string GraphBuilderOrt::CreateInitializerWithInputShapeAndDataTypeForFloat(
+    OperandId input_operand_id,
+    float value,
+    std::optional<base::span<const uint32_t>> axes) {
+  const std::string input_name = GetOperandNameById(input_operand_id);
+  const OperandDataType input_data_type =
+      GetOperand(input_operand_id).descriptor.data_type();
+
+  // Step 1: Create a scalar initializer with the input's data type.
+  const std::string scalar =
+      CreateScalarInitializer(input_data_type, MLNumber::FromFloat64(value));
+
+  // Step 2: Get the input shape at runtime using Shape operator.
+  const std::string input_shape_name = GenerateOperandName();
+  {
+    std::array<const char*, 1> shape_inputs = {input_name.c_str()};
+    std::array<const char*, 1> shape_outputs = {input_shape_name.c_str()};
+    const std::string shape_node_name = GenerateNodeName(
+        base::JoinString({kInserted, kOpTypeShape}, kUnderscore));
+    model_editor_.AddNode(kOpTypeShape, shape_node_name, shape_inputs,
+                          shape_outputs);
+  }
+
+  // Step 3: If axes is specified, gather only those dimensions from input
+  // shape.
+  std::string target_shape = input_shape_name;
+  if (axes.has_value()) {
+    base::FixedArray<int64_t> axes_int64(axes->size());
+    std::ranges::transform(*axes, axes_int64.begin(), [](uint32_t axis) {
+      return static_cast<int64_t>(axis);
+    });
+    const std::string axes_initializer =
+        Create1DInitializer<int64_t>(axes_int64);
+
+    target_shape = GenerateOperandName();
+    std::array<const char*, 2> gather_inputs = {input_shape_name.c_str(),
+                                                axes_initializer.c_str()};
+    std::array<const char*, 1> gather_outputs = {target_shape.c_str()};
+    std::array<ScopedOrtOpAttr, 1> gather_attrs = {
+        model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
+    const std::string gather_node_name = GenerateNodeName(
+        base::JoinString({kInserted, kOpTypeGather}, kUnderscore));
+    model_editor_.AddNode(kOpTypeGather, gather_node_name, gather_inputs,
+                          gather_outputs, gather_attrs);
+  }
+
+  // Step 4: Use Expand to expand the scalar to match the target shape.
+  const std::string output = GenerateOperandName();
+  {
+    std::array<const char*, 2> expand_inputs = {scalar.c_str(),
+                                                target_shape.c_str()};
+    std::array<const char*, 1> expand_outputs = {output.c_str()};
+    const std::string expand_node_name = GenerateNodeName(
+        base::JoinString({kInserted, kOpTypeExpand}, kUnderscore));
+    model_editor_.AddNode(kOpTypeExpand, expand_node_name, expand_inputs,
+                          expand_outputs);
+  }
+
+  return output;
 }
 
 std::string GraphBuilderOrt::CreateInitializerForFloat(
@@ -648,6 +735,136 @@ void GraphBuilderOrt::AddExpandNode(base::cstring_view node_name,
   model_editor_.AddNode(kOpTypeExpand, node_name, inputs, outputs);
 }
 
+void GraphBuilderOrt::AddExpandNode(
+    base::cstring_view node_name,
+    base::cstring_view input,
+    base::cstring_view output,
+    base::span<const Dimension> shape,
+    base::span<const Dimension> input_shape,
+    const base::flat_map<DynamicDimension, DynamicDimensionInfo>&
+        known_dynamic_dims) {
+  // Output shape has dynamic dimensions. Build the shape tensor at runtime
+  // using Shape, Gather, and Concat operators.
+
+  // Cache for Shape node outputs to avoid creating duplicate Shape nodes
+  // for the same input operand.
+  base::flat_map<std::string, std::string> input_to_shape_map;
+
+  // For each dimension in new shape, either use a constant (for static dims)
+  // or gather from input shape (for dynamic dims).
+  std::vector<std::string> dimension_names;
+  dimension_names.reserve(shape.size());
+
+  for (size_t i = 0; i < shape.size(); ++i) {
+    const auto& dim = shape[i];
+    if (std::holds_alternative<uint32_t>(dim)) {
+      // Static dimension: create a 1-D constant with shape [1].
+      uint32_t static_value = std::get<uint32_t>(dim);
+      std::array<int64_t, 1> value_array = {static_cast<int64_t>(static_value)};
+      std::string const_name = Create1DInitializer<int64_t>(value_array);
+      dimension_names.push_back(std::move(const_name));
+    } else {
+      // Dynamic dimension: first check if it comes from the expand input tensor
+      // shape, then fall back to known_dynamic_dims.
+      CHECK(std::holds_alternative<DynamicDimension>(dim));
+      const auto& dynamic_dim = std::get<DynamicDimension>(dim);
+
+      std::string source_operand_name;
+      int64_t axis;
+
+      // First check if the dynamic dimension is present in the expand input's
+      // shape.
+      auto input_shape_it = std::ranges::find(input_shape, dim);
+      if (input_shape_it != input_shape.end()) {
+        // Dynamic dimension comes from the expand input tensor itself.
+        source_operand_name = std::string(input);
+        axis = static_cast<int64_t>(
+            std::distance(input_shape.begin(), input_shape_it));
+      } else {
+        // Fall back to known_dynamic_dims.
+        auto it = known_dynamic_dims.find(dynamic_dim);
+        CHECK(it != known_dynamic_dims.end())
+            << "Dynamic dimension '" << dynamic_dim.name
+            << "' (max_size="
+            << (dynamic_dim.max_size.has_value()
+                    ? base::NumberToString(*dynamic_dim.max_size)
+                    : "unbounded")
+            << ", min_size=" << dynamic_dim.min_size
+            << ") not found in input shape or known_dynamic_dims";
+        const DynamicDimensionInfo& dyn_dim_info = it->second;
+        source_operand_name = dyn_dim_info.input_operand_name;
+        axis = static_cast<int64_t>(dyn_dim_info.axis);
+      }
+
+      // Create Shape node for this input operand if not already created.
+      std::string input_shape_name;
+      auto shape_it = input_to_shape_map.find(source_operand_name);
+      if (shape_it != input_to_shape_map.end()) {
+        input_shape_name = shape_it->second;
+      } else {
+        input_shape_name = GenerateOperandName();
+        std::array<const char*, 1> shape_inputs = {source_operand_name.c_str()};
+        std::array<const char*, 1> shape_outputs = {input_shape_name.c_str()};
+        const std::string shape_node_name = GenerateNodeName(base::JoinString(
+            {kInserted, "Shape", kToEmulate, node_name}, kUnderscore));
+        model_editor_.AddNode("Shape", shape_node_name, shape_inputs,
+                              shape_outputs);
+        input_to_shape_map[source_operand_name] = input_shape_name;
+      }
+
+      // Create a Gather node to extract this dimension from the Shape output.
+      // Use axis=0 since the Shape output is 1-D, and indices as a 1-D tensor
+      // with shape [1] to get output shape [1].
+      const std::string gather_output = GenerateOperandName();
+      std::array<int64_t, 1> indices_array = {axis};
+      const std::string indices_const =
+          Create1DInitializer<int64_t>(indices_array);
+
+      std::array<const char*, 2> gather_inputs = {input_shape_name.c_str(),
+                                                  indices_const.c_str()};
+      std::array<const char*, 1> gather_outputs = {gather_output.c_str()};
+      std::array<ScopedOrtOpAttr, 1> gather_attributes = {
+          model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
+      const std::string gather_node_name = GenerateNodeName(
+          base::JoinString({kInserted, kOpTypeGather, kToEmulate, node_name,
+                            base::NumberToString(axis)},
+                           kUnderscore));
+      model_editor_.AddNode(kOpTypeGather, gather_node_name, gather_inputs,
+                            gather_outputs, gather_attributes);
+
+      dimension_names.push_back(std::move(gather_output));
+    }
+  }
+
+  // Step 3: Concatenate all dimension values to create the final shape tensor.
+  std::string final_shape_name;
+  if (dimension_names.size() == 1) {
+    // Single dimension, no need to concatenate.
+    final_shape_name = dimension_names[0];
+  } else {
+    // Multiple dimensions, concatenate them.
+    final_shape_name = GenerateOperandName();
+    std::vector<const char*> concat_inputs;
+    concat_inputs.reserve(dimension_names.size());
+    for (const auto& name : dimension_names) {
+      concat_inputs.push_back(name.c_str());
+    }
+    std::array<const char*, 1> concat_outputs = {final_shape_name.c_str()};
+    std::array<ScopedOrtOpAttr, 1> concat_attributes = {
+        model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
+    const std::string concat_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeConcat, kToEmulate, node_name}, kUnderscore));
+    model_editor_.AddNode(kOpTypeConcat, concat_node_name, concat_inputs,
+                          concat_outputs, concat_attributes);
+  }
+
+  // Step 4: Use the constructed shape tensor for the Expand operation.
+  std::array<const char*, 2> inputs = {input.c_str(), final_shape_name.c_str()};
+  std::array<const char*, 1> outputs = {output.c_str()};
+
+  model_editor_.AddNode(kOpTypeExpand, node_name, inputs, outputs);
+}
+
 std::string GraphBuilderOrt::CreateExpandNode(
     base::cstring_view input,
     base::span<const uint32_t> shape) {
@@ -719,6 +936,63 @@ void GraphBuilderOrt::InsertReshapeNode(base::cstring_view input,
   const std::string node_name = GenerateNodeName(
       base::JoinString({kInserted, kOpTypeReshape}, kUnderscore));
   AddReshapeNode(node_name, input, output, shape);
+}
+
+void GraphBuilderOrt::AddUnsqueezeNode(base::cstring_view node_name,
+                                       base::cstring_view input,
+                                       base::cstring_view output,
+                                       base::span<const int64_t> axes) {
+  // ONNX Unsqueeze op's `axes` is an operand of data type int64.
+  const std::string axes_operand = Create1DInitializer<int64_t>(axes);
+
+  std::array<const char*, 2> inputs = {input.c_str(), axes_operand.c_str()};
+  std::array<const char*, 1> outputs = {output.c_str()};
+
+  model_editor_.AddNode(kOpTypeUnsqueeze, node_name, inputs, outputs);
+}
+
+std::string GraphBuilderOrt::CreateUnsqueezeNode(
+    base::cstring_view input,
+    base::span<const int64_t> axes) {
+  const std::string output = GenerateOperandName();
+  InsertUnsqueezeNode(input, output, axes);
+  return output;
+}
+
+void GraphBuilderOrt::InsertUnsqueezeNode(base::cstring_view input,
+                                          base::cstring_view output,
+                                          base::span<const int64_t> axes) {
+  const std::string node_name = GenerateNodeName(
+      base::JoinString({kInserted, kOpTypeUnsqueeze}, kUnderscore));
+  AddUnsqueezeNode(node_name, input, output, axes);
+}
+
+void GraphBuilderOrt::AddSqueezeNode(base::cstring_view node_name,
+                                     base::cstring_view input,
+                                     base::cstring_view output,
+                                     base::span<const int64_t> axes) {
+  // ONNX Squeeze op's `axes` is an operand of data type int64.
+  const std::string axes_operand = Create1DInitializer<int64_t>(axes);
+
+  std::array<const char*, 2> inputs = {input.c_str(), axes_operand.c_str()};
+  std::array<const char*, 1> outputs = {output.c_str()};
+
+  model_editor_.AddNode(kOpTypeSqueeze, node_name, inputs, outputs);
+}
+
+std::string GraphBuilderOrt::CreateSqueezeNode(base::cstring_view input,
+                                               base::span<const int64_t> axes) {
+  const std::string output = GenerateOperandName();
+  InsertSqueezeNode(input, output, axes);
+  return output;
+}
+
+void GraphBuilderOrt::InsertSqueezeNode(base::cstring_view input,
+                                        base::cstring_view output,
+                                        base::span<const int64_t> axes) {
+  const std::string node_name = GenerateNodeName(
+      base::JoinString({kInserted, kOpTypeSqueeze}, kUnderscore));
+  AddSqueezeNode(node_name, input, output, axes);
 }
 
 void GraphBuilderOrt::AddSliceNode(base::cstring_view node_name,
@@ -817,43 +1091,230 @@ std::string GraphBuilderOrt::ClampIndices(base::cstring_view indices,
   return output;
 }
 
-std::string GraphBuilderOrt::ClampGatherNDIndices(
+std::string GraphBuilderOrt::ClampIndicesForDynamicShape(
+    base::cstring_view node_name,
+    base::cstring_view input,
     base::cstring_view indices,
-    base::span<const uint32_t> input_shape,
-    base::span<const uint32_t> indices_shape) {
-  CHECK_GT(input_shape.size(), 0u);
-  CHECK_GT(indices_shape.size(), 0u);
-
-  uint32_t indices_last_dim_size = indices_shape[indices_shape.size() - 1];
-  std::array<int64_t, 1> min_max_shape = {
-      static_cast<int64_t>(indices_last_dim_size)};
-
-  base::FixedArray<int64_t> min_value(indices_last_dim_size);
-  base::FixedArray<int64_t> max_value(indices_last_dim_size);
-  for (uint32_t axis = 0; axis < indices_last_dim_size; ++axis) {
-    min_value[axis] = -static_cast<int64_t>(input_shape[axis]);
-    max_value[axis] = static_cast<int64_t>(input_shape[axis]) - 1;
+    uint32_t axis,
+    OperandDataType indices_data_type) {
+  // Step 1: Get the input shape at runtime using Shape operator.
+  const std::string input_shape_name = GenerateOperandName();
+  {
+    std::array<const char*, 1> shape_inputs = {input.c_str()};
+    std::array<const char*, 1> shape_outputs = {input_shape_name.c_str()};
+    const std::string shape_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, "Shape", kToEmulate, node_name}, kUnderscore));
+    model_editor_.AddNode("Shape", shape_node_name, shape_inputs,
+                          shape_outputs);
   }
 
-  // ONNX Clip can only have `min` and `max` as scalars, so here use Min and Max
-  // to emulate a clamp operation.
-  std::string min = CreateInitializer<int64_t>(min_max_shape, min_value);
-  const std::string max_node_name =
-      GenerateNodeName(base::JoinString({kInserted, kOpTypeMax}, kUnderscore));
-  const std::string max_output = GenerateOperandName();
-  std::array<const char*, 2> max_inputs = {indices.c_str(), min.c_str()};
-  std::array<const char*, 1> max_outputs = {max_output.c_str()};
-  model_editor_.AddNode(kOpTypeMax, max_node_name, max_inputs, max_outputs);
+  // Step 2: Gather the dimension size at the axis.
+  const std::string axis_dim_size_name = GenerateOperandName();
+  {
+    const std::string axis_index =
+        CreateScalarInitializer<int64_t>(static_cast<int64_t>(axis));
+    std::array<const char*, 2> gather_inputs = {input_shape_name.c_str(),
+                                                axis_index.c_str()};
+    std::array<const char*, 1> gather_outputs = {axis_dim_size_name.c_str()};
+    const std::string gather_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, "Gather", kToEmulate, node_name}, kUnderscore));
+    std::array<ScopedOrtOpAttr, 1> gather_attrs = {
+        model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
+    model_editor_.AddNode(kOpTypeGather, gather_node_name, gather_inputs,
+                          gather_outputs, gather_attrs);
+  }
 
-  std::string max = CreateInitializer<int64_t>(min_max_shape, max_value);
-  const std::string min_node_name =
-      GenerateNodeName(base::JoinString({kInserted, kOpTypeMin}, kUnderscore));
-  const std::string output = GenerateOperandName();
-  std::array<const char*, 2> min_inputs = {max_output.c_str(), max.c_str()};
-  std::array<const char*, 1> min_outputs = {output.c_str()};
-  model_editor_.AddNode(kOpTypeMin, min_node_name, min_inputs, min_outputs);
+  // Step 3: Cast indices to int64 if needed (for arithmetic operations).
+  std::string indices_int64 = std::string(indices);
+  bool need_cast_back = false;
+  if (indices_data_type != OperandDataType::kInt64) {
+    indices_int64 =
+        CreateCastNode(indices, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+    need_cast_back = true;
+  }
 
-  return output;
+  // Step 4: Compute min = -axis_dim_size and max = axis_dim_size - 1
+  // min = Neg(axis_dim_size)
+  const std::string neg_dim_size_name = GenerateOperandName();
+  {
+    std::array<const char*, 1> neg_inputs = {axis_dim_size_name.c_str()};
+    std::array<const char*, 1> neg_outputs = {neg_dim_size_name.c_str()};
+    const std::string neg_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeNeg, kToEmulate, node_name}, kUnderscore));
+    model_editor_.AddNode(kOpTypeNeg, neg_node_name, neg_inputs, neg_outputs);
+  }
+
+  // max = axis_dim_size - 1
+  const std::string one_scalar = CreateScalarInitializer<int64_t>(1);
+  const std::string max_value_name = GenerateOperandName();
+  {
+    std::array<const char*, 2> sub_inputs = {axis_dim_size_name.c_str(),
+                                             one_scalar.c_str()};
+    std::array<const char*, 1> sub_outputs = {max_value_name.c_str()};
+    const std::string sub_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeSub, kToEmulate, node_name}, kUnderscore));
+    model_editor_.AddNode(kOpTypeSub, sub_node_name, sub_inputs, sub_outputs);
+  }
+
+  // Step 5: Clamp using Clip operator
+  const std::string clamped_indices_int64 = GenerateOperandName();
+  {
+    std::array<const char*, 3> clip_inputs = {indices_int64.c_str(),
+                                              neg_dim_size_name.c_str(),
+                                              max_value_name.c_str()};
+    std::array<const char*, 1> clip_outputs = {clamped_indices_int64.c_str()};
+    const std::string clip_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeClamp, kToEmulate, node_name}, kUnderscore));
+    model_editor_.AddNode(kOpTypeClamp, clip_node_name, clip_inputs,
+                          clip_outputs);
+  }
+
+  // Step 6: Cast back to original data type if needed.
+  if (need_cast_back) {
+    return CreateCastNode(clamped_indices_int64,
+                          WebnnToOnnxDataType(indices_data_type));
+  }
+  return clamped_indices_int64;
+}
+
+std::string GraphBuilderOrt::ClampGatherNDIndices(
+    base::cstring_view input_operand_name,
+    base::cstring_view indices_operand_name,
+    const OperandDescriptor& input_descriptor,
+    const OperandDescriptor& indices_descriptor) {
+  CHECK_GT(input_descriptor.shape().size(), 0u);
+  CHECK_GT(indices_descriptor.shape().size(), 0u);
+
+  // The indices last dimension must be static (validated earlier).
+  const Dimension& indices_last_dim =
+      indices_descriptor.shape()[indices_descriptor.shape().size() - 1];
+  CHECK(std::holds_alternative<uint32_t>(indices_last_dim));
+  const uint32_t num_axes = std::get<uint32_t>(indices_last_dim);
+
+  // Check if all relevant input dimensions are static.
+  bool relevant_input_dims_static = true;
+  for (uint32_t axis = 0; axis < num_axes; ++axis) {
+    if (!std::holds_alternative<uint32_t>(input_descriptor.shape()[axis])) {
+      relevant_input_dims_static = false;
+      break;
+    }
+  }
+
+  if (relevant_input_dims_static) {
+    // Static path: create constant min/max tensors.
+    std::array<int64_t, 1> min_max_shape = {static_cast<int64_t>(num_axes)};
+
+    base::FixedArray<int64_t> min_value(num_axes);
+    base::FixedArray<int64_t> max_value(num_axes);
+    for (uint32_t axis = 0; axis < num_axes; ++axis) {
+      uint32_t input_dim_size =
+          std::get<uint32_t>(input_descriptor.shape()[axis]);
+      min_value[axis] = -static_cast<int64_t>(input_dim_size);
+      max_value[axis] = static_cast<int64_t>(input_dim_size) - 1;
+    }
+
+    // ONNX Clip can only have `min` and `max` as scalars, so here use Min and
+    // Max to emulate a clamp operation.
+    std::string min = CreateInitializer<int64_t>(min_max_shape, min_value);
+    const std::string max_node_name = GenerateNodeName(
+        base::JoinString({kInserted, kOpTypeMax}, kUnderscore));
+    const std::string max_output = GenerateOperandName();
+    std::array<const char*, 2> max_inputs = {indices_operand_name.c_str(),
+                                             min.c_str()};
+    std::array<const char*, 1> max_outputs = {max_output.c_str()};
+    model_editor_.AddNode(kOpTypeMax, max_node_name, max_inputs, max_outputs);
+
+    std::string max = CreateInitializer<int64_t>(min_max_shape, max_value);
+    const std::string min_node_name = GenerateNodeName(
+        base::JoinString({kInserted, kOpTypeMin}, kUnderscore));
+    const std::string output = GenerateOperandName();
+    std::array<const char*, 2> min_inputs = {max_output.c_str(), max.c_str()};
+    std::array<const char*, 1> min_outputs = {output.c_str()};
+    model_editor_.AddNode(kOpTypeMin, min_node_name, min_inputs, min_outputs);
+
+    return output;
+  } else {
+    // Dynamic path: build min/max tensors at runtime.
+    const std::string node_base_name = GenerateNodeName(
+        base::JoinString({kInserted, "ClampGatherND"}, kUnderscore));
+
+    // Step 1: Get the input shape at runtime.
+    const std::string input_shape_name = GenerateOperandName();
+    {
+      std::array<const char*, 1> shape_inputs = {input_operand_name.c_str()};
+      std::array<const char*, 1> shape_outputs = {input_shape_name.c_str()};
+      const std::string shape_node_name = GenerateNodeName(base::JoinString(
+          {kInserted, "Shape", kToEmulate, node_base_name}, kUnderscore));
+      model_editor_.AddNode("Shape", shape_node_name, shape_inputs,
+                            shape_outputs);
+    }
+
+    // Step 2: Slice input_shape to get the first num_axes dimensions.
+    const std::string relevant_input_dims_name = GenerateOperandName();
+    {
+      const std::string starts = Create1DInitializer<int64_t>({0});
+      const std::string ends =
+          Create1DInitializer<int64_t>({static_cast<int64_t>(num_axes)});
+      const std::string axes = Create1DInitializer<int64_t>({0});
+      const std::string steps = Create1DInitializer<int64_t>({1});
+
+      std::array<const char*, 5> slice_inputs = {input_shape_name.c_str(),
+                                                 starts.c_str(), ends.c_str(),
+                                                 axes.c_str(), steps.c_str()};
+      std::array<const char*, 1> slice_outputs = {
+          relevant_input_dims_name.c_str()};
+      const std::string slice_node_name = GenerateNodeName(base::JoinString(
+          {kInserted, kOpTypeSlice, kToEmulate, node_base_name}, kUnderscore));
+      model_editor_.AddNode(kOpTypeSlice, slice_node_name, slice_inputs,
+                            slice_outputs);
+    }
+
+    // Step 3: Compute min = -relevant_input_dims using Neg.
+    const std::string min_values_name = GenerateOperandName();
+    {
+      std::array<const char*, 1> neg_inputs = {
+          relevant_input_dims_name.c_str()};
+      std::array<const char*, 1> neg_outputs = {min_values_name.c_str()};
+      const std::string neg_node_name = GenerateNodeName(base::JoinString(
+          {kInserted, kOpTypeNeg, kToEmulate, node_base_name}, kUnderscore));
+      model_editor_.AddNode(kOpTypeNeg, neg_node_name, neg_inputs, neg_outputs);
+    }
+
+    // Step 4: Compute max = relevant_input_dims - 1 using Sub.
+    const std::string max_values_name = GenerateOperandName();
+    {
+      const std::string one_scalar = CreateScalarInitializer<int64_t>(1);
+      std::array<const char*, 2> sub_inputs = {relevant_input_dims_name.c_str(),
+                                               one_scalar.c_str()};
+      std::array<const char*, 1> sub_outputs = {max_values_name.c_str()};
+      const std::string sub_node_name = GenerateNodeName(base::JoinString(
+          {kInserted, kOpTypeSub, kToEmulate, node_base_name}, kUnderscore));
+      model_editor_.AddNode(kOpTypeSub, sub_node_name, sub_inputs, sub_outputs);
+    }
+
+    // Step 5: Clamp indices using Max and Min operations.
+    const std::string after_max_name = GenerateOperandName();
+    {
+      std::array<const char*, 2> max_inputs = {indices_operand_name.c_str(),
+                                               min_values_name.c_str()};
+      std::array<const char*, 1> max_outputs = {after_max_name.c_str()};
+      const std::string max_node_name = GenerateNodeName(base::JoinString(
+          {kInserted, kOpTypeMax, kToEmulate, node_base_name}, kUnderscore));
+      model_editor_.AddNode(kOpTypeMax, max_node_name, max_inputs, max_outputs);
+    }
+
+    const std::string clamped_indices = GenerateOperandName();
+    {
+      std::array<const char*, 2> min_inputs = {after_max_name.c_str(),
+                                               max_values_name.c_str()};
+      std::array<const char*, 1> min_outputs = {clamped_indices.c_str()};
+      const std::string min_node_name = GenerateNodeName(base::JoinString(
+          {kInserted, kOpTypeMin, kToEmulate, node_base_name}, kUnderscore));
+      model_editor_.AddNode(kOpTypeMin, min_node_name, min_inputs, min_outputs);
+    }
+
+    return clamped_indices;
+  }
 }
 
 template <typename T>
@@ -947,7 +1408,7 @@ void GraphBuilderOrt::AddBatchNormalizationOperation(
   const OperandDescriptor& input_descriptor =
       GetOperand(batch_normalization.input_operand_id).descriptor;
   const OperandDataType input_data_type = input_descriptor.data_type();
-  const std::vector<uint32_t>& input_shape = input_descriptor.shape();
+  const std::vector<Dimension>& input_shape = input_descriptor.shape();
   // ONNX BatchNormalization expects NCHW layout, channel is at index 1. In
   // addition it also accepts single dimension input of size N in which case C
   // is assumed to be 1.
@@ -957,20 +1418,18 @@ void GraphBuilderOrt::AddBatchNormalizationOperation(
   // at least 2D input. To handle this, we reshape [C] to [1, C] before passing
   // to ONNX, then reshape the output back to [C].
   bool needs_reshape_for_1d = input_shape.size() == 1;
-  uint32_t input_channels = 1;
+  Dimension input_channels = uint32_t{1};
 
   if (needs_reshape_for_1d) {
-    // Reshape 1D [C] -> 2D [1, C] for ONNX BatchNorm.
-
+    // Unsqueeze 1D [C] -> 2D [1, C] for ONNX BatchNorm by adding dimension at
+    // axis 0.
     input_channels = input_shape[0];
-    input =
-        CreateReshapeNode(input, {1, static_cast<uint32_t>(input_channels)});
+    std::array<int64_t, 1> unsqueeze_axes = {0};
+    input = CreateUnsqueezeNode(input, unsqueeze_axes);
   } else if (input_shape.size() > 1) {
     // For multi-dimensional inputs, channel is at index 1 (NCHW layout).
     input_channels = input_shape[1];
   }
-
-  std::vector<uint32_t> scale_and_bias_shape = {input_channels};
 
   // ONNX BatchNormalization requires 5 inputs: input, scale, bias, mean and
   // variance. WebNN allows optional scale/bias, so create default ones if not
@@ -981,14 +1440,34 @@ void GraphBuilderOrt::AddBatchNormalizationOperation(
         GetOperand(batch_normalization.scale_operand_id.value()).descriptor));
     scale = GetOperandNameById(batch_normalization.scale_operand_id.value());
   } else {
-    scale = CreateOneInitializer(input_data_type, scale_and_bias_shape);
+    if (std::holds_alternative<uint32_t>(input_channels)) {
+      std::vector<uint32_t> scale_and_bias_shape = {
+          std::get<uint32_t>(input_channels)};
+      scale = CreateOneInitializer(input_data_type, scale_and_bias_shape);
+    } else {
+      // Dynamic channel dimension: create scale at runtime with channel axis.
+      std::array<uint32_t, 1> channel_axis = {
+          static_cast<uint32_t>(needs_reshape_for_1d ? 0 : 1)};
+      scale = CreateInitializerWithInputShapeAndDataTypeForFloat(
+          batch_normalization.input_operand_id, 1.0f, channel_axis);
+    }
   }
   if (batch_normalization.bias_operand_id) {
     CHECK(data_type_limits.batch_normalization_mean.Supports(
         GetOperand(batch_normalization.bias_operand_id.value()).descriptor));
     bias = GetOperandNameById(batch_normalization.bias_operand_id.value());
   } else {
-    bias = CreateZeroInitializer(input_data_type, scale_and_bias_shape);
+    if (std::holds_alternative<uint32_t>(input_channels)) {
+      std::vector<uint32_t> scale_and_bias_shape = {
+          std::get<uint32_t>(input_channels)};
+      bias = CreateZeroInitializer(input_data_type, scale_and_bias_shape);
+    } else {
+      // Dynamic channel dimension: create bias at runtime with channel axis.
+      std::array<uint32_t, 1> channel_axis = {
+          static_cast<uint32_t>(needs_reshape_for_1d ? 0 : 1)};
+      bias = CreateInitializerWithInputShapeAndDataTypeForFloat(
+          batch_normalization.input_operand_id, 0.0f, channel_axis);
+    }
   }
 
   // If we reshaped input from 1D to 2D, we need to reshape output back to 1D.
@@ -1006,10 +1485,11 @@ void GraphBuilderOrt::AddBatchNormalizationOperation(
   model_editor_.AddNode(kOpTypeBatchNormalization, node_name, inputs, outputs,
                         attributes);
 
-  // Reshape output back from 2D [1, C] -> 1D [C] for 1D inputs.
+  // Squeeze output back from 2D [1, C] -> 1D [C] for 1D inputs by removing
+  // dimension at axis 0.
   if (needs_reshape_for_1d) {
-    InsertReshapeNode(batchnorm_output, output,
-                      {static_cast<uint32_t>(input_channels)});
+    std::array<int64_t, 1> squeeze_axes = {0};
+    InsertSqueezeNode(batchnorm_output, output, squeeze_axes);
   }
 }
 
@@ -1079,25 +1559,28 @@ void GraphBuilderOrt::AddConv2dOperation(const mojom::Conv2d& conv2d) {
       // information is not missing. Since the `pads` attribute has already been
       // set, there is no need to set `output_size` attribute.
       // https://onnx.ai/onnx/operators/onnx__ConvTranspose.html#attributes
-      const std::vector<uint32_t>& input_shape =
+      const std::vector<webnn::Dimension> input_shape =
           GetOperand(conv2d.input_operand_id).descriptor.shape();
-      const std::vector<uint32_t>& filter_shape =
+      const std::vector<webnn::Dimension> filter_shape =
           GetOperand(conv2d.filter_operand_id).descriptor.shape();
-      const std::vector<uint32_t>& output_shape =
+      const std::vector<webnn::Dimension> output_shape =
           GetOperand(conv2d.output_operand_id).descriptor.shape();
       // Since ONNX Runtime uses nchw input layout and oihw filter layout，
       // input/filter/output_shape[2] and input/filter/output_shape[3] are used
       // here to access the height and width dimensions of the
       // input/filter/output_shape tensor shape.
+      // Filter dims are always static. For input/output spatial dims, use
+      // max_size if bounded, otherwise use 0 (will be handled at runtime).
+      auto get_size = [](const webnn::Dimension& dim) -> int64_t {
+        auto val = GetStaticOrMaxSize(dim);
+        return val.has_value() ? base::checked_cast<int64_t>(*val) : 0;
+      };
       std::array<int64_t, 2> input_size = {
-          base::checked_cast<int64_t>(input_shape[2]),
-          base::checked_cast<int64_t>(input_shape[3])};
+          get_size(input_shape[2]), get_size(input_shape[3])};
       std::array<int64_t, 2> filter_size = {
-          base::checked_cast<int64_t>(filter_shape[2]),
-          base::checked_cast<int64_t>(filter_shape[3])};
+          get_size(filter_shape[2]), get_size(filter_shape[3])};
       std::array<int64_t, 2> output_size = {
-          base::checked_cast<int64_t>(output_shape[2]),
-          base::checked_cast<int64_t>(output_shape[3])};
+          get_size(output_shape[2]), get_size(output_shape[3])};
 
       int64_t output_padding_height = CalculateOutputPaddingSize(
           input_size[0], filter_size[0], strides[0], dilations[0], pads[0],
@@ -1155,11 +1638,11 @@ void GraphBuilderOrt::AddDequantizeOrQuantizeLinearOperation(
   std::string zero_point = GetOperandNameById(operation.zero_point_operand_id);
   std::string output = GetOperandNameById(operation.output_operand_id);
 
-  const std::vector<uint32_t>& input_shape =
-      GetOperand(operation.input_operand_id).descriptor.shape();
+  const std::vector<uint32_t> input_shape =
+      GetOperand(operation.input_operand_id).descriptor.StaticShape().value();
   // ZeroPoint has the same shape as the scale.
-  const std::vector<uint32_t>& scale_zero_point_shape =
-      GetOperand(operation.scale_operand_id).descriptor.shape();
+  const std::vector<uint32_t> scale_zero_point_shape =
+      GetOperand(operation.scale_operand_id).descriptor.StaticShape().value();
   CHECK_EQ(scale_zero_point_shape.size(), input_shape.size());
 
   std::optional<int64_t> axis;
@@ -1468,6 +1951,11 @@ void GraphBuilderOrt::AddElementWiseBinaryOperation(
           {lhs_descriptor, rhs_descriptor}));
       return AddLogicalBinaryOperation(element_wise_binary, kOpTypeLogicalXor);
     }
+    case mojom::ElementWiseBinary::Kind::kMod: {
+      CHECK(data_type_limits.mod_input.SupportsAll(
+          {lhs_descriptor, rhs_descriptor}));
+      return AddBinaryOperation(element_wise_binary, kOpTypeMod);
+    }
   }
 }
 
@@ -1602,10 +2090,13 @@ void GraphBuilderOrt::AddExpandOperation(const mojom::Expand& expand) {
   }
 
   const std::string node_name = GenerateNodeName(expand.label);
-  const std::vector<uint32_t>& output_shape =
+  const std::vector<Dimension>& output_shape =
       GetOperand(expand.output_operand_id).descriptor.shape();
+  const std::vector<Dimension>& expand_input_shape =
+      GetOperand(expand.input_operand_id).descriptor.shape();
 
-  AddExpandNode(node_name, input, output, output_shape);
+  AddExpandNode(node_name, input, output, output_shape, expand_input_shape,
+                known_dynamic_dims_);
 }
 
 void GraphBuilderOrt::AddConcatOperation(const mojom::Concat& concat) {
@@ -1638,15 +2129,26 @@ void GraphBuilderOrt::AddGatherOperation(const T& operation,
   const std::string indices = GetOperandNameById(operation.indices_operand_id);
   const std::string output = GetOperandNameById(operation.output_operand_id);
 
+  const OperandDescriptor& input_descriptor =
+      GetOperand(operation.input_operand_id).descriptor;
+  const Dimension& axis_dimension = input_descriptor.shape()[operation.axis];
+
+  std::string indices_to_use = indices;
   // Clamp the indices operand to prevent out-of-bounds reading which will cause
   // ORT CPU EP to throw a runtime error.
-  std::string clamped_indices = ClampIndices(
-      indices, GetOperand(operation.indices_operand_id).descriptor.data_type(),
-      GetOperand(operation.input_operand_id)
-          .descriptor.shape()
-          .at(operation.axis));
+  if (std::holds_alternative<uint32_t>(axis_dimension)) {
+    indices_to_use = ClampIndices(
+        indices,
+        GetOperand(operation.indices_operand_id).descriptor.data_type(),
+        std::get<uint32_t>(axis_dimension));
+  } else {
+    // For dynamic dimension, clamp indices at runtime.
+    indices_to_use = ClampIndicesForDynamicShape(
+        node_name, input, indices, operation.axis,
+        GetOperand(operation.indices_operand_id).descriptor.data_type());
+  }
 
-  std::array<const char*, 2> inputs = {input.c_str(), clamped_indices.c_str()};
+  std::array<const char*, 2> inputs = {input.c_str(), indices_to_use.c_str()};
   std::array<const char*, 1> outputs = {output.c_str()};
 
   std::array<ScopedOrtOpAttr, 1> attributes = {model_editor_.CreateAttribute(
@@ -1679,7 +2181,7 @@ void GraphBuilderOrt::AddGatherNDOperation(const mojom::GatherND& gather_nd) {
   // Clamp the indices operand to prevent out-of-bounds reading which will cause
   // ORT CPU EP to throw a runtime error.
   std::string clamped_indices = ClampGatherNDIndices(
-      int64_indices, input_descriptor.shape(), indices_descriptor.shape());
+      input, int64_indices, input_descriptor, indices_descriptor);
 
   std::array<const char*, 2> inputs = {input.c_str(), clamped_indices.c_str()};
   std::array<const char*, 1> outputs = {output.c_str()};
@@ -1765,22 +2267,24 @@ void GraphBuilderOrt::AddGruOperation(const GruType& gru) {
     // Reshape the input into a 3-D tensor, since the GRU of ONNX requires
     // the input shape to be [seq_length, batch_size, input_size]. For
     // gruCell, `seq_length` is equal to 1.
-    const std::vector<uint32_t>& input_shape = input_descriptor.shape();
+    const std::vector<uint32_t> input_shape =
+        input_descriptor.StaticShape().value();
     CHECK_EQ(input_shape.size(), 2u);
     input = CreateReshapeNode(input, {1, input_shape[0], input_shape[1]});
 
     // Reshape the weight into a 3-D tensor, since the GRU of ONNX requires
     // the weight shape to be [num_directions, 3*hidden_size, input_size].
     // For gruCell, `num_directions` is equal to 1.
-    const std::vector<uint32_t>& weight_shape = weight_descriptor.shape();
+    const std::vector<uint32_t> weight_shape =
+        weight_descriptor.StaticShape().value();
     CHECK_EQ(weight_shape.size(), 2u);
     weight = CreateReshapeNode(weight, {1, weight_shape[0], weight_shape[1]});
 
     // Reshape the recurrent weight into a 3-D tensor, since the GRU of ONNX
     // requires the recurrent weight shape to be [num_directions,
     // 3*hidden_size, hidden_size]. For gruCell, `num_directions` is equal to 1.
-    const std::vector<uint32_t>& recurrent_weight_shape =
-        recurrent_weight_descriptor.shape();
+    const std::vector<uint32_t> recurrent_weight_shape =
+        recurrent_weight_descriptor.StaticShape().value();
     CHECK_EQ(recurrent_weight_shape.size(), 2u);
     recurrent_weight = CreateReshapeNode(
         recurrent_weight,
@@ -1871,8 +2375,10 @@ void GraphBuilderOrt::AddGruOperation(const GruType& gru) {
     }
   } else {
     hidden_state = GetOperandNameById(gru.hidden_state_operand_id);
-    const std::vector<uint32_t>& hidden_state_shape =
-        GetOperand(gru.hidden_state_operand_id).descriptor.shape();
+    const std::vector<uint32_t> hidden_state_shape =
+        GetOperand(gru.hidden_state_operand_id)
+            .descriptor.StaticShape()
+            .value();
     CHECK_EQ(hidden_state_shape.size(), 2u);
     // Reshape the hiddenState into a 3-D tensor, since the GRU of ONNX requires
     // the "initial_h" shape to be [num_directions, batch_size, hidden_size].
@@ -1922,8 +2428,8 @@ void GraphBuilderOrt::AddGruOperation(const GruType& gru) {
     // Reshape the ONNX GRU output "Y_h" of shape [num_directions, batch_size,
     // hidden_size] back to a 2-D tensor, since the gruCell of WebNN requires
     // the output shape to be [batchSize, hiddenSize].
-    const std::vector<uint32_t>& output_shape =
-        GetOperand(gru.output_operand_id).descriptor.shape();
+    const std::vector<uint32_t> output_shape =
+        GetOperand(gru.output_operand_id).descriptor.StaticShape().value();
     CHECK_EQ(output_shape.size(), 2u);
     InsertReshapeNode(output_hidden, GetOperandNameById(gru.output_operand_id),
                       output_shape);
@@ -1968,11 +2474,10 @@ void GraphBuilderOrt::AddInstanceNormalizationOperation(
   const OperandDescriptor& input_descriptor =
       GetOperand(instance_normalization.input_operand_id).descriptor;
   const OperandDataType input_data_type = input_descriptor.data_type();
-  const std::vector<uint32_t>& input_shape = input_descriptor.shape();
   // ONNX InstanceNormalization expects NCHW layout, channel is at index 1.
+  const std::vector<Dimension>& input_shape = input_descriptor.shape();
   CHECK_EQ(input_shape.size(), 4u);
-  uint32_t input_channels = input_shape[1];
-  std::vector<uint32_t> scale_and_bias_shape = {input_channels};
+  Dimension input_channels = input_shape[1];
 
   // ONNX InstanceNormalization requires 3 inputs: input, scale and bias.
   // WebNN allows optional scale/bias, so create default ones if not provided.
@@ -1984,14 +2489,32 @@ void GraphBuilderOrt::AddInstanceNormalizationOperation(
             .descriptor));
     scale = GetOperandNameById(instance_normalization.scale_operand_id.value());
   } else {
-    scale = CreateOneInitializer(input_data_type, scale_and_bias_shape);
+    if (std::holds_alternative<uint32_t>(input_channels)) {
+      std::vector<uint32_t> scale_and_bias_shape = {
+          std::get<uint32_t>(input_channels)};
+      scale = CreateOneInitializer(input_data_type, scale_and_bias_shape);
+    } else {
+      // Dynamic channel dimension: create scale at runtime with channel axis.
+      std::array<uint32_t, 1> channel_axis = {1};
+      scale = CreateInitializerWithInputShapeAndDataTypeForFloat(
+          instance_normalization.input_operand_id, 1.0f, channel_axis);
+    }
   }
   if (instance_normalization.bias_operand_id) {
     CHECK(data_type_limits.instance_normalization_scale.Supports(
         GetOperand(instance_normalization.bias_operand_id.value()).descriptor));
     bias = GetOperandNameById(instance_normalization.bias_operand_id.value());
   } else {
-    bias = CreateZeroInitializer(input_data_type, scale_and_bias_shape);
+    if (std::holds_alternative<uint32_t>(input_channels)) {
+      std::vector<uint32_t> scale_and_bias_shape = {
+          std::get<uint32_t>(input_channels)};
+      bias = CreateZeroInitializer(input_data_type, scale_and_bias_shape);
+    } else {
+      // Dynamic channel dimension: create bias at runtime with channel axis.
+      std::array<uint32_t, 1> channel_axis = {1};
+      bias = CreateInitializerWithInputShapeAndDataTypeForFloat(
+          instance_normalization.input_operand_id, 0.0f, channel_axis);
+    }
   }
 
   std::array<const char*, 3> inputs = {input.c_str(), scale.c_str(),
@@ -2032,7 +2555,7 @@ void GraphBuilderOrt::AddLayerNormalizationOperation(
   std::array<const char*, 1> outputs = {output.c_str()};
   const OperandDataType input_data_type = input_descriptor.data_type();
   auto axes = layer_normalization.axes;
-  const std::vector<uint32_t>& input_shape = input_descriptor.shape();
+  const auto static_input_shape = input_descriptor.StaticShape();
   // ONNX LayerNormalization doesn't support empty axes because it requires to
   // set the first normalization dimension.
   // https://onnx.ai/onnx/operators/onnx__LayerNormalization.html#attributes
@@ -2041,8 +2564,14 @@ void GraphBuilderOrt::AddLayerNormalizationOperation(
   // https://www.w3.org/TR/webnn/#dom-mllayernormalizationoptions-axes
   if (axes.empty()) {
     if (layer_normalization.bias_operand_id) {
-      const std::string zero =
-          CreateZeroInitializer(input_data_type, input_shape);
+      std::string zero;
+      if (static_input_shape.has_value()) {
+        zero =
+            CreateZeroInitializer(input_data_type, static_input_shape.value());
+      } else {
+        zero = CreateInitializerWithInputShapeAndDataTypeForFloat(
+            layer_normalization.input_operand_id, 0.0f);
+      }
       std::array<const char*, 2> add_inputs = {bias.c_str(), zero.c_str()};
       return model_editor_.AddNode(kOpTypeAdd, node_name, add_inputs, outputs);
     } else {
@@ -2067,24 +2596,35 @@ void GraphBuilderOrt::AddLayerNormalizationOperation(
     std::ranges::sort(axes);
   }
 
-  std::vector<uint32_t> scale_shape;
-  scale_shape.reserve(axes_size);
-  std::ranges::transform(
-      axes, std::back_inserter(scale_shape),
-      [&input_shape](uint32_t axis) { return input_shape[axis]; });
+  std::optional<std::vector<uint32_t>> static_scale_shape;
+  if (static_input_shape.has_value()) {
+    static_scale_shape.emplace();
+    static_scale_shape->reserve(axes_size);
+    std::ranges::transform(axes, std::back_inserter(static_scale_shape.value()),
+                           [&static_input_shape](uint32_t axis) {
+                             return static_input_shape.value()[axis];
+                           });
+  }
   // Because ONNX LayerNormalization only accepts the first normalization
   // dimension, it can only support WebNN layerNormalization whose axes are
   // consecutive til the last dimension. Here we only check beginning and ending
   // of the ascending sorted axes, because the blink validation code ensures
   // axes not having duplicated values.
-  if (axes[axes_size - 1] == input_shape.size() - 1 &&
-      axes[0] == input_shape.size() - axes_size) {
+  if (axes[axes_size - 1] == input_descriptor.shape().size() - 1 &&
+      axes[0] == input_descriptor.shape().size() - axes_size) {
     if (layer_normalization.scale_operand_id) {
       if (permutation.has_value()) {
         scale = CreateTransposeNode(scale, permutation.value());
       }
     } else {
-      scale = CreateOneInitializer(input_data_type, scale_shape);
+      if (static_scale_shape.has_value()) {
+        scale =
+            CreateOneInitializer(input_data_type, static_scale_shape.value());
+      } else {
+        // Dynamic scale shape: create scale at runtime with axes.
+        scale = CreateInitializerWithInputShapeAndDataTypeForFloat(
+            layer_normalization.input_operand_id, 1.0f, axes);
+      }
     }
     inputs.push_back(scale.c_str());
 
@@ -2195,23 +2735,139 @@ void GraphBuilderOrt::AddLayerNormalizationOperation(
     model_editor_.AddNode(kOpTypeDiv, div_node_name, div_inputs, div_outputs);
 
     // Create compatible_shape for broadcasting scale and bias with intermediate
-    // results sach as `div_output` and `mul_output`. Initialize all dimensions
+    // results such as `div_output` and `mul_output`. Initialize all dimensions
     // to 1, then set normalization axes to match input dimensions for
     // element-wise operations.
     // Example: input_shape=[2,3,4,5], axes=[1,3] -> compatible_shape=[1,3,1,5].
-    std::vector<uint32_t> compatible_shape(input_shape.size(), 1);
-    for (auto axis : axes) {
-      compatible_shape[axis] = input_shape[axis];
+    // Use variant to hold either static shape (vector) or dynamic shape
+    // (string).
+    std::variant<std::vector<uint32_t>, std::string> compatible_shape;
+
+    if (static_input_shape.has_value()) {
+      // Static input shape: create compatible_shape vector.
+      std::vector<uint32_t> static_compatible_shape(static_input_shape->size(),
+                                                    1);
+      for (auto axis : axes) {
+        static_compatible_shape[axis] = static_input_shape.value()[axis];
+      }
+      compatible_shape = std::move(static_compatible_shape);
+    } else {
+      // Dynamic input shape: create compatible shape at runtime with axes.
+      // 1. Get the shape of the input tensor.
+      const std::string input_shape_output = GenerateOperandName();
+      const std::string shape_node_name = GenerateNodeName(
+          GenerateEmulatedOpLabel(kOpTypeShape, layer_normalization.label));
+      std::array<const char*, 1> shape_inputs = {input.c_str()};
+      std::array<const char*, 1> shape_outputs = {input_shape_output.c_str()};
+      model_editor_.AddNode(kOpTypeShape, shape_node_name, shape_inputs,
+                            shape_outputs);
+
+      // 2. Create a 1D tensor of all 1s with length = rank of input.
+      // First, get the rank by getting the shape of the shape tensor.
+      const std::string rank_output = GenerateOperandName();
+      const std::string shape_of_shape_node_name =
+          GenerateNodeName(GenerateEmulatedOpLabel(
+              kOpTypeShape, layer_normalization.label, "rank"));
+      std::array<const char*, 1> shape_of_shape_inputs = {
+          input_shape_output.c_str()};
+      std::array<const char*, 1> shape_of_shape_outputs = {rank_output.c_str()};
+      model_editor_.AddNode(kOpTypeShape, shape_of_shape_node_name,
+                            shape_of_shape_inputs, shape_of_shape_outputs);
+
+      // Create a tensor of 1s with shape = [rank].
+      const std::array<int64_t, 1> scalar_one_data = {1};
+      const std::string scalar_one =
+          Create1DInitializer<int64_t>(scalar_one_data);
+      const std::string ones_shape_output = GenerateOperandName();
+      const std::string expand_ones_node_name =
+          GenerateNodeName(GenerateEmulatedOpLabel(
+              kOpTypeExpand, layer_normalization.label, "ones"));
+      std::array<const char*, 2> expand_ones_inputs = {scalar_one.c_str(),
+                                                       rank_output.c_str()};
+      std::array<const char*, 1> expand_ones_outputs = {
+          ones_shape_output.c_str()};
+      model_editor_.AddNode(kOpTypeExpand, expand_ones_node_name,
+                            expand_ones_inputs, expand_ones_outputs);
+
+      // 3. Gather the dimensions at axes positions from input_shape.
+      const std::string axes_indices =
+          CreateInt64InitializerForUint32Array(axes);
+      const std::string gathered_dims = GenerateOperandName();
+      const std::string gather_node_name = GenerateNodeName(
+          GenerateEmulatedOpLabel("Gather", layer_normalization.label));
+      std::array<const char*, 2> gather_inputs = {input_shape_output.c_str(),
+                                                  axes_indices.c_str()};
+      std::array<const char*, 1> gather_outputs = {gathered_dims.c_str()};
+      std::array<ScopedOrtOpAttr, 1> gather_attributes = {
+          model_editor_.CreateAttribute(kAttrAxis, int64_t{0})};
+      model_editor_.AddNode(kOpTypeGather, gather_node_name, gather_inputs,
+                            gather_outputs, gather_attributes);
+
+      // 4. Use ScatterElements to update ones_shape at axes positions.
+      const std::string compatible_shape_output = GenerateOperandName();
+      const std::string scatter_node_name =
+          GenerateNodeName(GenerateEmulatedOpLabel("ScatterElements",
+                                                   layer_normalization.label));
+      std::array<const char*, 3> scatter_inputs = {ones_shape_output.c_str(),
+                                                   axes_indices.c_str(),
+                                                   gathered_dims.c_str()};
+      std::array<const char*, 1> scatter_outputs = {
+          compatible_shape_output.c_str()};
+      std::array<ScopedOrtOpAttr, 1> scatter_attributes = {
+          model_editor_.CreateAttribute(kAttrAxis, int64_t{0})};
+      model_editor_.AddNode(kOpTypeScatterElements, scatter_node_name,
+                            scatter_inputs, scatter_outputs,
+                            scatter_attributes);
+      compatible_shape = compatible_shape_output;
     }
+
+    // Handle scale operand using the compatible_shape variant.
     if (layer_normalization.scale_operand_id) {
       if (permutation.has_value()) {
         scale = CreateTransposeNode(scale, permutation.value());
       }
-      if (scale_shape.size() != input_shape.size()) {
-        scale = CreateReshapeNode(scale, compatible_shape);
+      if (std::holds_alternative<std::string>(compatible_shape)) {
+        // Dynamic shape: reshape scale to compatible_shape.
+        const std::string reshape_scale_node_name =
+            GenerateNodeName(GenerateEmulatedOpLabel(
+                "Reshape", layer_normalization.label, "scale"));
+        std::array<const char*, 2> reshape_scale_inputs = {
+            scale.c_str(), std::get<std::string>(compatible_shape).c_str()};
+        const std::string reshaped_scale = GenerateOperandName();
+        std::array<const char*, 1> reshape_scale_outputs = {
+            reshaped_scale.c_str()};
+        model_editor_.AddNode(kOpTypeReshape, reshape_scale_node_name,
+                              reshape_scale_inputs, reshape_scale_outputs);
+        scale = reshaped_scale;
+      } else if (static_scale_shape.value().size() !=
+                 static_input_shape.value().size()) {
+        // Static shape: reshape if needed.
+        scale = CreateReshapeNode(
+            scale, std::get<std::vector<uint32_t>>(compatible_shape));
       }
     } else {
-      scale = CreateOneInitializer(input_data_type, compatible_shape);
+      if (std::holds_alternative<std::string>(compatible_shape)) {
+        // Dynamic shape: create scale with axes, then reshape.
+        std::string scale_with_axes =
+            CreateInitializerWithInputShapeAndDataTypeForFloat(
+                layer_normalization.input_operand_id, 1.0f, axes);
+        const std::string reshape_scale_node_name =
+            GenerateNodeName(GenerateEmulatedOpLabel(
+                "Reshape", layer_normalization.label, "scale"));
+        std::array<const char*, 2> reshape_scale_inputs = {
+            scale_with_axes.c_str(),
+            std::get<std::string>(compatible_shape).c_str()};
+        const std::string reshaped_scale = GenerateOperandName();
+        std::array<const char*, 1> reshape_scale_outputs = {
+            reshaped_scale.c_str()};
+        model_editor_.AddNode(kOpTypeReshape, reshape_scale_node_name,
+                              reshape_scale_inputs, reshape_scale_outputs);
+        scale = reshaped_scale;
+      } else {
+        // Static shape: create one initializer.
+        scale = CreateOneInitializer(
+            input_data_type, std::get<std::vector<uint32_t>>(compatible_shape));
+      }
     }
 
     const std::string mul_label =
@@ -2225,8 +2881,25 @@ void GraphBuilderOrt::AddLayerNormalizationOperation(
       if (permutation.has_value()) {
         bias = CreateTransposeNode(bias, permutation.value());
       }
-      if (scale_shape.size() != input_shape.size()) {
-        bias = CreateReshapeNode(bias, compatible_shape);
+      // Reshape bias to compatible_shape for broadcasting.
+      if (std::holds_alternative<std::string>(compatible_shape)) {
+        // Dynamic shape: reuse the dynamic compatible_shape.
+        const std::string reshape_bias_node_name =
+            GenerateNodeName(GenerateEmulatedOpLabel(
+                "Reshape", layer_normalization.label, "bias"));
+        std::array<const char*, 2> reshape_bias_inputs = {
+            bias.c_str(), std::get<std::string>(compatible_shape).c_str()};
+        const std::string reshaped_bias = GenerateOperandName();
+        std::array<const char*, 1> reshape_bias_outputs = {
+            reshaped_bias.c_str()};
+        model_editor_.AddNode(kOpTypeReshape, reshape_bias_node_name,
+                              reshape_bias_inputs, reshape_bias_outputs);
+        bias = reshaped_bias;
+      } else if (static_scale_shape.value().size() !=
+                 static_input_shape.value().size()) {
+        // Static shape: reuse the static compatible_shape.
+        bias = CreateReshapeNode(
+            bias, std::get<std::vector<uint32_t>>(compatible_shape));
       }
 
       const std::string add_2_label =
@@ -2332,14 +3005,16 @@ void GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
     // Reshape the input into a 3-D tensor, since the LSTM of ONNX requires
     // the input shape to be [seq_length, batch_size, input_size]. For
     // lstmCell, `seq_length` is equal to 1.
-    const std::vector<uint32_t>& input_shape = input_descriptor.shape();
+    const std::vector<uint32_t> input_shape =
+        input_descriptor.StaticShape().value();
     CHECK_EQ(input_shape.size(), 2u);
     input = CreateReshapeNode(input, {1, input_shape[0], input_shape[1]});
 
     // Reshape the weight into a 3-D tensor, since the LSTM of ONNX requires
     // the weight shape to be [num_directions, 4*hidden_size, input_size].
     // For lstmCell, `num_directions` is equal to 1.
-    const std::vector<uint32_t>& weight_shape = weight_descriptor.shape();
+    const std::vector<uint32_t> weight_shape =
+        weight_descriptor.StaticShape().value();
     CHECK_EQ(weight_shape.size(), 2u);
     weight = CreateReshapeNode(weight, {1, weight_shape[0], weight_shape[1]});
 
@@ -2347,8 +3022,8 @@ void GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
     // requires the recurrent weight shape to be [num_directions,
     // 4*hidden_size, hidden_size]. For lstmCell, `num_directions` is equal
     // to 1.
-    const std::vector<uint32_t>& recurrent_weight_shape =
-        recurrent_weight_descriptor.shape();
+    const std::vector<uint32_t> recurrent_weight_shape =
+        recurrent_weight_descriptor.StaticShape().value();
     CHECK_EQ(recurrent_weight_shape.size(), 2u);
     recurrent_weight = CreateReshapeNode(
         recurrent_weight,
@@ -2462,10 +3137,10 @@ void GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
     // Reshape the hidden/cell_state into a 3-D tensor, since the LSTM of ONNX
     // requires the "initial_h"/"initial_c" shape to be [num_directions,
     // batch_size, hidden_size]. For lstmCell, `num_directions` is equal to 1.
-    const std::vector<uint32_t>& hidden_state_shape =
-        hidden_state_descriptor.shape();
-    const std::vector<uint32_t>& cell_state_shape =
-        cell_state_descriptor.shape();
+    const std::vector<uint32_t> hidden_state_shape =
+        hidden_state_descriptor.StaticShape().value();
+    const std::vector<uint32_t> cell_state_shape =
+        cell_state_descriptor.StaticShape().value();
     hidden_state = CreateReshapeNode(
         hidden_state, {1, hidden_state_shape[0], hidden_state_shape[1]});
     cell_state = CreateReshapeNode(
@@ -2488,8 +3163,8 @@ void GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
       // Reshape the peephole_weight into a 2-D tensor, since the LSTM of ONNX
       // requires the peephole_weight shape to be [num_directions,
       // 3*hidden_size]. For lstmCell, `num_directions` is equal to 1.
-      const std::vector<uint32_t>& peephole_weight_shape =
-          peephole_weight_descriptor.shape();
+      const std::vector<uint32_t> peephole_weight_shape =
+          peephole_weight_descriptor.StaticShape().value();
       peephole_weight =
           CreateReshapeNode(peephole_weight, {1, peephole_weight_shape[0]});
     }
@@ -2537,8 +3212,8 @@ void GraphBuilderOrt::AddLstmOperation(const LstmType& lstm) {
     // Reshape the output_hidden and output_cell back to 2-D tensors, since the
     // LSTM of WebNN requires the "output_h"/"output_c" shape to be
     // [batch_size, hidden_size].
-    const std::vector<uint32_t>& output_shape =
-        GetOperand(lstm.output_operand_ids[0]).descriptor.shape();
+    const std::vector<uint32_t> output_shape =
+        GetOperand(lstm.output_operand_ids[0]).descriptor.StaticShape().value();
     CHECK_EQ(output_shape.size(), 2u);
     InsertReshapeNode(output_hidden,
                       GetOperandNameById(lstm.output_operand_ids[0]),
@@ -2568,9 +3243,10 @@ base::expected<void, mojom::ErrorPtr> GraphBuilderOrt::AddMatMulOperation(
   if (batched_matmul_k_dimension_limit_.has_value()) {
     bool is_batched_matmul =
         GetOperand(matmul.output_operand_id).descriptor.Rank() > 2;
-    if (is_batched_matmul) {
-      uint32_t batched_matmul_k_dimension_size =
-          GetOperand(matmul.a_operand_id).descriptor.shape().back();
+    webnn::Dimension k_dim =
+        GetOperand(matmul.a_operand_id).descriptor.shape().back();
+    if (is_batched_matmul && std::holds_alternative<uint32_t>(k_dim)) {
+      uint32_t batched_matmul_k_dimension_size = std::get<uint32_t>(k_dim);
       // Limitation: Reject batched MatMul operations with excessively large K
       // dimension size to prevent the EP from becoming unresponsive during
       // model compilation on some NPU devices.
@@ -2600,6 +3276,38 @@ base::expected<void, mojom::ErrorPtr> GraphBuilderOrt::AddMatMulOperation(
 }
 
 void GraphBuilderOrt::AddPool2dOperation(const mojom::Pool2d& pool2d) {
+  if (!pool2d.window_dimensions) {
+    base::cstring_view op_type;
+    std::vector<ScopedOrtOpAttr> attributes;
+    const OperandDescriptor& input_descriptor =
+        GetOperand(pool2d.input_operand_id).descriptor;
+    const DataTypeLimits& data_type_limits =
+        context_properties_.data_type_limits;
+    switch (pool2d.kind) {
+      case mojom::Pool2d::Kind::kAveragePool2d:
+        CHECK(data_type_limits.average_pool2d_input.Supports(input_descriptor));
+        op_type = "GlobalAveragePool";
+        break;
+      case mojom::Pool2d::Kind::kL2Pool2d:
+        CHECK(data_type_limits.l2_pool2d_input.Supports(input_descriptor));
+        op_type = "GlobalLpPool";
+        attributes.push_back(
+            model_editor_.CreateAttribute(kAttrP, static_cast<int64_t>(2)));
+        break;
+      case mojom::Pool2d::Kind::kMaxPool2d:
+        CHECK(data_type_limits.max_pool2d_input.Supports(input_descriptor));
+        op_type = "GlobalMaxPool";
+        break;
+    }
+    const std::string node_name = GenerateNodeName(pool2d.label);
+    const std::string input = GetOperandNameById(pool2d.input_operand_id);
+    const std::string output = GetOperandNameById(pool2d.output_operand_id);
+    std::array<const char*, 1> inputs = {input.c_str()};
+    std::array<const char*, 1> outputs = {output.c_str()};
+    model_editor_.AddNode(op_type, node_name, inputs, outputs, attributes);
+    return;
+  }
+
   std::vector<ScopedOrtOpAttr> attributes;
 
   std::array<int64_t, 2> dilations = {
@@ -2631,20 +3339,26 @@ void GraphBuilderOrt::AddPool2dOperation(const mojom::Pool2d& pool2d) {
   // Calculate the ceil_mode.
   const OperandDescriptor& input_descriptor =
       GetOperand(pool2d.input_operand_id).descriptor;
-  const std::vector<uint32_t>& input_shape = input_descriptor.shape();
-  const std::vector<uint32_t>& output_shape =
+  const std::vector<webnn::Dimension>& input_shape = input_descriptor.shape();
+  const std::vector<webnn::Dimension>& output_shape =
       GetOperand(pool2d.output_operand_id).descriptor.shape();
 
   CHECK_EQ(context_properties_.input_operand_layout, InputOperandLayout::kNchw);
-  uint32_t input_height = input_shape[2];
-  uint32_t output_height = output_shape[2];
-  const auto float_output_height = CalculateConv2dOutputSize(
-      input_height, pool2d.window_dimensions->height,
-      pool2d.padding->beginning->height, pool2d.padding->ending->height,
-      pool2d.strides->height, pool2d.dilations->height, pool2d.label);
-  CHECK(float_output_height.has_value());
-
-  int64_t ceil_mode = float_output_height.value() < output_height ? 1 : 0;
+  auto input_height_opt = GetStaticOrMaxSize(input_shape[2]);
+  auto output_height_opt = GetStaticOrMaxSize(output_shape[2]);
+  // For ceil_mode calculation, if spatial dims are unbounded, default to
+  // floor mode (ceil_mode=0).
+  int64_t ceil_mode = 0;
+  if (input_height_opt.has_value() && output_height_opt.has_value()) {
+    uint32_t input_height = *input_height_opt;
+    uint32_t output_height = *output_height_opt;
+    const auto float_output_height = CalculateConv2dOutputSize(
+        input_height, pool2d.window_dimensions->height,
+        pool2d.padding->beginning->height, pool2d.padding->ending->height,
+        pool2d.strides->height, pool2d.dilations->height, pool2d.label);
+    CHECK(float_output_height.has_value());
+    ceil_mode = float_output_height.value() < output_height ? 1 : 0;
+  }
   attributes.push_back(model_editor_.CreateAttribute(kAttrCeilMode, ceil_mode));
 
   const DataTypeLimits& data_type_limits = context_properties_.data_type_limits;
@@ -2776,7 +3490,9 @@ void GraphBuilderOrt::AddResample2dOperation(
     scales = Create1DInitializer<float>(scales_data);
   } else {
     sizes = CreateInt64InitializerForUint32Array(
-        GetOperand(resample2d.output_operand_id).descriptor.shape());
+        GetOperand(resample2d.output_operand_id)
+            .descriptor.StaticShape()
+            .value());
   }
 
   std::string mode;
@@ -2800,10 +3516,131 @@ void GraphBuilderOrt::AddReshapeOperation(const mojom::Reshape& reshape) {
   CHECK(context_properties_.data_type_limits.reshape_input.Supports(
       GetOperand(reshape.input_operand_id).descriptor));
 
-  const std::vector<uint32_t>& output_shape =
-      GetOperand(reshape.output_operand_id).descriptor.shape();
+  const OperandDescriptor& input_descriptor =
+      GetOperand(reshape.input_operand_id).descriptor;
+  const OperandDescriptor& output_descriptor =
+      GetOperand(reshape.output_operand_id).descriptor;
 
-  AddReshapeNode(node_name, input, output, output_shape);
+  const auto static_output_shape = output_descriptor.StaticShape();
+  if (static_output_shape.has_value()) {
+    // All dimensions are static, use the simple path.
+    AddReshapeNode(node_name, input, output, *static_output_shape);
+    return;
+  }
+
+  // Output shape has dynamic dimensions. Build the shape tensor at runtime
+  // using Shape and Gather operators.
+
+  // Step 1: Get the input shape at runtime using Shape operator.
+  const std::string input_shape_name = GenerateOperandName();
+  {
+    std::array<const char*, 1> shape_inputs = {input.c_str()};
+    std::array<const char*, 1> shape_outputs = {input_shape_name.c_str()};
+    const std::string shape_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, "Shape", kToEmulate, reshape.label}, kUnderscore));
+    model_editor_.AddNode("Shape", shape_node_name, shape_inputs,
+                          shape_outputs);
+  }
+
+  // Step 2: For each dimension in output shape, either use a constant (for
+  // static dims) or gather from input shape (for dynamic dims).
+  const std::vector<webnn::Dimension>& output_shape = output_descriptor.shape();
+  std::vector<std::string> dimension_names;
+  dimension_names.reserve(output_shape.size());
+
+  // Build a mapping from input shape to find dynamic dimensions.
+  const std::vector<webnn::Dimension>& input_shape = input_descriptor.shape();
+
+  // Track the index of the inferred dimension (if any) for post-loop
+  // computation.
+  size_t inferred_dim_index = output_shape.size();
+
+  for (size_t i = 0; i < output_shape.size(); ++i) {
+    const auto& dim = output_shape[i];
+    if (std::holds_alternative<uint32_t>(dim)) {
+      // Static dimension: create a 1-D constant with shape [1].
+      uint32_t static_value = std::get<uint32_t>(dim);
+      std::array<int64_t, 1> value_array = {static_cast<int64_t>(static_value)};
+      std::string const_name = Create1DInitializer<int64_t>(value_array);
+      dimension_names.push_back(std::move(const_name));
+    } else {
+      // Dynamic dimension: first try to find it in the input shape.
+      CHECK(std::holds_alternative<DynamicDimension>(dim));
+
+      auto it = std::ranges::find(input_shape, dim);
+      if (it != input_shape.end()) {
+        // Directly matching dynamic dimension: gather from input shape.
+        int64_t input_axis = std::distance(input_shape.begin(), it);
+
+        const std::string gather_output = GenerateOperandName();
+        std::array<int64_t, 1> indices_array = {input_axis};
+        const std::string indices_const =
+            Create1DInitializer<int64_t>(indices_array);
+
+        std::array<const char*, 2> gather_inputs = {input_shape_name.c_str(),
+                                                    indices_const.c_str()};
+        std::array<const char*, 1> gather_outputs = {gather_output.c_str()};
+        std::array<ScopedOrtOpAttr, 1> gather_attributes = {
+            model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
+        const std::string gather_node_name = GenerateNodeName(
+            base::JoinString({kInserted, kOpTypeGather, kToEmulate,
+                              reshape.label, base::NumberToString(input_axis)},
+                             kUnderscore));
+        model_editor_.AddNode(kOpTypeGather, gather_node_name, gather_inputs,
+                              gather_outputs, gather_attributes);
+
+        dimension_names.push_back(std::move(gather_output));
+      } else {
+        // Derived dynamic dimension (not in input shape): will be computed
+        // after the loop from the input shape. At most one inferred dimension
+        // is allowed per reshape.
+        CHECK_EQ(inferred_dim_index, output_shape.size())
+            << "Only one inferred dimension is allowed per reshape";
+        inferred_dim_index = i;
+        dimension_names.push_back(std::string());  // placeholder
+      }
+    }
+  }
+
+  // If there is an inferred dimension (a derived dynamic dim not found in the
+  // input shape), use -1 for the reshape shape tensor so that ONNX Runtime
+  // infers it at runtime. The dynamic dim will be registered against the
+  // reshape output operand by the pre-pass in BuildModel(), so downstream
+  // operations that reference it will emit Shape(reshape_output) + Gather.
+  if (inferred_dim_index < output_shape.size()) {
+    std::array<int64_t, 1> minus_one = {-1};
+    dimension_names[inferred_dim_index] =
+        Create1DInitializer<int64_t>(minus_one);
+  }
+
+  // Step 3: Concatenate all dimension values to create the final shape tensor.
+  std::string final_shape_name;
+  if (dimension_names.size() == 1) {
+    // Single dimension, no need to concatenate.
+    final_shape_name = dimension_names[0];
+  } else {
+    // Multiple dimensions, concatenate them.
+    final_shape_name = GenerateOperandName();
+    std::vector<const char*> concat_inputs;
+    concat_inputs.reserve(dimension_names.size());
+    for (const auto& name : dimension_names) {
+      concat_inputs.push_back(name.c_str());
+    }
+    std::array<const char*, 1> concat_outputs = {final_shape_name.c_str()};
+    std::array<ScopedOrtOpAttr, 1> concat_attributes = {
+        model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
+    const std::string concat_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeConcat, kToEmulate, reshape.label}, kUnderscore));
+    model_editor_.AddNode(kOpTypeConcat, concat_node_name, concat_inputs,
+                          concat_outputs, concat_attributes);
+  }
+
+  // Step 4: Use the constructed shape tensor for the Reshape operation.
+  std::array<const char*, 2> reshape_inputs = {input.c_str(),
+                                               final_shape_name.c_str()};
+  std::array<const char*, 1> reshape_outputs = {output.c_str()};
+  model_editor_.AddNode(kOpTypeReshape, node_name, reshape_inputs,
+                        reshape_outputs);
 }
 
 void GraphBuilderOrt::AddReverseOperation(const mojom::Reverse& reverse) {
@@ -2841,6 +3678,16 @@ void GraphBuilderOrt::AddReverseOperation(const mojom::Reverse& reverse) {
   return AddSliceNode(node_name, input, output, axes, starts, ends, steps);
 }
 
+void GraphBuilderOrt::AddShapeOperation(const mojom::Shape& shape) {
+  const std::string input = GetOperandNameById(shape.input_operand_id);
+  const std::string output = GetOperandNameById(shape.output_operand_id);
+
+  CHECK(context_properties_.data_type_limits.shape_input.Supports(
+      GetOperand(shape.input_operand_id).descriptor));
+
+  AddUnaryOperation(shape, "Shape");
+}
+
 void GraphBuilderOrt::AddScatterElementsOperation(
     const mojom::ScatterElements& scatter_elements) {
   const std::string node_name = GenerateNodeName(scatter_elements.label);
@@ -2866,9 +3713,18 @@ void GraphBuilderOrt::AddScatterElementsOperation(
 
   // Clamp the indices operand to prevent out-of-bounds writing which will cause
   // ORT CPU EP to throw a runtime error.
-  std::string clamped_indices =
-      ClampIndices(indices, indices_descriptor.data_type(),
-                   input_descriptor.shape().at(scatter_elements.axis));
+  const Dimension& axis_dimension =
+      input_descriptor.shape()[scatter_elements.axis];
+  std::string clamped_indices;
+  if (std::holds_alternative<uint32_t>(axis_dimension)) {
+    clamped_indices = ClampIndices(indices, indices_descriptor.data_type(),
+                                   std::get<uint32_t>(axis_dimension));
+  } else {
+    // For dynamic dimension, clamp indices at runtime.
+    clamped_indices = ClampIndicesForDynamicShape(
+        node_name, input, indices, scatter_elements.axis,
+        indices_descriptor.data_type());
+  }
 
   std::array<const char*, 3> inputs = {input.c_str(), clamped_indices.c_str(),
                                        updates.c_str()};
@@ -2911,7 +3767,7 @@ void GraphBuilderOrt::AddScatterNDOperation(
   // Clamp the indices operand to prevent out-of-bounds writing which will cause
   // ORT CPU EP to throw a runtime error.
   std::string clamped_indices = ClampGatherNDIndices(
-      int64_indices, input_descriptor.shape(), indices_descriptor.shape());
+      input, int64_indices, input_descriptor, indices_descriptor);
 
   std::array<const char*, 3> inputs = {input.c_str(), clamped_indices.c_str(),
                                        updates.c_str()};
@@ -3012,7 +3868,7 @@ void GraphBuilderOrt::AddPadOperation(const mojom::Pad& pad) {
 
 void GraphBuilderOrt::AddPreluOperation(const mojom::Prelu& prelu) {
   const std::string node_name = GenerateNodeName(prelu.label);
-  std::string input = GetOperandNameById(prelu.input_operand_id);
+  const std::string input = GetOperandNameById(prelu.input_operand_id);
   const std::string slope = GetOperandNameById(prelu.slope_operand_id);
   const std::string output = GetOperandNameById(prelu.output_operand_id);
 
@@ -3024,14 +3880,8 @@ void GraphBuilderOrt::AddPreluOperation(const mojom::Prelu& prelu) {
       GetOperand(prelu.slope_operand_id).descriptor;
   CHECK(data_type_limits.prelu_input.Supports(slope_descriptor));
 
-  const std::vector<uint32_t>& input_shape = input_descriptor.shape();
-  const std::vector<uint32_t>& slope_shape = slope_descriptor.shape();
-  // ONNX Prelu requires slope's shape to be unidirectionally broadcastable to
-  // input when the shape of slope is smaller than the input. While WebNN allows
-  // input and slope to be bidirectionally broadcastable.
-  if (!BroadcastShapes(slope_shape, input_shape, /*bidirectional=*/false)) {
-    input = CreateExpandNode(input, slope_shape);
-  }
+  // Validation guarantees slope is unidirectionally broadcastable to input,
+  // which matches ONNX PRelu's broadcasting semantics. No manual expand needed.
   std::array<const char*, 2> inputs = {input.c_str(), slope.c_str()};
   std::array<const char*, 1> outputs = {output.c_str()};
 
@@ -3051,10 +3901,10 @@ void GraphBuilderOrt::AddSplitOperation(const mojom::Split& split) {
   // https://onnx.ai/onnx/operators/onnx__Split.html#inputs
   base::FixedArray<uint32_t> split_sizes(output_count);
   for (size_t i = 0; i < output_count; i++) {
-    const std::vector<uint32_t>& output_shape =
+    const std::vector<Dimension> output_shape =
         GetOperand(split.output_operand_ids[i]).descriptor.shape();
     CHECK_LT(split.axis, output_shape.size());
-    split_sizes[i] = output_shape[split.axis];
+    split_sizes[i] = std::get<uint32_t>(output_shape[split.axis]);
   }
   const std::string split_input =
       CreateInt64InitializerForUint32Array(split_sizes);
@@ -3164,6 +4014,345 @@ void GraphBuilderOrt::AddWhereOperation(const mojom::Where& where) {
   model_editor_.AddNode(kOpTypeWhere, node_name, inputs, outputs);
 }
 
+void GraphBuilderOrt::AddRangeOperation(const mojom::RangeOp& range) {
+  const std::string node_name = GenerateNodeName(range.label);
+  const std::string start = GetOperandNameById(range.start_operand_id);
+  const std::string limit = GetOperandNameById(range.limit_operand_id);
+  const std::string delta = GetOperandNameById(range.delta_operand_id);
+  const std::string output = GetOperandNameById(range.output_operand_id);
+
+  std::array<const char*, 3> inputs = {start.c_str(), limit.c_str(),
+                                       delta.c_str()};
+  std::array<const char*, 1> outputs = {output.c_str()};
+
+  model_editor_.AddNode("Range", node_name, inputs, outputs);
+}
+
+void GraphBuilderOrt::AddDynamicReshapeOperation(
+    const mojom::DynamicReshape& op) {
+  const std::string node_name = GenerateNodeName(op.label);
+  const std::string input = GetOperandNameById(op.input_operand_id);
+  const std::string new_shape = GetOperandNameById(op.new_shape_operand_id);
+  const std::string output = GetOperandNameById(op.output_operand_id);
+
+  std::array<const char*, 2> inputs = {input.c_str(), new_shape.c_str()};
+  std::array<const char*, 1> outputs_arr = {output.c_str()};
+
+  model_editor_.AddNode(kOpTypeReshape, node_name, inputs, outputs_arr);
+}
+
+void GraphBuilderOrt::AddDynamicExpandOperation(
+    const mojom::DynamicExpand& op) {
+  const std::string node_name = GenerateNodeName(op.label);
+  const std::string input = GetOperandNameById(op.input_operand_id);
+  const std::string new_shape = GetOperandNameById(op.new_shape_operand_id);
+  const std::string output = GetOperandNameById(op.output_operand_id);
+
+  std::array<const char*, 2> inputs = {input.c_str(), new_shape.c_str()};
+  std::array<const char*, 1> outputs_arr = {output.c_str()};
+
+  model_editor_.AddNode(kOpTypeExpand, node_name, inputs, outputs_arr);
+}
+
+void GraphBuilderOrt::AddDynamicSliceOperation(
+    const mojom::DynamicSlice& op) {
+  const std::string node_name = GenerateNodeName(op.label);
+  const std::string input = GetOperandNameById(op.input_operand_id);
+  const std::string starts = GetOperandNameById(op.starts_operand_id);
+  const std::string ends = GetOperandNameById(op.ends_operand_id);
+
+  // ONNX Slice: inputs are data, starts, ends, [axes], [steps]
+  std::vector<const char*> slice_inputs = {input.c_str(), starts.c_str(),
+                                           ends.c_str()};
+
+  std::string axes, strides;
+  if (op.axes_operand_id.has_value()) {
+    axes = GetOperandNameById(*op.axes_operand_id);
+    slice_inputs.push_back(axes.c_str());
+  }
+  if (op.strides_operand_id.has_value()) {
+    if (!op.axes_operand_id.has_value()) {
+      // Need an empty string for axes if strides are provided but axes are not.
+      slice_inputs.push_back("");
+    }
+    strides = GetOperandNameById(*op.strides_operand_id);
+    slice_inputs.push_back(strides.c_str());
+  }
+
+  const std::string output = GetOperandNameById(op.output_operand_id);
+  std::array<const char*, 1> outputs_arr = {output.c_str()};
+
+  model_editor_.AddNode(kOpTypeSlice, node_name, slice_inputs, outputs_arr);
+}
+
+void GraphBuilderOrt::AddDynamicPadOperation(const mojom::DynamicPad& op) {
+  const std::string node_name = GenerateNodeName(op.label);
+  const std::string input = GetOperandNameById(op.input_operand_id);
+  const std::string pads = GetOperandNameById(op.pads_operand_id);
+
+  // ONNX Pad: inputs are data, pads, [constant_value]
+  std::vector<const char*> pad_inputs = {input.c_str(), pads.c_str()};
+
+  std::string constant_value;
+  if (op.constant_value_operand_id.has_value()) {
+    constant_value = GetOperandNameById(*op.constant_value_operand_id);
+    pad_inputs.push_back(constant_value.c_str());
+  }
+
+  const std::string output = GetOperandNameById(op.output_operand_id);
+  std::array<const char*, 1> outputs_arr = {output.c_str()};
+
+  model_editor_.AddNode(kOpTypePad, node_name, pad_inputs, outputs_arr);
+}
+
+void GraphBuilderOrt::AddDynamicSplitOperation(
+    const mojom::DynamicSplit& op) {
+  const std::string node_name = GenerateNodeName(op.label);
+  const std::string input = GetOperandNameById(op.input_operand_id);
+  const std::string splits = GetOperandNameById(op.splits_operand_id);
+
+  std::array<const char*, 2> inputs = {input.c_str(), splits.c_str()};
+
+  std::vector<std::string> output_names;
+  output_names.reserve(op.output_operand_ids.size());
+  for (const auto& output_id : op.output_operand_ids) {
+    output_names.push_back(GetOperandNameById(output_id));
+  }
+  std::vector<const char*> outputs_arr;
+  outputs_arr.reserve(output_names.size());
+  for (const auto& name : output_names) {
+    outputs_arr.push_back(name.c_str());
+  }
+
+  std::array<ScopedOrtOpAttr, 1> attributes = {model_editor_.CreateAttribute(
+      kAttrAxis, base::checked_cast<int64_t>(op.axis))};
+
+  model_editor_.AddNode(kOpTypeSplit, node_name, inputs, outputs_arr,
+                        attributes);
+}
+
+void GraphBuilderOrt::AddDynamicResample2dOperation(
+    const mojom::DynamicResample2d& op) {
+  const std::string node_name = GenerateNodeName(op.label);
+  const std::string input = GetOperandNameById(op.input_operand_id);
+  const std::string user_sizes = GetOperandNameById(op.sizes_operand_id);
+  const std::string output = GetOperandNameById(op.output_operand_id);
+
+  // Step 1: Get the input shape at runtime, as an int64[4] tensor.
+  const std::string input_shape = GenerateOperandName();
+  {
+    const std::string shape_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeShape, kToEmulate, node_name}, kUnderscore));
+    std::array<const char*, 1> shape_inputs = {input.c_str()};
+    std::array<const char*, 1> shape_outputs = {input_shape.c_str()};
+    model_editor_.AddNode(kOpTypeShape, shape_node_name, shape_inputs,
+                          shape_outputs);
+  }
+
+  // Step 2: Cast the user-provided sizes to int64 if needed. ONNX Resize's
+  // `sizes` input must be int64.
+  const OperandDataType sizes_data_type =
+      GetOperand(op.sizes_operand_id).descriptor.data_type();
+  std::string sizes_int64 = user_sizes;
+  if (sizes_data_type != OperandDataType::kInt64) {
+    sizes_int64 =
+        CreateCastNode(user_sizes, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+  }
+
+  // Step 3: Scatter the 2 user-provided sizes into the 4-element input_shape
+  // tensor at the positions given by `axes`, producing the 4-element `sizes`
+  // tensor that ONNX Resize expects.
+  //   indices = int64[axes[0], axes[1]]  (shape [2])
+  //   sizes_4 = ScatterElements(data=input_shape, indices, updates=sizes_int64,
+  //                             axis=0)
+  const std::array<int64_t, 2> indices_values = {
+      static_cast<int64_t>(op.axes[0]), static_cast<int64_t>(op.axes[1])};
+  const std::string indices = Create1DInitializer<int64_t>(indices_values);
+
+  const std::string sizes_4 = GenerateOperandName();
+  {
+    const std::string scatter_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeScatterElements, kToEmulate, node_name},
+        kUnderscore));
+    std::array<const char*, 3> scatter_inputs = {
+        input_shape.c_str(), indices.c_str(), sizes_int64.c_str()};
+    std::array<const char*, 1> scatter_outputs = {sizes_4.c_str()};
+    std::array<ScopedOrtOpAttr, 1> scatter_attributes = {
+        model_editor_.CreateAttribute(kAttrAxis, int64_t{0})};
+    model_editor_.AddNode(kOpTypeScatterElements, scatter_node_name,
+                          scatter_inputs, scatter_outputs, scatter_attributes);
+  }
+
+  // Step 4: Emit the Resize node.
+  std::string mode;
+  switch (op.mode) {
+    case mojom::Resample2d::InterpolationMode::kLinear:
+      mode = "linear";
+      break;
+    case mojom::Resample2d::InterpolationMode::kNearestNeighbor:
+      mode = "nearest";
+      break;
+  }
+
+  AddResizeNode(node_name, input, /*scales=*/"", sizes_4, mode, output);
+}
+
+// Returns the output operand IDs for `operation`.
+// Expand outputs are excluded: expand derives its output shape *from*
+// known_dynamic_dims_, so registering the expand output as a shape source
+// would require inserting a Shape node before the expand itself, creating a
+// cycle in the ORT graph.
+std::vector<OperandId> GetOperationOutputOperandIds(
+    const mojom::Operation& operation) {
+  switch (operation.which()) {
+    case mojom::Operation::Tag::kExpand:
+      return {};
+    // Operations with multiple output operand IDs.
+    case mojom::Operation::Tag::kGru: {
+      const auto& ids = operation.get_gru()->output_operand_ids;
+      return {ids.begin(), ids.end()};
+    }
+    case mojom::Operation::Tag::kLstm: {
+      const auto& ids = operation.get_lstm()->output_operand_ids;
+      return {ids.begin(), ids.end()};
+    }
+    case mojom::Operation::Tag::kLstmCell: {
+      const auto& ids = operation.get_lstm_cell()->output_operand_ids;
+      return {ids.begin(), ids.end()};
+    }
+    case mojom::Operation::Tag::kSplit: {
+      const auto& ids = operation.get_split()->output_operand_ids;
+      return {ids.begin(), ids.end()};
+    }
+    case mojom::Operation::Tag::kDynamicSplit: {
+      const auto& ids = operation.get_dynamic_split()->output_operand_ids;
+      return {ids.begin(), ids.end()};
+    }
+    // All remaining operations have a single output_operand_id.
+    case mojom::Operation::Tag::kArgMinMax:
+      return {operation.get_arg_min_max()->output_operand_id};
+    case mojom::Operation::Tag::kBatchNormalization:
+      return {operation.get_batch_normalization()->output_operand_id};
+    case mojom::Operation::Tag::kClamp:
+      return {operation.get_clamp()->output_operand_id};
+    case mojom::Operation::Tag::kConcat:
+      return {operation.get_concat()->output_operand_id};
+    case mojom::Operation::Tag::kConv2d:
+      return {operation.get_conv2d()->output_operand_id};
+    case mojom::Operation::Tag::kCumulativeSum:
+      return {operation.get_cumulative_sum()->output_operand_id};
+    case mojom::Operation::Tag::kDequantizeLinear:
+      return {operation.get_dequantize_linear()->output_operand_id};
+    case mojom::Operation::Tag::kElu:
+      return {operation.get_elu()->output_operand_id};
+    case mojom::Operation::Tag::kElementWiseBinary:
+      return {operation.get_element_wise_binary()->output_operand_id};
+    case mojom::Operation::Tag::kElementWiseUnary:
+      return {operation.get_element_wise_unary()->output_operand_id};
+    case mojom::Operation::Tag::kGather:
+      return {operation.get_gather()->output_operand_id};
+    case mojom::Operation::Tag::kGatherElements:
+      return {operation.get_gather_elements()->output_operand_id};
+    case mojom::Operation::Tag::kGatherNd:
+      return {operation.get_gather_nd()->output_operand_id};
+    case mojom::Operation::Tag::kGelu:
+      return {operation.get_gelu()->output_operand_id};
+    case mojom::Operation::Tag::kGemm:
+      return {operation.get_gemm()->output_operand_id};
+    case mojom::Operation::Tag::kGruCell:
+      return {operation.get_gru_cell()->output_operand_id};
+    case mojom::Operation::Tag::kHardSigmoid:
+      return {operation.get_hard_sigmoid()->output_operand_id};
+    case mojom::Operation::Tag::kHardSwish:
+      return {operation.get_hard_swish()->output_operand_id};
+    case mojom::Operation::Tag::kInstanceNormalization:
+      return {operation.get_instance_normalization()->output_operand_id};
+    case mojom::Operation::Tag::kLayerNormalization:
+      return {operation.get_layer_normalization()->output_operand_id};
+    case mojom::Operation::Tag::kLeakyRelu:
+      return {operation.get_leaky_relu()->output_operand_id};
+    case mojom::Operation::Tag::kLinear:
+      return {operation.get_linear()->output_operand_id};
+    case mojom::Operation::Tag::kMatmul:
+      return {operation.get_matmul()->output_operand_id};
+    case mojom::Operation::Tag::kPad:
+      return {operation.get_pad()->output_operand_id};
+    case mojom::Operation::Tag::kPool2d:
+      return {operation.get_pool2d()->output_operand_id};
+    case mojom::Operation::Tag::kPrelu:
+      return {operation.get_prelu()->output_operand_id};
+    case mojom::Operation::Tag::kQuantizeLinear:
+      return {operation.get_quantize_linear()->output_operand_id};
+    case mojom::Operation::Tag::kRelu:
+      return {operation.get_relu()->output_operand_id};
+    case mojom::Operation::Tag::kReduce:
+      return {operation.get_reduce()->output_operand_id};
+    case mojom::Operation::Tag::kResample2d:
+      return {operation.get_resample2d()->output_operand_id};
+    case mojom::Operation::Tag::kReshape:
+      return {operation.get_reshape()->output_operand_id};
+    case mojom::Operation::Tag::kReverse:
+      return {operation.get_reverse()->output_operand_id};
+    case mojom::Operation::Tag::kScatterElements:
+      return {operation.get_scatter_elements()->output_operand_id};
+    case mojom::Operation::Tag::kScatterNd:
+      return {operation.get_scatter_nd()->output_operand_id};
+    case mojom::Operation::Tag::kShape:
+      return {operation.get_shape()->output_operand_id};
+    case mojom::Operation::Tag::kSlice:
+      return {operation.get_slice()->output_operand_id};
+    case mojom::Operation::Tag::kSigmoid:
+      return {operation.get_sigmoid()->output_operand_id};
+    case mojom::Operation::Tag::kSoftmax:
+      return {operation.get_softmax()->output_operand_id};
+    case mojom::Operation::Tag::kSoftplus:
+      return {operation.get_softplus()->output_operand_id};
+    case mojom::Operation::Tag::kSoftsign:
+      return {operation.get_softsign()->output_operand_id};
+    case mojom::Operation::Tag::kTanh:
+      return {operation.get_tanh()->output_operand_id};
+    case mojom::Operation::Tag::kTile:
+      return {operation.get_tile()->output_operand_id};
+    case mojom::Operation::Tag::kTranspose:
+      return {operation.get_transpose()->output_operand_id};
+    case mojom::Operation::Tag::kTriangular:
+      return {operation.get_triangular()->output_operand_id};
+    case mojom::Operation::Tag::kWhere:
+      return {operation.get_where()->output_operand_id};
+    case mojom::Operation::Tag::kRange:
+      return {operation.get_range()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicReshape:
+      return {operation.get_dynamic_reshape()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicExpand:
+      return {operation.get_dynamic_expand()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicSlice:
+      return {operation.get_dynamic_slice()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicPad:
+      return {operation.get_dynamic_pad()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicResample2d:
+      return {operation.get_dynamic_resample_2d()->output_operand_id};
+  }
+}
+
+void GraphBuilderOrt::RegisterOperandDynamicDims(OperandId operand_id) {
+  const mojom::Operand& operand = GetOperand(operand_id);
+  const std::string operand_name = GetOperandNameById(operand_id);
+  const std::vector<Dimension>& shape = operand.descriptor.shape();
+  for (size_t axis = 0; axis < shape.size(); ++axis) {
+    if (std::holds_alternative<DynamicDimension>(shape[axis])) {
+      const DynamicDimension& dynamic_dim =
+          std::get<DynamicDimension>(shape[axis]);
+      // First occurrence wins; input operands (registered in the constructor)
+      // are always preferred as sources.
+      if (!known_dynamic_dims_.contains(dynamic_dim)) {
+        known_dynamic_dims_[dynamic_dim] =
+            DynamicDimensionInfo(operand_name,
+                                 static_cast<uint32_t>(axis));
+      }
+    }
+  }
+}
+
 base::expected<std::unique_ptr<ModelEditor::ModelInfo>, mojom::ErrorPtr>
 GraphBuilderOrt::BuildModel() {
   for (OperandId input_id : graph_info_->input_operands) {
@@ -3175,6 +4364,70 @@ GraphBuilderOrt::BuildModel() {
                                  std::move(constant_operand));
   }
   constant_operands_.clear();
+
+  // Pre-pass: register dynamic dimensions produced by operations so that ops
+  // processed in topological order can always resolve a dim they only
+  // reference via shape metadata (e.g. Expand).
+  //
+  // Done in two phases:
+  //
+  //  Phase 1 — Reshape-inferred dims. For every Reshape that introduces a
+  //  brand-new dynamic dim via ONNX "-1", pin the dim to that Reshape's
+  //  own output operand. The Reshape's output is the semantic definition
+  //  of the dim, so it is the natural source for downstream Shape(...)
+  //  emulation, and its tensor-level dependencies can never form a cycle
+  //  through an op that references the dim only via shape metadata.
+  //
+  //  Phase 2 — naive registration of all other output dynamic dims (first
+  //  occurrence wins). Expand outputs are excluded (see
+  //  GetOperationOutputOperandIds) to prevent Shape-before-Expand cycles.
+  //
+  // ONNX Runtime's ModelEditor API is insertion-order independent: nodes
+  // can reference operand names produced by nodes added later, as long as
+  // the full graph is valid at session creation time.
+  for (const mojom::OperationPtr& operation : graph_info_->operations) {
+    if (!operation->is_reshape()) {
+      continue;
+    }
+    const auto& reshape = *operation->get_reshape();
+    const std::vector<Dimension>& in_shape =
+        GetOperand(reshape.input_operand_id).descriptor.shape();
+    const std::vector<Dimension>& out_shape =
+        GetOperand(reshape.output_operand_id).descriptor.shape();
+
+    for (size_t i = 0; i < out_shape.size(); ++i) {
+      if (!std::holds_alternative<DynamicDimension>(out_shape[i])) {
+        continue;
+      }
+      const auto& inferred = std::get<DynamicDimension>(out_shape[i]);
+      if (known_dynamic_dims_.contains(inferred)) {
+        continue;
+      }
+      if (std::ranges::find(in_shape, out_shape[i]) != in_shape.end()) {
+        continue;  // dim comes from input shape directly; default path works
+      }
+
+      // Brand-new dynamic dim introduced by this Reshape's "-1". The
+      // Reshape's own output operand is always a safe & canonical source:
+      // its tensor-level dependencies are the Reshape's inputs (and their
+      // transitive producers), which — absent an ML-level semantic cycle
+      // — do not depend on any downstream op that references this dim
+      // only via shape metadata (e.g. Expand). Registering here, before
+      // the naive pass below, ensures that operand wins over any later
+      // op whose output happens to carry the same dim at a lower mojom
+      // index (e.g. a CumSum sitting between the Expand producer and
+      // this Reshape in topological order).
+      known_dynamic_dims_[inferred] = DynamicDimensionInfo(
+          GetOperandNameById(reshape.output_operand_id),
+          static_cast<uint32_t>(i));
+    }
+  }
+
+  for (const mojom::OperationPtr& operation : graph_info_->operations) {
+    for (OperandId output_id : GetOperationOutputOperandIds(*operation)) {
+      RegisterOperandDynamicDims(output_id);
+    }
+  }
 
   for (const mojom::OperationPtr& operation : graph_info_->operations) {
     const DataTypeLimits& data_type_limits =
@@ -3366,6 +4619,10 @@ GraphBuilderOrt::BuildModel() {
         AddReverseOperation(*operation->get_reverse());
         break;
       }
+      case mojom::Operation::Tag::kShape: {
+        AddShapeOperation(*operation->get_shape());
+        break;
+      }
       case mojom::Operation::Tag::kScatterElements: {
         AddScatterElementsOperation(*operation->get_scatter_elements());
         break;
@@ -3428,6 +4685,43 @@ GraphBuilderOrt::BuildModel() {
         AddWhereOperation(*operation->get_where());
         break;
       }
+      case mojom::Operation::Tag::kRange: {
+        AddRangeOperation(*operation->get_range());
+        break;
+      }
+      case mojom::Operation::Tag::kDynamicReshape: {
+        AddDynamicReshapeOperation(*operation->get_dynamic_reshape());
+        break;
+      }
+      case mojom::Operation::Tag::kDynamicExpand: {
+        AddDynamicExpandOperation(*operation->get_dynamic_expand());
+        break;
+      }
+      case mojom::Operation::Tag::kDynamicSlice: {
+        AddDynamicSliceOperation(*operation->get_dynamic_slice());
+        break;
+      }
+      case mojom::Operation::Tag::kDynamicPad: {
+        AddDynamicPadOperation(*operation->get_dynamic_pad());
+        break;
+      }
+      case mojom::Operation::Tag::kDynamicSplit: {
+        AddDynamicSplitOperation(*operation->get_dynamic_split());
+        break;
+      }
+      case mojom::Operation::Tag::kDynamicResample2d: {
+        AddDynamicResample2dOperation(
+            *operation->get_dynamic_resample_2d());
+        break;
+      }
+    }
+    // Register any dynamic dimensions introduced by this operation's output
+    // operands so that subsequent operations (e.g. expand) can use them as
+    // Shape sources. Expand outputs are excluded by
+    // GetOperationOutputOperandIds to prevent Shape-before-Expand cycles in the
+    // ORT graph.
+    for (OperandId output_id : GetOperationOutputOperandIds(*operation)) {
+      RegisterOperandDynamicDims(output_id);
     }
   }
 

@@ -12,7 +12,7 @@ namespace webnn::ort {
 
 ONNXTensorElementDataType WebnnToOnnxDataType(OperandDataType data_type);
 
-std::vector<int64_t> WebnnToOnnxShape(base::span<const uint32_t> shape);
+std::vector<int64_t> WebnnToOnnxShape(base::span<const webnn::Dimension> shape);
 
 }  // namespace webnn::ort
 

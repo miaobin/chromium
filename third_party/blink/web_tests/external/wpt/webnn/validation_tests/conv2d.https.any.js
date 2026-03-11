@@ -548,6 +548,109 @@ const tests = [
       groups: 1,
       label: label,
     },
+    name: '[conv2d] Test with dynamic batch dimension.',
+    input: {
+      dataType: 'float32',
+      shape: [{name: 'N', maxSize: 4, minSize: 1}, 1, 5, 5]
+    },
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {
+      dataType: 'float32',
+      shape: [{name: 'N', maxSize: 4, minSize: 1}, 1, 3, 3]
+    }
+  },
+  {
+    name: '[conv2d] Test with dynamic height dimension.',
+    input: {
+      dataType: 'float32',
+      shape: [1, 1, {name: 'H', maxSize: 10, minSize: 5}, 5]
+    },
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {
+      dataType: 'float32',
+      shape: [1, 1, {name: 'H-2', maxSize: 8, minSize: 3}, 3]
+    }
+  },
+  {
+    name: '[conv2d] Test with dynamic width dimension.',
+    input: {
+      dataType: 'float32',
+      shape: [1, 1, 5, {name: 'W', maxSize: 10, minSize: 5}]
+    },
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {
+      dataType: 'float32',
+      shape: [1, 1, 3, {name: 'W-2', maxSize: 8, minSize: 3}]
+    }
+  },
+  {
+    name:
+        '[conv2d] Test with dynamic height and width dimensions with padding.',
+    input: {
+      dataType: 'float32',
+      shape: [
+        1, 1, {name: 'H', maxSize: 10, minSize: 5},
+        {name: 'W', maxSize: 10, minSize: 5}
+      ]
+    },
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    options: {
+      padding: [1, 1, 1, 1],
+    },
+    output: {
+      dataType: 'float32',
+      shape: [
+        1, 1, {name: 'H', maxSize: 10, minSize: 5},
+        {name: 'W', maxSize: 10, minSize: 5}
+      ]
+    }
+  },
+  {
+    name:
+        '[conv2d] Test with dynamic height and width dimensions with padding and strides.',
+    input: {
+      dataType: 'float32',
+      shape: [
+        1, 1, {name: 'H', maxSize: 10, minSize: 6},
+        {name: 'W', maxSize: 10, minSize: 6}
+      ]
+    },
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    options: {
+      padding: [1, 1, 1, 1],
+      strides: [2, 2],
+    },
+    output: {
+      dataType: 'float32',
+      shape: [
+        1, 1, {name: 'H-5', maxSize: 5, minSize: 3},
+        {name: 'W-5', maxSize: 5, minSize: 3}
+      ]
+    }
+  },
+  {
+    name: '[conv2d] Test with dynamic dimensions in nhwc layout.',
+    input: {
+      dataType: 'float32',
+      shape: [
+        {name: 'N', maxSize: 4, minSize: 1},
+        {name: 'H', maxSize: 10, minSize: 5},
+        {name: 'W', maxSize: 10, minSize: 5}, 1
+      ]
+    },
+    filter: {dataType: 'float32', shape: [3, 3, 1, 1]},
+    options: {
+      inputLayout: 'nhwc',
+      filterLayout: 'hwio',
+    },
+    output: {
+      dataType: 'float32',
+      shape: [
+        {name: 'N', maxSize: 4, minSize: 1},
+        {name: 'H-2', maxSize: 8, minSize: 3},
+        {name: 'W-2', maxSize: 8, minSize: 3}, 1
+      ]
+    }
   },
 ];
 
@@ -566,7 +669,31 @@ tests.forEach(
               test.input.dataType)) {
         const output = builder.conv2d(input, filter, test.options);
         assert_equals(output.dataType, test.output.dataType);
-        assert_array_equals(output.shape, test.output.shape);
+        // Compare shapes element by element to handle dynamic dimensions
+        assert_equals(output.shape.length, test.output.shape.length);
+        for (let i = 0; i < output.shape.length; i++) {
+          const outputDim = output.shape[i];
+          const expectedDim = test.output.shape[i];
+          if (typeof expectedDim === 'object') {
+            // Dynamic dimension
+            assert_equals(
+                typeof outputDim, 'object',
+                `Dimension ${i} should be a dynamic dimension`);
+            assert_equals(
+                outputDim.name, expectedDim.name,
+                `Dimension ${i} name mismatch`);
+            assert_equals(
+                outputDim.maxSize, expectedDim.maxSize,
+                `Dimension ${i} maxSize mismatch`);
+            assert_equals(
+                outputDim.minSize, expectedDim.minSize,
+                `Dimension ${i} minSize mismatch`);
+          } else {
+            // Fixed dimension
+            assert_equals(
+                outputDim, expectedDim, `Dimension ${i} value mismatch`);
+          }
+        }
       } else {
         const regrexp = /\[conv_2d_\*\]/;
         assert_throws_with_label(

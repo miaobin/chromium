@@ -106,6 +106,14 @@ inline constexpr char kWebNNOrtEnableProfiling[] = "webnn-ort-enable-profiling";
 // Usage: --webnn-ort-disable-cpu-fallback
 inline constexpr char kWebNNOrtDisableCpuFallback[] =
     "webnn-ort-disable-cpu-fallback";
+
+// Enable OpenVINO EP causal language model optimization for stateful KV-Cache.
+// By default, WebNN uses the stateless path. When this switch is set, the
+// OpenVINO EP will use stateful KV-Cache optimization which can improve
+// performance for autoregressive language models.
+// Usage: --webnn-ort-ovep-enable-causallm
+inline constexpr char kWebNNOrtOvepEnableCausallm[] =
+    "webnn-ort-ovep-enable-causallm";
 #endif  // BUILDFLAG(IS_WIN)
 
 extern base::span<const char* const> GetWebNNSwitchesCopiedFromGpuProcessHost();

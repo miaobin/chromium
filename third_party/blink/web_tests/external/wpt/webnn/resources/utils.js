@@ -239,9 +239,35 @@ const assertDescriptorsEquals = (outputOperand, expected) => {
   assert_equals(
       outputOperand.dataType, dataType,
       'actual output dataType should be equal to expected output dataType');
-  assert_array_equals(
-      outputOperand.shape, expected.shape,
-      'actual output shape should be equal to expected output shape');
+  // Compare shape manually to handle dynamic dimension objects
+  const actualShape = outputOperand.shape;
+  const expectedShape = expected.shape;
+  assert_equals(
+      actualShape.length, expectedShape.length,
+      'actual output shape length should be equal to expected output shape length');
+  for (let i = 0; i < actualShape.length; ++i) {
+    const actualDim = actualShape[i];
+    const expectedDim = expectedShape[i];
+    if (typeof actualDim === 'number' && typeof expectedDim === 'number') {
+      assert_equals(
+          actualDim, expectedDim,
+          `actual output shape dimension at index ${
+              i} should be equal to expected`);
+    } else if (
+        typeof actualDim === 'object' && typeof expectedDim === 'object') {
+      assert_equals(
+          actualDim.name, expectedDim.name,
+          `actual dynamic dimension name at index ${i} should match`);
+      assert_equals(
+          actualDim.maxSize, expectedDim.maxSize,
+          `actual dynamic dimension maxSize at index ${i} should match`);
+    } else {
+      assert_true(
+          false,
+          `shape mismatch at index ${i}: expected ${
+              JSON.stringify(expectedDim)} got ${JSON.stringify(actualDim)}`);
+    }
+  }
 };
 
 // ref:
@@ -614,13 +640,18 @@ const createOperand = (context, builder, operandName, resources) => {
     }
   }
 
-  operand = resources.constant ?
-      builder.constant(
-          descriptor,
-          getTypedArrayData(
-              descriptor.dataType, sizeOfShape(descriptor.shape),
-              resources.data)) :
-      builder.input(operandName, descriptor);
+  if (resources.constant) {
+    // Constants must have concrete shapes. Use resources.shape if provided,
+    // otherwise fall back to descriptor.shape.
+    const concreteShape = resources.shape || descriptor.shape;
+    const constantDescriptor = {...descriptor, shape: concreteShape};
+    operand = builder.constant(
+        constantDescriptor,
+        getTypedArrayData(
+            descriptor.dataType, sizeOfShape(concreteShape), resources.data));
+  } else {
+    operand = builder.input(operandName, descriptor);
+  }
 
   if (descriptor.castedType) {
     operand = builder.cast(operand, dataType);
@@ -658,13 +689,14 @@ async function prepareInputsForGraph(context, resources) {
   const tensors = await Promise.all(inputOperandNameArray.map((operandName) => {
     const inputOperandResources = resources[operandName];
     const descriptor = inputOperandResources.descriptor;
+    // The descriptor shape might be a dynamic shape, in that case the test case
+    // should provide a concrete shape for the tensor.
+    const shape = inputOperandResources.shape || descriptor.shape;
     const targetDataType =
         descriptor.castedType ? descriptor.castedType : descriptor.dataType;
     const inputBuffer = getTypedArrayData(
-        targetDataType, sizeOfShape(descriptor.shape),
-        inputOperandResources.data);
-    return createTensorWithData(
-        context, targetDataType, descriptor.shape, inputBuffer);
+        targetDataType, sizeOfShape(shape), inputOperandResources.data);
+    return createTensorWithData(context, targetDataType, shape, inputBuffer);
   }));
 
   const inputs = {};
@@ -676,10 +708,14 @@ async function prepareOutputsForGraph(context, resources) {
   const outputOperandNameArray = Object.keys(resources);
   const tensors =
       await Promise.all(outputOperandNameArray.map((operandName) => {
-        const descriptor = resources[operandName].descriptor;
+        const outputOperandResources = resources[operandName];
+        const descriptor = outputOperandResources.descriptor;
+        // The descriptor shape might be a dynamic shape, in that case the test
+        // case should provide a concrete shape for the tensor.
+        const shape = outputOperandResources.shape || descriptor.shape;
         const dataType =
             descriptor.castedType ? descriptor.castedType : descriptor.dataType;
-        return createTensorWithData(context, dataType, descriptor.shape);
+        return createTensorWithData(context, dataType, shape);
       }));
 
   const outputs = {};
@@ -1098,7 +1134,7 @@ const getGemmPrecisionTolerance =
   let ShapeA;
   const indexA = args[0][Object.keys(args[0])[0]];
   if (inputs[indexA]) {
-    ShapeA = inputs[indexA].descriptor.shape;
+    ShapeA = inputs[indexA].shape || inputs[indexA].descriptor.shape;
   } else {
     ShapeA = intermediateOperands[indexA].shape;
   }
@@ -1222,7 +1258,8 @@ const getPoolingOperatorsPrecisionTolerance =
   let inputShape;
   const inputIndex = args[0][Object.keys(args[0])[0]];
   if (inputs[inputIndex]) {
-    inputShape = inputs[inputIndex].descriptor.shape;
+    inputShape =
+        inputs[inputIndex].shape || inputs[inputIndex].descriptor.shape;
   } else {
     inputShape = intermediateOperands[inputIndex].shape;
   }
@@ -1292,7 +1329,10 @@ const getReductionOperatorsPrecisionTolerance =
         let inputShape;
         const inputIndex = args[0][Object.keys(args[0])[0]];
         if (inputs[inputIndex]) {
-          inputShape = inputs[inputIndex].descriptor.shape;
+          // Use concrete runtime shape if available, otherwise use descriptor
+          // shape
+          inputShape =
+              inputs[inputIndex].shape || inputs[inputIndex].descriptor.shape;
         } else {
           inputShape = intermediateOperands[inputIndex].shape;
         }

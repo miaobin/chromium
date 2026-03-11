@@ -399,6 +399,88 @@ const gatherElementsTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'gatherElements float32 2D input with dynamic batch and int32 indices (concrete shapes [3, 3] and [3, 2])',
+    'graph': {
+      'inputs': {
+        'gatherElementsInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+          'shape': [3, 3],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 3], dataType: 'float32'}
+        },
+        'gatherElementsIndices': {
+          'data': [1, 0, 2, 1, 1, 2],
+          'shape': [3, 2],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 2], dataType: 'int32'}
+        }
+      },
+      'operators': [{
+        'name': 'gatherElements',
+        'arguments': [
+          {'input': 'gatherElementsInput'},
+          {'indices': 'gatherElementsIndices'}, {'options': {'axis': 1}}
+        ],
+        'outputs': 'gatherElementsOutput'
+      }],
+      'expectedOutputs': {
+        'gatherElementsOutput': {
+          'data': [2.0, 1.0, 6.0, 5.0, 8.0, 9.0],
+          'shape': [3, 2],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 2], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'gatherElements float32 3D input with dynamic dimensions and int64 indices (concrete shapes [2, 3, 4] and [2, 2, 4])',
+    'graph': {
+      'inputs': {
+        'gatherElementsInput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape:
+                [{name: 'batch', maxSize: 5}, {name: 'height', maxSize: 5}, 4],
+            dataType: 'float32'
+          }
+        },
+        'gatherElementsIndices': {
+          'data': [0, 1, 2, 1, 2, 0, 1, 0, 0, 2, 1, 2, 1, 0, 2, 1],
+          'shape': [2, 2, 4],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 2, 4], dataType: 'int64'}
+        }
+      },
+      'operators': [{
+        'name': 'gatherElements',
+        'arguments': [
+          {'input': 'gatherElementsInput'},
+          {'indices': 'gatherElementsIndices'}, {'options': {'axis': 1}}
+        ],
+        'outputs': 'gatherElementsOutput'
+      }],
+      'expectedOutputs': {
+        'gatherElementsOutput': {
+          'data': [
+            1.0, 6.0, 11.0, 8.0, 9.0, 2.0, 7.0, 4.0, 13.0, 22.0, 19.0, 24.0,
+            17.0, 14.0, 23.0, 20.0
+          ],
+          'shape': [2, 2, 4],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 2, 4], dataType: 'float32'}
+        }
+      }
+    }
   }
 ];
 

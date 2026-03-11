@@ -92,6 +92,7 @@ struct DataTypeLimits {
   SupportedTensors max_input;
   SupportedTensors min_input;
   SupportedTensors pow_input;
+  SupportedTensors mod_input;
 
   // Element-wise logical ops.
   SupportedTensors equal_input;
@@ -225,6 +226,28 @@ struct DataTypeLimits {
   // Where.
   SupportedTensors where_condition;
   SupportedTensors where_value;
+
+  // Range.
+  SupportedTensors range_input;
+  SupportedTensors range_output;
+
+  // Shape.
+  SupportedTensors shape_input;
+  SupportedTensors shape_output;
+
+  // Dynamic ops.
+  SupportedTensors dynamic_reshape_input;
+  SupportedTensors dynamic_reshape_new_shape;
+  SupportedTensors dynamic_expand_input;
+  SupportedTensors dynamic_expand_new_shape;
+  SupportedTensors dynamic_slice_input;
+  SupportedTensors dynamic_slice_starts;
+  SupportedTensors dynamic_pad_input;
+  SupportedTensors dynamic_pad_pads;
+  SupportedTensors dynamic_split_input;
+  SupportedTensors dynamic_split_splits;
+  SupportedTensors dynamic_resample_2d_input;
+  SupportedTensors dynamic_resample_2d_sizes;
 };
 
 // Represents properties of the `WebNNContext` implementation that has been

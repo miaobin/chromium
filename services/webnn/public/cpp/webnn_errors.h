@@ -43,10 +43,12 @@ inline constexpr char kMatmul[] = "matmul";
 inline constexpr char kPad[] = "pad";
 inline constexpr char kPrelu[] = "prelu";
 inline constexpr char kQuantizeLinear[] = "quantizeLinear";
+inline constexpr char kRange[] = "range";
 inline constexpr char kRelu[] = "relu";
 inline constexpr char kResample2d[] = "resample2d";
 inline constexpr char kReshape[] = "reshape";
 inline constexpr char kReverse[] = "reverse";
+inline constexpr char kShape[] = "shape";
 inline constexpr char kScatterElements[] = "scatterElements";
 inline constexpr char kScatterND[] = "scatterND";
 inline constexpr char kSigmoid[] = "sigmoid";
@@ -60,6 +62,12 @@ inline constexpr char kTile[] = "tile";
 inline constexpr char kTranspose[] = "transpose";
 inline constexpr char kTriangular[] = "triangular";
 inline constexpr char kWhere[] = "where";
+inline constexpr char kDynamicReshape[] = "dynamicReshape";
+inline constexpr char kDynamicExpand[] = "dynamicExpand";
+inline constexpr char kDynamicSlice[] = "dynamicSlice";
+inline constexpr char kDynamicPad[] = "dynamicPad";
+inline constexpr char kDynamicSplit[] = "dynamicSplit";
+inline constexpr char kDynamicResample2d[] = "dynamicResample2d";
 
 // conv2d ops.
 inline constexpr char kConv2d[] = "conv2d";
@@ -82,6 +90,7 @@ inline constexpr char kNotEqual[] = "notEqual";
 inline constexpr char kLogicalAnd[] = "logicalAnd";
 inline constexpr char kLogicalOr[] = "logicalOr";
 inline constexpr char kLogicalXor[] = "logicalXor";
+inline constexpr char kMod[] = "mod";
 
 // elementwise unary ops.
 inline constexpr char kAbs[] = "abs";
