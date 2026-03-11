@@ -6,9 +6,12 @@
 #define SERVICES_WEBNN_PUBLIC_CPP_OPERAND_DESCRIPTOR_H_
 
 #include <algorithm>
+#include <compare>
 #include <functional>
 #include <numeric>
+#include <string>
 #include <type_traits>
+#include <variant>  // For std::variant
 #include <vector>
 
 #include "base/component_export.h"
@@ -18,6 +21,30 @@
 #include "mojo/public/cpp/bindings/default_construct_tag.h"
 
 namespace webnn {
+
+struct DynamicDimension {
+  std::string name;
+  uint32_t max_size;
+  uint32_t min_size = 1;
+
+  friend constexpr auto operator<=>(const DynamicDimension&,
+                                    const DynamicDimension&) = default;
+};
+
+using Dimension = std::variant<uint32_t, DynamicDimension>;
+
+// Helper to convert a uint32_t vector to a Dimension vector (all static
+// dimensions).
+std::vector<Dimension> COMPONENT_EXPORT(WEBNN_PUBLIC_CPP)
+    ToDimensionVector(base::span<const uint32_t> shape);
+
+// Helper to get the static size or the max size of a dynamic dimension.
+uint32_t COMPONENT_EXPORT(WEBNN_PUBLIC_CPP)
+    GetStaticOrMaxSize(const Dimension& dimension);
+
+// Helper to get the static size or the min size of a dynamic dimension.
+uint32_t COMPONENT_EXPORT(WEBNN_PUBLIC_CPP)
+    GetStaticOrMinSize(const Dimension& dimension);
 
 enum class OperandDataType {
   kFloat32,
@@ -103,6 +130,13 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
       base::span<const uint32_t> shape,
       std::string_view label);
 
+  // Creates a valid `OperandDescriptor` with dynamic dimensions.
+  static base::expected<OperandDescriptor, std::string> Create(
+      const ContextProperties& context_properties,
+      OperandDataType data_type,
+      base::span<const Dimension> shape,
+      std::string_view label);
+
   // This function is called by `OperandDescriptor` mojom traits that need to be
   // validated tensor size limit later.
   static base::expected<OperandDescriptor, std::string>
@@ -110,11 +144,23 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
                            base::span<const uint32_t> shape,
                            base::span<const uint32_t> pending_permutation);
 
+  // Same as above, but support dynamic dimensions.
+  static base::expected<OperandDescriptor, std::string>
+  CreateForDeserialization(OperandDataType data_type,
+                           base::span<const Dimension> shape,
+                           base::span<const uint32_t> pending_permutation);
+
   // Same as above, but skip validation checks. This may be used to create an
   // invalid descriptor to test that its deserialization fails.
   static OperandDescriptor UnsafeCreateForTesting(
       OperandDataType data_type,
       base::span<const uint32_t> shape,
+      base::span<const uint32_t> pending_permutation = {});
+
+  // Overload that accepts Dimension span for testing with dynamic dimensions.
+  static OperandDescriptor UnsafeCreateForTesting(
+      OperandDataType data_type,
+      base::span<const Dimension> shape,
       base::span<const uint32_t> pending_permutation = {});
 
   static size_t GetBitsPerElement(OperandDataType data_type);
@@ -132,7 +178,7 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
   ~OperandDescriptor();
 
   OperandDataType data_type() const { return data_type_; }
-  const std::vector<uint32_t>& shape() const { return shape_; }
+  const std::vector<Dimension>& shape() const { return shape_; }
   const std::vector<uint32_t>& pending_permutation() const {
     return pending_permutation_;
   }
@@ -144,6 +190,10 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
   size_t NumberOfElements() const;
 
   void SetPendingPermutation(base::span<const uint32_t> permutation);
+
+  // Returns the shape as a vector of uint32_t, returns nullopt if any dynamic
+  // dimension is present.
+  std::optional<std::vector<uint32_t>> StaticShape() const;
 
   friend constexpr auto operator<=>(const OperandDescriptor& lhs,
                                     const OperandDescriptor& rhs) {
@@ -158,13 +208,13 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
   }
 
  private:
-  OperandDescriptor(OperandDataType data_type, std::vector<uint32_t> shape);
+  OperandDescriptor(OperandDataType data_type, std::vector<Dimension> shape);
   OperandDescriptor(OperandDataType data_type,
-                    std::vector<uint32_t> shape,
+                    std::vector<Dimension> shape,
                     std::vector<uint32_t> permutation);
 
   OperandDataType data_type_;
-  std::vector<uint32_t> shape_;
+  std::vector<Dimension> shape_;
   std::vector<uint32_t> pending_permutation_;
 };
 

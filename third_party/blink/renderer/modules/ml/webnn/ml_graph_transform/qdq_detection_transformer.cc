@@ -166,7 +166,7 @@ void QDQDetectionTransformer::HandleQuantize(
       ReplaceOperandWithNewDataType(transpose->Outputs()[0],
                                     dq_input_data_type);
       ReplaceOperandWithNewShape(dq->Outputs()[0],
-                                 transpose->Outputs()[0]->shape());
+                                 transpose->Outputs()[0]->Shape());
     }
   }
 
@@ -179,7 +179,10 @@ void QDQDetectionTransformer::HandleQuantize(
   SwapInput(q, 0u, center_op->Outputs()[0]);
   SwapInput(transpose2, 0u, q->Outputs()[0]);
   ReplaceOperandWithNewDataType(transpose2->Outputs()[0], q_output_data_type);
-  ReplaceOperandWithNewShape(q->Outputs()[0], center_op->Outputs()[0]->shape());
+  std::vector<webnn::Dimension> new_shape;
+  new_shape.insert(new_shape.end(), center_op->Outputs()[0]->Shape().begin(),
+                   center_op->Outputs()[0]->Shape().end());
+  ReplaceOperandWithNewShape(q->Outputs()[0], new_shape);
 
   for (auto& dep_op : subgraph_dep_operators) {
     SwapInput(dep_op.Get(), q->Outputs()[0], transpose2->Outputs()[0]);

@@ -604,8 +604,9 @@ const absTests = [
       'inputs': {
         'absInput': {
           'data': [
-            // int32 range: [/* -(2**31) */ -2147483648, /* 2**31 - 1 */ 2147483647]
-            // abs(-2147483648) would overflow when data type is int32
+            // int32 range: [/* -(2**31) */ -2147483648, /* 2**31 - 1 */
+            // 2147483647] abs(-2147483648) would overflow when data type is
+            // int32
             -2147483647, 0, 2147483646, 2147483647
           ],
           'descriptor': {shape: [1, 2, 2, 1], dataType: 'int32'}
@@ -648,6 +649,58 @@ const absTests = [
         'absOutput': {
           'data': [BigInt(2 ** 63) - 1n, 100n, 0n, 100n, BigInt(2 ** 63) - 1n],
           'descriptor': {shape: [1, 1, 1, 5], dataType: 'int64'}
+        }
+      }
+    }
+  },
+  {
+    'name': 'abs float32 2D tensor with dynamic shape (concrete shape [1, 4])',
+    'graph': {
+      'inputs': {
+        'absInput': {
+          'data': [-10.0, 20.0, -30.0, 40.0],
+          'shape': [1, 4],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 5}, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'abs',
+        'arguments': [{'input': 'absInput'}],
+        'outputs': 'absOutput'
+      }],
+      'expectedOutputs': {
+        'absOutput': {
+          'data': [10.0, 20.0, 30.0, 40.0],
+          'shape': [1, 4],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 5}, 4], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name': 'abs float32 2D tensor with dynamic shape (concrete shape [2, 4])',
+    'graph': {
+      'inputs': {
+        'absInput': {
+          'data': [-10.0, 20.0, -30.0, 40.0, -50.0, 60.0, -70.0, 80.0],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 5}, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'abs',
+        'arguments': [{'input': 'absInput'}],
+        'outputs': 'absOutput'
+      }],
+      'expectedOutputs': {
+        'absOutput': {
+          'data': [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 5}, 4], dataType: 'float32'}
         }
       }
     }

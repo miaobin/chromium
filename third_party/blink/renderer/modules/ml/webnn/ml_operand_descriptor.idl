@@ -21,3 +21,16 @@ dictionary MLOperandDescriptor {
   required MLOperandDataType dataType;
   required sequence<[EnforceRange] unsigned long> shape;
 };
+
+dictionary MLDynamicDimension {
+  required DOMString name;
+  required [EnforceRange] unsigned long maxSize;
+  [EnforceRange] unsigned long minSize = 1;
+};
+
+typedef ([EnforceRange] unsigned long or MLDynamicDimension) MLDimension;
+
+dictionary MLInputOperandDescriptor {
+  required MLOperandDataType dataType;
+  required sequence<MLDimension> shape;
+};

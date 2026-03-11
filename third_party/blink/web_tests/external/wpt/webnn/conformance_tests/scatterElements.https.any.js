@@ -278,6 +278,103 @@ const scatterElementsTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'scatterElements float32 2D input with dynamic batch and int32 indices (concrete shapes [3, 3], [2, 3], [2, 3])',
+    'graph': {
+      'inputs': {
+        'input': {
+          'data': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+          'shape': [3, 3],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 3], dataType: 'float32'}
+        },
+        'indices': {
+          'data': [1, 0, 2, 0, 2, 1],
+          'shape': [2, 3],
+          'descriptor': {shape: [2, 3], dataType: 'int32'}
+        },
+        'updates': {
+          'data': [1.0, 1.1, 1.2, 2.0, 2.1, 2.2],
+          'shape': [2, 3],
+          'descriptor': {shape: [2, 3], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'scatterElements',
+        'arguments': [
+          {'input': 'input'}, {'indices': 'indices'}, {'updates': 'updates'},
+          {'options': {'axis': 0}}
+        ],
+        'outputs': 'output'
+      }],
+      'expectedOutputs': {
+        'output': {
+          'data': [2.0, 1.1, 0.0, 1.0, 0.0, 2.2, 0.0, 2.1, 1.2],
+          'shape': [3, 3],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 3], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'scatterElements float32 3D input with dynamic dimensions and int64 indices (concrete shapes [2, 3, 4], [2, 2, 4], [2, 2, 4])',
+    'graph': {
+      'inputs': {
+        'input': {
+          'data': [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape:
+                [{name: 'batch', maxSize: 5}, {name: 'height', maxSize: 5}, 4],
+            dataType: 'float32'
+          }
+        },
+        'indices': {
+          'data': [0, 1, 2, 1, 2, 0, 1, 0, 0, 2, 1, 2, 1, 0, 2, 1],
+          'shape': [2, 2, 4],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 2, 4], dataType: 'int64'}
+        },
+        'updates': {
+          'data': [
+            1.0, 1.1, 1.2, 1.3, 2.0, 2.1, 2.2, 2.3, 3.0, 3.1, 3.2, 3.3, 4.0,
+            4.1, 4.2, 4.3
+          ],
+          'shape': [2, 2, 4],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 5}, 2, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'scatterElements',
+        'arguments': [
+          {'input': 'input'}, {'indices': 'indices'}, {'updates': 'updates'},
+          {'options': {'axis': 1}}
+        ],
+        'outputs': 'output'
+      }],
+      'expectedOutputs': {
+        'output': {
+          'data': [
+            1.0, 2.1, 0.0, 2.3, 0.0, 1.1, 2.2, 1.3, 2.0, 0.0, 1.2, 0.0,
+            3.0, 4.1, 0.0, 0.0, 4.0, 0.0, 3.2, 4.3, 0.0, 3.1, 4.2, 3.3
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape:
+                [{name: 'batch', maxSize: 5}, {name: 'height', maxSize: 5}, 4],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
   }
 ];
 

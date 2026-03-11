@@ -36,6 +36,11 @@ const tests = [
         '[gatherND] Throw if indices.shape[-1] is greater than the input rank',
     input: {dataType: 'float32', shape: [1, 2, 3]},
     indices: {dataType: 'int32', shape: [1, 1, 4]}
+  },
+  {
+    name: '[gatherND] Throw if the last dimension of indices is dynamic',
+    input: {dataType: 'float32', shape: [2, 3, 4]},
+    indices: {dataType: 'int32', shape: [2, {name: 'num_axes', maxSize: 3}]}
   }
 ];
 

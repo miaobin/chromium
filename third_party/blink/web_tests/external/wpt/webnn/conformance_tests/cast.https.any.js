@@ -1489,8 +1489,91 @@ const castTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'cast float32 2D tensor with dynamic shape to int32 (concrete shape [1, 4])',
+    'graph': {
+      'inputs': {
+        'castInput': {
+          'data': [102.15, -43.5, 52.84, -99.95],
+          'shape': [1, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'cast',
+        'arguments': [{'input': 'castInput'}, {'type': 'int32'}],
+        'outputs': 'castOutput'
+      }],
+      'expectedOutputs': {
+        'castOutput': {
+          'data': [102, -43, 52, -99],
+          'shape': [1, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 4], dataType: 'int32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'cast float32 2D tensor with dynamic shape to int32 (concrete shape [3, 4])',
+    'graph': {
+      'inputs': {
+        'castInput': {
+          'data': [
+            102.15, -43.5, 52.84, -99.95, 6.72, 92.66, -10.37, 106.65, -7.12,
+            91.51, -50.87, 83.38
+          ],
+          'shape': [3, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'cast',
+        'arguments': [{'input': 'castInput'}, {'type': 'int32'}],
+        'outputs': 'castOutput'
+      }],
+      'expectedOutputs': {
+        'castOutput': {
+          'data': [102, -43, 52, -99, 6, 92, -10, 106, -7, 91, -50, 83],
+          'shape': [3, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 4], dataType: 'int32'}
+        }
+      }
+    }
   }
 ];
 
 webnn_conformance_test(
     castTests, buildAndExecuteGraph, getCastPrecisionTolerance);
+
+promise_test(async t => {
+  const context = await getContext();
+  const builder = new MLGraphBuilder(context);
+  const descriptor = {
+    shape: [{'name': 'batch', 'maxSize': 8}, 4],
+    dataType: 'float32'
+  };
+  const inputOperand = builder.input('input', descriptor);
+  const outputOperand = builder.cast(inputOperand, 'int32');
+  const graph = await builder.build({'output': outputOperand});
+
+  const inputTensor = await context.createTensor({
+    dataType: 'float32',
+    shape: [10, 4],  // Larger than maxSize 8
+    readable: true,
+    writable: true
+  });
+
+  const outputTensor = await context.createTensor(
+      {dataType: 'int32', shape: [10, 4], readable: true, writable: true});
+
+  assert_throws_js(TypeError, () => {
+    context.dispatch(graph, {'input': inputTensor}, {'output': outputTensor});
+  });
+}, 'cast float32 2D tensor with input dimension larger than maxSize');

@@ -2370,6 +2370,139 @@ const concatTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'concat two float32 2D tensors with dynamic dimension on concat axis (concrete shapes [1, 3] and [2, 3])',
+    'graph': {
+      'inputs': {
+        'concatInput1': {
+          'data': [1.0, 2.0, 3.0],
+          'shape': [1, 3],
+          'descriptor': {
+            shape: [{'name': 'batch1', 'maxSize': 4}, 3],
+            dataType: 'float32'
+          }
+        },
+        'concatInput2': {
+          'data': [4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+          'shape': [2, 3],
+          'descriptor': {
+            shape: [{'name': 'batch2', 'maxSize': 4}, 3],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'concat',
+        'arguments':
+            [{'inputs': ['concatInput1', 'concatInput2']}, {'axis': 0}],
+        'outputs': 'concatOutput'
+      }],
+      'expectedOutputs': {
+        'concatOutput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+          'shape': [3, 3],
+          'descriptor': {
+            shape: [{'name': 'batch1+batch2', 'maxSize': 8}, 3],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'concat two float32 2D tensors with dynamic dimension on non-concat axis (concrete shapes [2, 2] and [3, 2])',
+    'graph': {
+      'inputs': {
+        'concatInput1': {
+          'data': [1.0, 2.0, 3.0, 4.0],
+          'shape': [2, 2],
+          'descriptor': {
+            shape: [2, {'name': 'features', 'maxSize': 8}],
+            dataType: 'float32'
+          }
+        },
+        'concatInput2': {
+          'data': [5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+          'shape': [3, 2],
+          'descriptor': {
+            shape: [3, {'name': 'features', 'maxSize': 8}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'concat',
+        'arguments':
+            [{'inputs': ['concatInput1', 'concatInput2']}, {'axis': 0}],
+        'outputs': 'concatOutput'
+      }],
+      'expectedOutputs': {
+        'concatOutput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+          'shape': [5, 2],
+          'descriptor': {
+            shape: [5, {'name': 'features', 'maxSize': 8}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'concat three float32 2D tensors with mixed dynamic dimensions (concrete shapes [1, 4], [2, 4], [1, 4])',
+    'graph': {
+      'inputs': {
+        'concatInput1': {
+          'data': [1.0, 2.0, 3.0, 4.0],
+          'shape': [1, 4],
+          'descriptor': {
+            shape: [{'name': 'batch1', 'maxSize': 5}, 4],
+            dataType: 'float32'
+          }
+        },
+        'concatInput2': {
+          'data': [5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [2, 4],
+          'descriptor': {
+            shape: [{'name': 'batch2', 'maxSize': 5}, 4],
+            dataType: 'float32'
+          }
+        },
+        'concatInput3': {
+          'data': [13.0, 14.0, 15.0, 16.0],
+          'shape': [1, 4],
+          'descriptor': {
+            shape: [{'name': 'batch3', 'maxSize': 5}, 4],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'concat',
+        'arguments': [
+          {'inputs': ['concatInput1', 'concatInput2', 'concatInput3']},
+          {'axis': 0}
+        ],
+        'outputs': 'concatOutput'
+      }],
+      'expectedOutputs': {
+        'concatOutput': {
+          'data': [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+            14.0, 15.0, 16.0
+          ],
+          'shape': [4, 4],
+          'descriptor': {
+            shape: [{'name': 'batch1+batch2+batch3', 'maxSize': 15}, 4],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
   }
 ];
 

@@ -1834,6 +1834,509 @@ const whereTests = [
         }
       }
     }
+  },
+
+  // Dynamic shape tests
+  {
+    'name':
+        'where float32 2D tensors with dynamic shape (concrete shape [2, 3])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 0, 1, 0],
+          'shape': [2, 3],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'uint8'
+          }
+        },
+        'inputTrueValue': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'shape': [2, 3],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        },
+        'inputFalseValue': {
+          'data': [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+          'shape': [2, 3],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [1.0, 20.0, 3.0, 40.0, 5.0, 60.0],
+          'shape': [2, 3],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'where float32 2D tensors with dynamic shape (concrete shape [3, 4])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'uint8'
+          }
+        },
+        'inputTrueValue': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float32'
+          }
+        },
+        'inputFalseValue': {
+          'data': [
+            100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0,
+            1000.0, 1100.0, 1200.0
+          ],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [
+            1.0, 200.0, 3.0, 400.0, 5.0, 6.0, 700.0, 800.0, 9.0, 1000.0, 11.0,
+            12.0
+          ],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'where float32 3D tensors with dynamic shape (concrete shape [2, 2, 3])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'uint8'
+          }
+        },
+        'inputTrueValue': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        },
+        'inputFalseValue': {
+          'data': [
+            100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0,
+            1000.0, 1100.0, 1200.0
+          ],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [
+            1.0, 200.0, 3.0, 4.0, 500.0, 600.0, 700.0, 8.0, 9.0, 10.0, 11.0,
+            1200.0
+          ],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'where float32 4D tensors with dynamic shape (concrete shape [1, 2, 2, 3])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0],
+          'shape': [1, 2, 2, 3],
+          'descriptor': {
+            shape: [
+              1, 2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}
+            ],
+            dataType: 'uint8'
+          }
+        },
+        'inputTrueValue': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [1, 2, 2, 3],
+          'descriptor': {
+            shape: [
+              1, 2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}
+            ],
+            dataType: 'float32'
+          }
+        },
+        'inputFalseValue': {
+          'data': [
+            100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0,
+            1000.0, 1100.0, 1200.0
+          ],
+          'shape': [1, 2, 2, 3],
+          'descriptor': {
+            shape: [
+              1, 2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}
+            ],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [
+            1.0, 200.0, 3.0, 4.0, 500.0, 600.0, 700.0, 8.0, 9.0, 10.0, 11.0,
+            1200.0
+          ],
+          'shape': [1, 2, 2, 3],
+          'descriptor': {
+            shape: [
+              1, 2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}
+            ],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'where float32 2D tensors with dynamic shape broadcasting condition (concrete shape [3, 4])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 0],
+          'shape': [1, 4],
+          'descriptor':
+              {shape: [1, {'name': 'N', 'maxSize': 6}], dataType: 'uint8'}
+        },
+        'inputTrueValue': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float32'
+          }
+        },
+        'inputFalseValue': {
+          'data': [
+            100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0,
+            1000.0, 1100.0, 1200.0
+          ],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [
+            1.0, 200.0, 3.0, 400.0, 5.0, 600.0, 7.0, 800.0, 9.0, 1000.0, 11.0,
+            1200.0
+          ],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'where float32 3D tensors with dynamic shape broadcasting trueValue (concrete shape [2, 2, 3])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'uint8'
+          }
+        },
+        'inputTrueValue': {
+          'data': [10.0, 20.0, 30.0],
+          'shape': [1, 1, 3],
+          'descriptor':
+              {shape: [1, 1, {'name': 'N', 'maxSize': 5}], dataType: 'float32'}
+        },
+        'inputFalseValue': {
+          'data': [
+            100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0,
+            1000.0, 1100.0, 1200.0
+          ],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [
+            10.0, 200.0, 30.0, 10.0, 500.0, 600.0, 700.0, 20.0, 30.0, 10.0,
+            20.0, 1200.0
+          ],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'where float32 3D tensors with dynamic shape broadcasting falseValue (concrete shape [2, 3, 2])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0],
+          'shape': [2, 3, 2],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'uint8'
+          }
+        },
+        'inputTrueValue': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [2, 3, 2],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        },
+        'inputFalseValue': {
+          'data': [100.0, 200.0],
+          'shape': [1, 1, 2],
+          'descriptor':
+              {shape: [1, 1, {'name': 'N', 'maxSize': 5}], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [
+            1.0, 200.0, 3.0, 200.0, 5.0, 200.0, 100.0, 8.0, 9.0, 10.0, 100.0,
+            200.0
+          ],
+          'shape': [2, 3, 2],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'where float16 2D tensors with dynamic shape (concrete shape [2, 4])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 0, 1, 1, 0, 0],
+          'shape': [2, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'uint8'
+          }
+        },
+        'inputTrueValue': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+          'shape': [2, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float16'
+          }
+        },
+        'inputFalseValue': {
+          'data': [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0],
+          'shape': [2, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float16'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [1.0, 20.0, 3.0, 40.0, 5.0, 6.0, 70.0, 80.0],
+          'shape': [2, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float16'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'where float16 3D tensors with dynamic shape broadcasting (concrete shape [2, 2, 2])',
+    'graph': {
+      'inputs': {
+        'inputCondition': {
+          'data': [1, 0, 1, 1, 0, 0, 1, 1],
+          'shape': [2, 2, 2],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'uint8'
+          }
+        },
+        'inputTrueValue': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+          'shape': [2, 2, 2],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float16'
+          }
+        },
+        'inputFalseValue': {
+          'data': [100.0, 200.0],
+          'shape': [1, 1, 2],
+          'descriptor':
+              {shape: [1, 1, {'name': 'N', 'maxSize': 5}], dataType: 'float16'}
+        }
+      },
+      'operators': [{
+        'name': 'where',
+        'arguments': [
+          {'condition': 'inputCondition'}, {'trueValue': 'inputTrueValue'},
+          {'falseValue': 'inputFalseValue'}
+        ],
+        'outputs': 'whereOutput'
+      }],
+      'expectedOutputs': {
+        'whereOutput': {
+          'data': [1.0, 200.0, 3.0, 4.0, 100.0, 200.0, 7.0, 8.0],
+          'shape': [2, 2, 2],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float16'
+          }
+        }
+      }
+    }
   }
 ];
 

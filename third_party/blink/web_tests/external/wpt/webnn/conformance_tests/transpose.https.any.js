@@ -692,6 +692,284 @@ const transposeTests = [
         }
       }
     }
+  },
+
+  // Dynamic shape tests
+  {
+    'name':
+        'transpose float32 2D tensor with dynamic shape default options (concrete shape [2, 3])',
+    'graph': {
+      'inputs': {
+        'transposeInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'shape': [2, 3],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'transpose',
+        'arguments': [{'input': 'transposeInput'}],
+        'outputs': 'transposeOutput'
+      }],
+      'expectedOutputs': {
+        'transposeOutput': {
+          'data': [1.0, 4.0, 2.0, 5.0, 3.0, 6.0],
+          'shape': [3, 2],
+          'descriptor': {
+            shape: [{'name': 'N', 'maxSize': 5}, {'name': 'M', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'transpose float32 2D tensor with dynamic shape default options (concrete shape [4, 2])',
+    'graph': {
+      'inputs': {
+        'transposeInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+          'shape': [4, 2],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'transpose',
+        'arguments': [{'input': 'transposeInput'}],
+        'outputs': 'transposeOutput'
+      }],
+      'expectedOutputs': {
+        'transposeOutput': {
+          'data': [1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 6.0, 8.0],
+          'shape': [2, 4],
+          'descriptor': {
+            shape: [{'name': 'N', 'maxSize': 5}, {'name': 'M', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'transpose float32 3D tensor with dynamic shape default options (concrete shape [2, 2, 3])',
+    'graph': {
+      'inputs': {
+        'transposeInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [{'name': 'M', 'maxSize': 5}, 2, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'transpose',
+        'arguments': [{'input': 'transposeInput'}],
+        'outputs': 'transposeOutput'
+      }],
+      'expectedOutputs': {
+        'transposeOutput': {
+          'data':
+              [1.0, 7.0, 4.0, 10.0, 2.0, 8.0, 5.0, 11.0, 3.0, 9.0, 6.0, 12.0],
+          'shape': [3, 2, 2],
+          'descriptor': {
+            shape:
+                [{'name': 'N', 'maxSize': 5}, 2, {'name': 'M', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'transpose float32 2D tensor with dynamic shape options.permutation (concrete shape [3, 4])',
+    'graph': {
+      'inputs': {
+        'transposeInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'transpose',
+        'arguments':
+            [{'input': 'transposeInput'}, {'options': {'permutation': [1, 0]}}],
+        'outputs': 'transposeOutput'
+      }],
+      'expectedOutputs': {
+        'transposeOutput': {
+          'data':
+              [1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0, 4.0, 8.0, 12.0],
+          'shape': [4, 3],
+          'descriptor': {
+            shape: [{'name': 'N', 'maxSize': 6}, {'name': 'M', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'transpose float32 3D tensor with dynamic shape options.permutation (concrete shape [2, 3, 2])',
+    'graph': {
+      'inputs': {
+        'transposeInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [2, 3, 2],
+          'descriptor': {
+            shape:
+                [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}, 2],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'transpose',
+        'arguments': [
+          {'input': 'transposeInput'}, {'options': {'permutation': [2, 0, 1]}}
+        ],
+        'outputs': 'transposeOutput'
+      }],
+      'expectedOutputs': {
+        'transposeOutput': {
+          'data':
+              [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'transpose float32 4D tensor with dynamic shape options.permutation (concrete shape [1, 2, 2, 3])',
+    'graph': {
+      'inputs': {
+        'transposeInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [1, 2, 2, 3],
+          'descriptor': {
+            shape: [
+              1, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 5}, 3
+            ],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'transpose',
+        'arguments': [
+          {'input': 'transposeInput'},
+          {'options': {'permutation': [0, 2, 3, 1]}}
+        ],
+        'outputs': 'transposeOutput'
+      }],
+      'expectedOutputs': {
+        'transposeOutput': {
+          'data':
+              [1.0, 7.0, 2.0, 8.0, 3.0, 9.0, 4.0, 10.0, 5.0, 11.0, 6.0, 12.0],
+          'shape': [1, 2, 3, 2],
+          'descriptor': {
+            shape: [
+              1, {'name': 'N', 'maxSize': 5}, 3, {'name': 'M', 'maxSize': 5}
+            ],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'transpose float16 2D tensor with dynamic shape default options (concrete shape [2, 4])',
+    'graph': {
+      'inputs': {
+        'transposeInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+          'shape': [2, 4],
+          'descriptor': {
+            shape: [{'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float16'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'transpose',
+        'arguments': [{'input': 'transposeInput'}],
+        'outputs': 'transposeOutput'
+      }],
+      'expectedOutputs': {
+        'transposeOutput': {
+          'data': [1.0, 5.0, 2.0, 6.0, 3.0, 7.0, 4.0, 8.0],
+          'shape': [4, 2],
+          'descriptor': {
+            shape: [{'name': 'N', 'maxSize': 6}, {'name': 'M', 'maxSize': 5}],
+            dataType: 'float16'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'transpose float16 3D tensor with dynamic shape options.permutation (concrete shape [1, 3, 4])',
+    'graph': {
+      'inputs': {
+        'transposeInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [1, 3, 4],
+          'descriptor': {
+            shape:
+                [1, {'name': 'M', 'maxSize': 5}, {'name': 'N', 'maxSize': 6}],
+            dataType: 'float16'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'transpose',
+        'arguments': [
+          {'input': 'transposeInput'}, {'options': {'permutation': [2, 1, 0]}}
+        ],
+        'outputs': 'transposeOutput'
+      }],
+      'expectedOutputs': {
+        'transposeOutput': {
+          'data':
+              [1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0, 4.0, 8.0, 12.0],
+          'shape': [4, 3, 1],
+          'descriptor': {
+            shape:
+                [{'name': 'N', 'maxSize': 6}, {'name': 'M', 'maxSize': 5}, 1],
+            dataType: 'float16'
+          }
+        }
+      }
+    }
   }
 ];
 

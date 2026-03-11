@@ -14,6 +14,7 @@
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 
@@ -22,6 +23,10 @@ namespace blink {
 class MLConstantOperand;
 class MLGraphBuilder;
 class MLOperator;
+class V8UnionMLDynamicDimensionOrUnsignedLongEnforceRange;
+
+typedef V8UnionMLDynamicDimensionOrUnsignedLongEnforceRange MLDimension;
+typedef HeapVector<Member<MLDimension>> MLDynamicShape;
 
 class MODULES_EXPORT MLOperand : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
@@ -34,7 +39,7 @@ class MODULES_EXPORT MLOperand : public ScriptWrappable {
       const webnn::ContextProperties& context_properties,
       MLGraphBuilder* builder,
       V8MLOperandDataType::Enum v8_data_type,
-      Vector<uint32_t> shape,
+      std::vector<webnn::Dimension> shape,
       String name);
   // Similar to the methods above, but since we're passed `descriptor` we can
   // skip the validation.
@@ -65,7 +70,7 @@ class MODULES_EXPORT MLOperand : public ScriptWrappable {
   // compared to using the corresponding methods which return blink types.
   const webnn::OperandDescriptor& Descriptor() const;
   webnn::OperandDataType DataType() const;
-  const std::vector<uint32_t>& Shape() const;
+  const std::vector<webnn::Dimension>& Shape() const;
 
   // The total number of elements in the operand. Its value is the product of
   // all values of the shape. For scalar operand, the number of elements is 1.
@@ -79,7 +84,7 @@ class MODULES_EXPORT MLOperand : public ScriptWrappable {
 
   // IDL interface:
   V8MLOperandDataType dataType() const;
-  Vector<uint32_t> shape() const;
+  MLDynamicShape shape() const;
 
   MLConstantOperand* AsConstantOperand();
 

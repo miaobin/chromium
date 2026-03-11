@@ -54,7 +54,7 @@ void ConstantFoldingTransformer::TryFoldConstant(MLOperator& op) {
     }
   }
   MLConstantOperand* new_constant_operand =
-      ReplaceConstantOperandWithNewShape(constant_operand, output->shape());
+      ReplaceConstantOperandWithNewShape(constant_operand, output->Shape());
   RemoveUnaryOperator(&op);
   if (op.Kind() == blink_mojom::Operation::Tag::kReshape) {
     return;

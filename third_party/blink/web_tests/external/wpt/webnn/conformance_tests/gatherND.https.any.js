@@ -568,6 +568,84 @@ const gatherNDTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'gatherND float32 3D input with dynamic batch and 2D indices (concrete shapes [2, 2, 4] and [3, 2])',
+    'graph': {
+      'inputs': {
+        'gatherNDInput': {
+          'data': [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+            14.0, 15.0, 16.0
+          ],
+          'shape': [2, 2, 4],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 2, 4], dataType: 'float32'}
+        },
+        'gatherNDIndices': {
+          'data': [1, 0, 0, 1, 1, 1],
+          'descriptor': {shape: [3, 2], dataType: 'int32'},
+          'constant': true
+        }
+      },
+      'operators': [{
+        'name': 'gatherND',
+        'arguments':
+            [{'input': 'gatherNDInput'}, {'indices': 'gatherNDIndices'}],
+        'outputs': 'gatherNDOutput'
+      }],
+      'expectedOutputs': {
+        'gatherNDOutput': {
+          'data': [
+            9.0, 10.0, 11.0, 12.0, 5.0, 6.0, 7.0, 8.0, 13.0, 14.0, 15.0, 16.0
+          ],
+          'shape': [3, 4],
+          'descriptor': {shape: [3, 4], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'gatherND float32 3D input and 2D indices with dynamic size (concrete shapes [2, 2, 4] and [3, 2])',
+    'graph': {
+      'inputs': {
+        'gatherNDInput': {
+          'data': [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+            14.0, 15.0, 16.0
+          ],
+          'descriptor': {shape: [2, 2, 4], dataType: 'float32'}
+        },
+        'gatherNDIndices': {
+          'data': [1, 0, 0, 1, 1, 1],
+          'shape': [3, 2],
+          'descriptor': {
+            shape: [{name: 'num_indices', maxSize: 10}, 2],
+            dataType: 'int32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'gatherND',
+        'arguments':
+            [{'input': 'gatherNDInput'}, {'indices': 'gatherNDIndices'}],
+        'outputs': 'gatherNDOutput'
+      }],
+      'expectedOutputs': {
+        'gatherNDOutput': {
+          'data': [
+            9.0, 10.0, 11.0, 12.0, 5.0, 6.0, 7.0, 8.0, 13.0, 14.0, 15.0, 16.0
+          ],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{name: 'num_indices', maxSize: 10}, 4],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
   }
 ];
 

@@ -38,9 +38,29 @@ bool ValidateWebNNTensors(
       [](const auto& named_tensor, const auto& tensor_spec) {
         const auto& [tensor_name, tensor_impl] = named_tensor;
         const auto& [tensor_spec_name, tensor_spec_descriptor] = tensor_spec;
-        return tensor_name == tensor_spec_name &&
-               tensor_impl->data_type() == tensor_spec_descriptor.data_type() &&
-               tensor_impl->shape() == tensor_spec_descriptor.shape();
+        // TODO(crbug.com/329482489): For now, this validation rejects using any
+        // dynamic dimension in the graph. This is acceptable for now because
+        // CreateGraph would reject such a graph anyways.
+        if (tensor_name != tensor_spec_name) {
+          return false;
+        }
+        if (tensor_impl->data_type() != tensor_spec_descriptor.data_type()) {
+          return false;
+        }
+        const std::vector<uint32_t>& impl_shape = tensor_impl->shape();
+        const std::vector<Dimension>& spec_shape =
+            tensor_spec_descriptor.shape();
+        if (impl_shape.size() != spec_shape.size()) {
+          return false;
+        }
+        return std::equal(impl_shape.begin(), impl_shape.end(),
+                          spec_shape.begin(),
+                          [](uint32_t impl_dim, const Dimension& spec_dim) {
+                            if (std::holds_alternative<uint32_t>(spec_dim)) {
+                              return impl_dim == std::get<uint32_t>(spec_dim);
+                            }
+                            return true;
+                          });
       });
 }
 

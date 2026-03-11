@@ -56,7 +56,7 @@ TEST(OperandDescriptorMojomTraitsTest, Int4) {
 TEST(OperandDescriptorMojomTraitsTest, EmptyShape) {
   // Descriptors with an empty shape are treated as scalars.
   auto input = webnn::OperandDescriptor::CreateForDeserialization(
-      webnn::OperandDataType::kInt32, {}, {});
+      webnn::OperandDataType::kInt32, std::vector<uint32_t>{}, {});
   ASSERT_TRUE(input.has_value());
 
   webnn::OperandDescriptor output = CreateInvalidOperandDescriptor();

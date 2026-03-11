@@ -11,9 +11,11 @@
 #include "services/webnn/public/mojom/webnn_graph.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_device_type.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_input_operand_descriptor.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_operand_descriptor.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
@@ -61,6 +63,10 @@ class MODULES_EXPORT MLGraph : public ScriptWrappable {
   // ml_graph.idl
   void destroy();
   Vector<V8MLDeviceType> devices() const;
+  HeapVector<std::pair<String, Member<MLInputOperandDescriptor>>> inputs()
+      const;
+  HeapVector<std::pair<String, Member<MLInputOperandDescriptor>>> outputs()
+      const;
 
   const NamedOperandDescriptors& GetInputConstraints() const;
   const NamedOperandDescriptors& GetOutputConstraints() const;

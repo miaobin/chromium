@@ -2618,3 +2618,296 @@ const subgraphTests = [
 
 webnn_conformance_test(
     subgraphTests, buildAndExecuteGraph, getPrecisionTolerance);
+
+// Test dynamic shapes: concat output's dynamic dimension is used as a shape
+// reference in reshape and expand, exercising the path where expand's target
+// shape contains a dynamic dimension that comes from a non-graph-input operand
+// (i.e. the expand input itself, after reshape).
+if (navigator.ml !== undefined) {
+  promise_test(async () => {
+    const context = await navigator.ml.createContext();
+    const builder = new MLGraphBuilder(context);
+
+    // 'a' has a dynamic batch dimension; 'b' has a static shape.
+    const a = builder.input(
+        'a', {dataType: 'float32', shape: [{name: 'batch', maxSize: 3}, 2]});
+    const b = builder.input('b', {dataType: 'float32', shape: [1, 2]});
+
+    // c.shape = [batch+1, 2] at graph construction time; shape[0] is dynamic.
+    const c = builder.concat([a, b], 0);
+
+    // Reshape c into [1, c.shape[0], 1, c.shape[1]].
+    const d = builder.reshape(c, [1, c.shape[0], 1, c.shape[1]]);
+
+    // Expand d to [3, d.shape[1], 3, d.shape[3]].
+    // d.shape[1] is the dynamic concat dimension; d.shape[3] is static 2.
+    const e = builder.expand(d, [3, d.shape[1], 3, d.shape[3]]);
+
+    const graph = await builder.build({e});
+
+    // Dispatch with batch=1: a=[1,2], b=[1,2].
+    const aTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 2], writable: true});
+    const bTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 2], writable: true});
+    // e shape at dispatch: [3, 2, 3, 2] = 36 elements.
+    const eTensor = await context.createTensor(
+        {dataType: 'float32', shape: [3, 2, 3, 2], readable: true});
+
+    context.writeTensor(aTensor, new Float32Array(2).fill(1));
+    context.writeTensor(bTensor, new Float32Array(2).fill(2));
+    context.dispatch(graph, {a: aTensor, b: bTensor}, {e: eTensor});
+    const eData = await context.readTensor(eTensor);
+    const result = new Float32Array(eData);
+
+    // d has shape [1, 2, 1, 2]:
+    //   d[0, 0, 0, :] = [1, 1]  (from row 0 of c, which came from a)
+    //   d[0, 1, 0, :] = [2, 2]  (from row 1 of c, which came from b)
+    // Expanding [1, 2, 1, 2] -> [3, 2, 3, 2] broadcasts axes 0 and 2,
+    // so e[i, j, k, :] = d[0, j, 0, :] for all i in [0,2], k in [0,2].
+    // This yields 3 repetitions of [1,1,1,1,1,1, 2,2,2,2,2,2].
+    const expected = new Float32Array([
+      1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1,
+      2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2,
+    ]);
+    assert_array_equals(result, expected);
+  }, 'concat + reshape + expand with dynamic dimension from non-input operand shape');
+
+  // Test: expand from [1, 1] to [N+1, N+1], where N+1 is a dynamic dimension
+  // produced by concat.  The expand input shape [1, 1] does NOT contain N+1;
+  // both axes of the target shape are the dynamic concatenated dimension.
+  promise_test(async () => {
+    const context = await navigator.ml.createContext();
+    const builder = new MLGraphBuilder(context);
+
+    // 'a' has a dynamic length (up to 4 elements); 'b' is a static [1] vector.
+    const a = builder.input(
+        'a', {dataType: 'float32', shape: [{name: 'N', maxSize: 4}]});
+    const b = builder.input('b', {dataType: 'float32', shape: [1]});
+
+    // c.shape[0] = N + 1, a dynamic dimension produced by concat along axis 0.
+    const c = builder.concat([a, b], 0);
+
+    // Reshape c from [N+1] to [N+1, 1] so its values can enter the compute
+    // flow via broadcasting.  c_col.shape[0] is the same dynamic N+1
+    // dimension, but c_col is NOT the expand input so N+1 is still absent from
+    // the expand input's shape.
+    const c_col = builder.reshape(c, [c.shape[0], 1]);
+
+    // 'ones' is a static [1, 1] input — its shape does NOT contain N+1.
+    const ones = builder.input('ones', {dataType: 'float32', shape: [1, 1]});
+
+    // Expand [1, 1] -> [N+1, N+1]: both axes broadcast from 1 to the dynamic
+    // concat output size.  N+1 is absent from the expand input (ones) shape.
+    const expanded = builder.expand(ones, [c.shape[0], c.shape[0]]);
+
+    // Multiply [N+1, N+1] by [N+1, 1]: broadcasts c's values across all
+    // columns so that row i of the output equals c[i].  This puts the concat
+    // result in the data compute flow.
+    const out = builder.mul(expanded, c_col);
+
+    const graph = await builder.build({out});
+
+    // Dispatch with N=2: a=[10, 20], b=[30] → c=[10, 20, 30] (length 3).
+    //   expanded = [[1,1,1],[1,1,1],[1,1,1]]   shape [3, 3]
+    //   c_col    = [[10],[20],[30]]             shape [3, 1]
+    //   out      = [[10,10,10],[20,20,20],[30,30,30]]
+    const aTensor = await context.createTensor(
+        {dataType: 'float32', shape: [2], writable: true});
+    const bTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1], writable: true});
+    const onesTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 1], writable: true});
+    const outTensor = await context.createTensor(
+        {dataType: 'float32', shape: [3, 3], readable: true});
+
+    context.writeTensor(aTensor, new Float32Array([10, 20]));
+    context.writeTensor(bTensor, new Float32Array([30]));
+    context.writeTensor(onesTensor, new Float32Array([1]));
+    context.dispatch(
+        graph, {a: aTensor, b: bTensor, ones: onesTensor}, {out: outTensor});
+
+    const outData = await context.readTensor(outTensor);
+    assert_array_equals(
+        new Float32Array(outData),
+        new Float32Array([10, 10, 10, 20, 20, 20, 30, 30, 30]));
+  }, 'expand from [1, 1] to [N+1, N+1] where N+1 is a dynamic dimension produced by concat');
+
+  // Negative test: concat produces a dynamic dimension that is referenced in
+  // expand's target shape, but the concat output is NOT part of the compute
+  // graph reachable from the named outputs.  The builder must reject this
+  // because at runtime there is no way to determine the actual value of N+1.
+  promise_test(async (t) => {
+    const context = await navigator.ml.createContext();
+    const builder = new MLGraphBuilder(context);
+
+    const a = builder.input(
+        'a', {dataType: 'float32', shape: [{name: 'N', maxSize: 4}]});
+    const b = builder.input('b', {dataType: 'float32', shape: [1]});
+
+    // c.shape[0] = N+1 — a dynamic dimension — but 'c' is never wired into any
+    // operator whose output is reachable from the graph's named outputs.
+    const c = builder.concat([a, b], 0);
+
+    // 'ones' is a static [1, 1] input.  Using c.shape[0] here borrows the
+    // dynamic dimension name, but c itself is disconnected from the graph.
+    const ones = builder.input('ones', {dataType: 'float32', shape: [1, 1]});
+    const expanded = builder.expand(ones, [c.shape[0], c.shape[0]]);
+
+    // Only 'expanded' and its transitive inputs (ones) are in the graph;
+    // 'c', 'a', and 'b' are not reachable from the named outputs.
+    await promise_rejects_js(
+        t, TypeError, builder.build({expanded}),
+        'build() should throw TypeError when the dynamic dimension used in ' +
+            'expand is not present in any operand reachable from the outputs');
+  }, 'expand with dynamic dim from concat not reachable in compute graph throws TypeError');
+
+  // Test: two inputs [1, sequence_length] and [sequence_length, 1].  Two
+  // concat ops each append a static size-1 slice, producing [1,
+  // sequence_length+1] and [sequence_length+1, 1].  A matmul then contracts
+  // those two tensors to [1, 1], verifying that the "name+1" dynamic dimension
+  // produced by the concat special-case flows correctly through the graph.
+  promise_test(async () => {
+    const context = await navigator.ml.createContext();
+    const builder = new MLGraphBuilder(context);
+
+    // 'a' has shape [1, sequence_length]; 'b' has shape [sequence_length, 1].
+    // Both reference the same dynamic dimension.
+    const a = builder.input('a', {
+      dataType: 'float32',
+      shape: [1, {name: 'sequence_length', maxSize: 4}]
+    });
+    const b = builder.input('b', {
+      dataType: 'float32',
+      shape: [{name: 'sequence_length', maxSize: 4}, 1]
+    });
+
+    // Static [1, 1] tensors that provide the "+1" element for each concat.
+    const onesRow =
+        builder.input('onesRow', {dataType: 'float32', shape: [1, 1]});
+    const onesCol =
+        builder.input('onesCol', {dataType: 'float32', shape: [1, 1]});
+
+    // concatA: [1, sequence_length] ++ [1, 1] along axis 1
+    //       -> [1, sequence_length+1]
+    const concatA = builder.concat([a, onesRow], 1);
+
+    // concatB: [sequence_length, 1] ++ [1, 1] along axis 0
+    //       -> [sequence_length+1, 1]
+    const concatB = builder.concat([b, onesCol], 0);
+
+    // matmul([1, sequence_length+1] x [sequence_length+1, 1]) -> [1, 1]
+    const out = builder.matmul(concatA, concatB);
+
+    const graph = await builder.build({out});
+
+    // Dispatch with sequence_length=2:
+    //   a        = [[1, 2]]        shape [1, 2]
+    //   b        = [[3], [4]]      shape [2, 1]
+    //   onesRow  = [[1]]           shape [1, 1]
+    //   onesCol  = [[1]]           shape [1, 1]
+    //   concatA  = [[1, 2, 1]]     shape [1, 3]
+    //   concatB  = [[3], [4], [1]] shape [3, 1]
+    //   out      = [[1*3 + 2*4 + 1*1]] = [[12]]  shape [1, 1]
+    const aTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 2], writable: true});
+    const bTensor = await context.createTensor(
+        {dataType: 'float32', shape: [2, 1], writable: true});
+    const onesRowTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 1], writable: true});
+    const onesColTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 1], writable: true});
+    const outTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 1], readable: true});
+
+    context.writeTensor(aTensor, new Float32Array([1, 2]));
+    context.writeTensor(bTensor, new Float32Array([3, 4]));
+    context.writeTensor(onesRowTensor, new Float32Array([1]));
+    context.writeTensor(onesColTensor, new Float32Array([1]));
+    context.dispatch(
+        graph, {
+          a: aTensor,
+          b: bTensor,
+          onesRow: onesRowTensor,
+          onesCol: onesColTensor
+        },
+        {out: outTensor});
+
+    const outData = await context.readTensor(outTensor);
+    assert_array_equals(new Float32Array(outData), new Float32Array([12]));
+  }, 'concat appends 1 to sequence_length on both axes, matmul [1, sequence_length+1] x [sequence_length+1, 1]');
+
+  // Test: concat two distinct dynamic dimensions (sequence_length and
+  // past_sequence_length) along an axis, producing a dimension named
+  // "sequence_length+past_sequence_length".  The resulting dynamic dimension
+  // flows through two concat ops, one row-wise and one column-wise, and is
+  // contracted by matmul to verify end-to-end correctness.
+  promise_test(async () => {
+    const context = await navigator.ml.createContext();
+    const builder = new MLGraphBuilder(context);
+
+    // 'a' provides the "new" tokens:  shape [1, sequence_length].
+    // 'b' provides the "cached" tokens: shape [1, past_sequence_length].
+    // 'c' and 'd' are the column counterparts:
+    //   c: [sequence_length, 1], d: [past_sequence_length, 1].
+    const a = builder.input('a', {
+      dataType: 'float32',
+      shape: [1, {name: 'sequence_length', maxSize: 8}]
+    });
+    const b = builder.input('b', {
+      dataType: 'float32',
+      shape: [1, {name: 'past_sequence_length', maxSize: 8}]
+    });
+    const c = builder.input('c', {
+      dataType: 'float32',
+      shape: [{name: 'sequence_length', maxSize: 8}, 1]
+    });
+    const d = builder.input('d', {
+      dataType: 'float32',
+      shape: [{name: 'past_sequence_length', maxSize: 8}, 1]
+    });
+
+    // concatRow: [1, sequence_length] ++ [1, past_sequence_length] along axis 1
+    //         -> [1, sequence_length+past_sequence_length]
+    const concatRow = builder.concat([a, b], 1);
+
+    // concatCol: [past_sequence_length, 1] ++ [sequence_length, 1] along axis 0
+    //         -> [past_sequence_length+sequence_length, 1]
+    const concatCol = builder.concat([d, c], 0);
+
+    // matmul([1, S+P] x [S+P, 1]) -> [1, 1]
+    const out = builder.matmul(concatRow, concatCol);
+
+    const graph = await builder.build({out});
+
+    // Dispatch with sequence_length=2, past_sequence_length=3:
+    //   a        = [[1, 2]]              shape [1, 2]
+    //   b        = [[3, 4, 5]]           shape [1, 3]
+    //   c        = [[6], [7]]            shape [2, 1]
+    //   d        = [[8], [9], [10]]      shape [3, 1]
+    //   concatRow = [[1, 2, 3, 4, 5]]     shape [1, 5]
+    //   concatCol = [[8],[9],[10],[6],[7]] shape [5, 1]
+    //   out = 1*8 + 2*9 + 3*10 + 4*6 + 5*7 = 8+18+30+24+35 = [[115]]
+    const aTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 2], writable: true});
+    const bTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 3], writable: true});
+    const cTensor = await context.createTensor(
+        {dataType: 'float32', shape: [2, 1], writable: true});
+    const dTensor = await context.createTensor(
+        {dataType: 'float32', shape: [3, 1], writable: true});
+    const outTensor = await context.createTensor(
+        {dataType: 'float32', shape: [1, 1], readable: true});
+
+    context.writeTensor(aTensor, new Float32Array([1, 2]));
+    context.writeTensor(bTensor, new Float32Array([3, 4, 5]));
+    context.writeTensor(cTensor, new Float32Array([6, 7]));
+    context.writeTensor(dTensor, new Float32Array([8, 9, 10]));
+    context.dispatch(
+        graph, {a: aTensor, b: bTensor, c: cTensor, d: dTensor},
+        {out: outTensor});
+
+    const outData = await context.readTensor(outTensor);
+    assert_array_equals(new Float32Array(outData), new Float32Array([115]));
+  }, 'concat two dynamic dims sequence_length+past_sequence_length, matmul [1, S+P] x [S+P, 1]');
+}

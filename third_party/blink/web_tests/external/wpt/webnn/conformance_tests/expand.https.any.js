@@ -1325,6 +1325,321 @@ const expandTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'expand float32 2D tensor with dynamic dimension preserved in newShape (concrete shape [3, 1] -> [3, 4])',
+    'graph': {
+      'inputs': {
+        'expandInput': {
+          'data': [1.0, 2.0, 3.0],
+          'shape': [3, 1],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 1], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'expand',
+        'arguments': [
+          {'input': 'expandInput'},
+          {'newShape': [{'name': 'batch', 'maxSize': 8}, 4]}
+        ],
+        'outputs': 'expandOutput'
+      }],
+      'expectedOutputs': {
+        'expandOutput': {
+          'data': [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0],
+          'shape': [3, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 4], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'expand float32 3D tensor with multiple dynamic dimensions preserved in newShape (concrete shape [1, 2, 1])',
+    'graph': {
+      'inputs': {
+        'expandInput': {
+          'data': [1.0, 2.0],
+          'shape': [1, 2, 1],
+          'descriptor': {
+            shape: [
+              {'name': 'batch', 'maxSize': 5},
+              {'name': 'features', 'maxSize': 8}, 1
+            ],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'expand',
+        'arguments': [
+          {'input': 'expandInput'}, {
+            'newShape': [
+              {'name': 'batch', 'maxSize': 5},
+              {'name': 'features', 'maxSize': 8}, 4
+            ]
+          }
+        ],
+        'outputs': 'expandOutput'
+      }],
+      'expectedOutputs': {
+        'expandOutput': {
+          'data': [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+          'shape': [1, 2, 4],
+          'descriptor': {
+            shape: [
+              {'name': 'batch', 'maxSize': 5},
+              {'name': 'features', 'maxSize': 8}, 4
+            ],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'expand float32 dimension 1 to known dynamic dimension from input (concrete shape [1, 4])',
+    'graph': {
+      'inputs': {
+        'inputWithDynamicDim': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 4], dataType: 'float32'}
+        },
+        'expandInput': {
+          'data': [10.0, 20.0, 30.0, 40.0],
+          'shape': [1, 4],
+          'descriptor': {shape: [1, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [
+        {
+          'name': 'identity',
+          'arguments': [{'input': 'inputWithDynamicDim'}],
+          'outputs': 'identityOutput'
+        },
+        {
+          'name': 'expand',
+          'arguments': [
+            {'input': 'expandInput'},
+            {'newShape': [{'name': 'batch', 'maxSize': 8}, 4]}
+          ],
+          'outputs': 'expandOutput'
+        }
+      ],
+      'expectedOutputs': {
+        'identityOutput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 4], dataType: 'float32'}
+        },
+        'expandOutput': {
+          'data': [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 8}, 4], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'expand float32 dimension 1 to known dynamic dimension from input (concrete shape [3, 1, 2])',
+    'graph': {
+      'inputs': {
+        'inputWithDynamicDim': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'shape': [3, 1, 2],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 10}, 1, 2], dataType: 'float32'}
+        },
+        'expandInput': {
+          'data': [100.0, 200.0],
+          'shape': [1, 2],
+          'descriptor': {shape: [1, 2], dataType: 'float32'}
+        }
+      },
+      'operators': [
+        {
+          'name': 'identity',
+          'arguments': [{'input': 'inputWithDynamicDim'}],
+          'outputs': 'identityOutput'
+        },
+        {
+          'name': 'expand',
+          'arguments': [
+            {'input': 'expandInput'},
+            {'newShape': [{'name': 'N', 'maxSize': 10}, 2]}
+          ],
+          'outputs': 'expandOutput'
+        }
+      ],
+      'expectedOutputs': {
+        'identityOutput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'shape': [3, 1, 2],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 10}, 1, 2], dataType: 'float32'}
+        },
+        'expandOutput': {
+          'data': [100.0, 200.0, 100.0, 200.0, 100.0, 200.0],
+          'shape': [3, 2],
+          'descriptor':
+              {shape: [{'name': 'N', 'maxSize': 10}, 2], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'expand float32 dimension 1 to known dynamic dimension in middle position (concrete shape [2, 3, 4])',
+    'graph': {
+      'inputs': {
+        'inputWithDynamicDim': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape: [2, {'name': 'features', 'maxSize': 16}, 4],
+            dataType: 'float32'
+          }
+        },
+        'expandInput': {
+          'data': [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0],
+          'shape': [2, 1, 4],
+          'descriptor': {shape: [2, 1, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [
+        {
+          'name': 'identity',
+          'arguments': [{'input': 'inputWithDynamicDim'}],
+          'outputs': 'identityOutput'
+        },
+        {
+          'name': 'expand',
+          'arguments': [
+            {'input': 'expandInput'},
+            {'newShape': [2, {'name': 'features', 'maxSize': 16}, 4]}
+          ],
+          'outputs': 'expandOutput'
+        }
+      ],
+      'expectedOutputs': {
+        'identityOutput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape: [2, {'name': 'features', 'maxSize': 16}, 4],
+            dataType: 'float32'
+          }
+        },
+        'expandOutput': {
+          'data': [
+            10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0,
+            10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0,
+            50.0, 60.0, 70.0, 80.0, 50.0, 60.0, 70.0, 80.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape: [2, {'name': 'features', 'maxSize': 16}, 4],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'expand float32 multiple dimension 1s to multiple known dynamic dimensions (concrete shape [2, 3, 4])',
+    'graph': {
+      'inputs': {
+        'inputWithDynamicDims': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape: [
+              {'name': 'batch', 'maxSize': 8},
+              {'name': 'height', 'maxSize': 10}, 4
+            ],
+            dataType: 'float32'
+          }
+        },
+        'expandInput': {
+          'data': [100.0, 200.0, 300.0, 400.0],
+          'shape': [1, 1, 4],
+          'descriptor': {shape: [1, 1, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [
+        {
+          'name': 'identity',
+          'arguments': [{'input': 'inputWithDynamicDims'}],
+          'outputs': 'identityOutput'
+        },
+        {
+          'name': 'expand',
+          'arguments': [
+            {'input': 'expandInput'}, {
+              'newShape': [
+                {'name': 'batch', 'maxSize': 8},
+                {'name': 'height', 'maxSize': 10}, 4
+              ]
+            }
+          ],
+          'outputs': 'expandOutput'
+        }
+      ],
+      'expectedOutputs': {
+        'identityOutput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape: [
+              {'name': 'batch', 'maxSize': 8},
+              {'name': 'height', 'maxSize': 10}, 4
+            ],
+            dataType: 'float32'
+          }
+        },
+        'expandOutput': {
+          'data': [
+            100.0, 200.0, 300.0, 400.0, 100.0, 200.0, 300.0, 400.0,
+            100.0, 200.0, 300.0, 400.0, 100.0, 200.0, 300.0, 400.0,
+            100.0, 200.0, 300.0, 400.0, 100.0, 200.0, 300.0, 400.0
+          ],
+          'shape': [2, 3, 4],
+          'descriptor': {
+            shape: [
+              {'name': 'batch', 'maxSize': 8},
+              {'name': 'height', 'maxSize': 10}, 4
+            ],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
   }
 ];
 

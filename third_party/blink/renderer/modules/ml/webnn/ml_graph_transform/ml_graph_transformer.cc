@@ -299,7 +299,7 @@ void MLGraphTransformer::RemoveUnaryOperator(MLOperator* op) {
 // static
 MLOperand* MLGraphTransformer::CloneOperandAndResetShape(
     const MLOperand* operand,
-    const Vector<uint32_t>& shape) {
+    const std::vector<webnn::Dimension>& shape) {
   auto descriptor = webnn::OperandDescriptor::Create(
       operand->Builder()->GetContext()->GetProperties(), operand->DataType(),
       shape, /*label=*/"");
@@ -358,7 +358,7 @@ void MLGraphTransformer::ReplaceOperand(const MLOperand* old_operand,
 // static
 MLOperand* MLGraphTransformer::ReplaceOperandWithNewShape(
     MLOperand* old_operand,
-    const Vector<uint32_t>& new_shape) {
+    const std::vector<webnn::Dimension>& new_shape) {
   auto* new_operand = CloneOperandAndResetShape(old_operand, new_shape);
   ReplaceOperand(old_operand, new_operand);
   return new_operand;
@@ -366,7 +366,7 @@ MLOperand* MLGraphTransformer::ReplaceOperandWithNewShape(
 
 MLConstantOperand* MLGraphTransformer::ReplaceConstantOperandWithNewShape(
     const MLConstantOperand* old_operand,
-    const Vector<uint32_t>& new_shape) {
+    const std::vector<webnn::Dimension>& new_shape) {
   auto descriptor = webnn::OperandDescriptor::Create(
       old_operand->Builder()->GetContext()->GetProperties(),
       old_operand->DataType(), new_shape, /*label=*/"");

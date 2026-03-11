@@ -29,7 +29,10 @@
 #if BUILDFLAG(IS_WIN)
 #include <string>
 
+#include "base/types/expected_macros.h"
+#if BUILDFLAG(WEBNN_USE_DML)
 #include "services/webnn/dml/context_provider_dml.h"
+#endif
 #include "services/webnn/ort/context_impl_ort.h"
 #include "services/webnn/ort/context_provider_ort.h"
 #include "services/webnn/ort/environment.h"
@@ -291,6 +294,7 @@ void WebNNContextProviderImpl::CreateWebNNContext(
         std::move(owning_task_runner), std::move(receiver), std::move(remote),
         std::move(callback), params.is_incognito, std::move(memory_tracker)));
     return;
+#if BUILDFLAG(WEBNN_USE_DML)
   } else if (dml::ShouldCreateDmlContext(*options)) {
     base::expected<WebNNContextImplPtr, mojom::ErrorPtr>
         context_creation_results = dml::CreateContextFromOptions(
@@ -307,6 +311,9 @@ void WebNNContextProviderImpl::CreateWebNNContext(
     }
     context_impl = std::move(context_creation_results.value());
   }
+#else
+  }
+#endif  // BUILDFLAG(WEBNN_USE_DML)
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_APPLE)

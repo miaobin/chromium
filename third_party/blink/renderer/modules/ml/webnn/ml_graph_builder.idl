@@ -235,7 +235,7 @@ dictionary MLTriangularOptions : MLOperatorOptions {
   [
     CallWith=ScriptState,
     RaisesException
-  ] MLOperand input(USVString name, MLOperandDescriptor desc);
+  ] MLOperand input(USVString name, MLInputOperandDescriptor desc);
 
   [
     CallWith=ScriptState,
@@ -310,7 +310,7 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand elu(MLOperand x, optional MLEluOptions options = {});
 
-  [RaisesException] MLOperand expand(MLOperand input, sequence<[EnforceRange] unsigned long> newShape, optional MLOperatorOptions options = {});
+  [RaisesException] MLOperand expand(MLOperand input, sequence<MLDimension> newShape, optional MLOperatorOptions options = {});
 
   [RaisesException] MLOperand gather(MLOperand input, MLOperand indices, optional MLGatherOptions options = {});
 
@@ -379,7 +379,7 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand relu(MLOperand input, optional MLOperatorOptions options = {});
 
-  [RaisesException] MLOperand reshape(MLOperand input, sequence<[EnforceRange] unsigned long> newShape, optional MLOperatorOptions options = {});
+  [RaisesException] MLOperand reshape(MLOperand input, sequence<MLDimension> newShape, optional MLOperatorOptions options = {});
 
   [RaisesException] MLOperand reverse(MLOperand input, optional MLReverseOptions options = {});
 

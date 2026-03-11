@@ -62,6 +62,68 @@ const tests = [
     input: {dataType: 'float32', shape: [1, 2, 1, 1]},
     newShape: [1, 2, kMaxUnsignedLong, kMaxUnsignedLong],
   },
+  {
+    name: '[expand] Test with dynamic dimension preserved in newShape.',
+    input: {dataType: 'float32', shape: [{name: 'batch', maxSize: 10}, 1]},
+    newShape: [{name: 'batch', maxSize: 10}, 4],
+    output: {dataType: 'float32', shape: [{name: 'batch', maxSize: 10}, 4]}
+  },
+  {
+    name:
+        '[expand] Test with dynamic dimension preserved and static dimensions expanded.',
+    input: {dataType: 'float32', shape: [1, {name: 'seq', maxSize: 20}, 1]},
+    newShape: [3, {name: 'seq', maxSize: 20}, 4],
+    output: {dataType: 'float32', shape: [3, {name: 'seq', maxSize: 20}, 4]}
+  },
+  {
+    name:
+        '[expand] Test with multiple dynamic dimensions preserved in newShape.',
+    input: {
+      dataType: 'float32',
+      shape: [{name: 'N', maxSize: 8}, {name: 'M', maxSize: 16}]
+    },
+    newShape: [4, {name: 'N', maxSize: 8}, {name: 'M', maxSize: 16}],
+    output: {
+      dataType: 'float32',
+      shape: [4, {name: 'N', maxSize: 8}, {name: 'M', maxSize: 16}]
+    }
+  },
+  {
+    name: '[expand] Throw if dynamic dimension name mismatch in newShape.',
+    input: {dataType: 'float32', shape: [{name: 'N', maxSize: 10}, 1]},
+    newShape: [{name: 'M', maxSize: 10}, 4],
+    options: {label}
+  },
+  {
+    name:
+        '[expand] Throw if dynamic dimension is replaced with static dimension in newShape.',
+    input: {dataType: 'float32', shape: [{name: 'batch', maxSize: 10}, 3]},
+    newShape: [5, 3],
+    options: {label}
+  },
+  {
+    name: '[expand] Throw if dynamic dimension maxSize mismatch in newShape.',
+    input: {dataType: 'float32', shape: [{name: 'N', maxSize: 10}, 1]},
+    newShape: [{name: 'N', maxSize: 20}, 4],
+    options: {label}
+  },
+  {
+    name:
+        '[expand] Throw if static dimension size 1 is expanded to an unknown dynamic dimension.',
+    input: {dataType: 'float32', shape: [3, 1]},
+    newShape: [3, {name: 'N', maxSize: 5}],
+    options: {label}
+  },
+  {
+    name:
+        '[expand] Throw if static dimension size 1 is expanded to a known dynamic dimension.',
+    input: {dataType: 'float32', shape: [{name: 'N', maxSize: 5}, 1]},
+    newShape: [{name: 'N', maxSize: 5}, {name: 'N', maxSize: 5}],
+    output: {
+      dataType: 'float32',
+      shape: [{name: 'N', maxSize: 5}, {name: 'N', maxSize: 5}]
+    }
+  },
 ];
 
 tests.forEach(
@@ -72,7 +134,19 @@ tests.forEach(
       if (test.output) {
         const output = builder.expand(input, test.newShape);
         assert_equals(output.dataType, test.output.dataType);
-        assert_array_equals(output.shape, test.output.shape);
+        // Compare shapes element by element to handle dynamic dimensions
+        assert_equals(output.shape.length, test.output.shape.length);
+        for (let i = 0; i < output.shape.length; i++) {
+          const outputDim = output.shape[i];
+          const expectedDim = test.output.shape[i];
+          if (typeof outputDim === 'number') {
+            assert_equals(outputDim, expectedDim);
+          } else {
+            assert_equals(typeof outputDim, 'object');
+            assert_equals(outputDim.name, expectedDim.name);
+            assert_equals(outputDim.maxSize, expectedDim.maxSize);
+          }
+        }
       } else {
         const options = {...test.options};
         if (options.label) {

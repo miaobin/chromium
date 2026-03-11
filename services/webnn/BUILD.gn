@@ -17,6 +17,7 @@ buildflag_header("buildflags") {
     "WEBNN_USE_CHROME_ML_API=$webnn_use_chrome_ml_api",
     "WEBNN_ENABLE_TFLITE_PROFILER=$webnn_enable_tflite_profiler",
     "WEBNN_INSTALL_RUNTIME_IN_CHROME_INSTALLER=$webnn_install_runtime_in_chrome_installer",
+    "WEBNN_USE_DML=$webnn_use_dml",
   ]
 }
 
@@ -72,7 +73,9 @@ component("webnn_service") {
     "//third_party/tflite:buildflags",
   ]
 
-  if (is_win) {
+  libs = []
+
+  if (is_win && webnn_use_dml) {
     sources += [
       "dml/adapter.cc",
       "dml/adapter.h",
@@ -105,7 +108,7 @@ component("webnn_service") {
       "//ui/gl/init",
     ]
 
-    libs = [ "dxgi.lib" ]
+    libs += [ "dxgi.lib" ]
   }
 
   if (is_apple) {
@@ -182,6 +185,10 @@ component("webnn_service") {
     }
   }
 
+  if (build_tflite_with_xnnpack) {
+    deps += [ "//third_party/xnnpack" ]
+  }
+
   if (is_win) {
     sources += [
       "ort/context_impl_ort.cc",
@@ -216,6 +223,7 @@ component("webnn_service") {
     ]
     deps += [
       "//services/webnn/public/cpp:win",
+      "//third_party/fp16",
       "//third_party/windows_app_sdk_headers",
     ]
 

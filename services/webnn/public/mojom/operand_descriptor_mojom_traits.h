@@ -19,7 +19,7 @@ struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
                  webnn::OperandDescriptor> {
   static webnn::mojom::DataType data_type(
       const webnn::OperandDescriptor& descriptor);
-  static const std::vector<uint32_t>& shape(
+  static const std::vector<webnn::Dimension>& shape(
       const webnn::OperandDescriptor& descriptor) {
     return descriptor.shape();
   }
@@ -39,6 +39,38 @@ struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
 
   static bool FromMojom(webnn::mojom::DataType input,
                         webnn::OperandDataType* output);
+};
+
+template <>
+struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
+    UnionTraits<webnn::mojom::DimensionDataView, webnn::Dimension> {
+  static webnn::mojom::DimensionDataView::Tag GetTag(
+      const webnn::Dimension& dimension);
+
+  static uint32_t size(const webnn::Dimension& dimension);
+
+  static const webnn::DynamicDimension& dynamic_dimension(
+      const webnn::Dimension& dimension);
+
+  static bool Read(webnn::mojom::DimensionDataView data, webnn::Dimension* out);
+};
+
+template <>
+struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
+    StructTraits<webnn::mojom::DynamicDimensionDataView,
+                 webnn::DynamicDimension> {
+  static const std::string& name(const webnn::DynamicDimension& dimension) {
+    return dimension.name;
+  }
+  static uint32_t max_size(const webnn::DynamicDimension& dimension) {
+    return dimension.max_size;
+  }
+  static uint32_t min_size(const webnn::DynamicDimension& dimension) {
+    return dimension.min_size;
+  }
+
+  static bool Read(webnn::mojom::DynamicDimensionDataView data,
+                   webnn::DynamicDimension* out);
 };
 
 }  // namespace mojo

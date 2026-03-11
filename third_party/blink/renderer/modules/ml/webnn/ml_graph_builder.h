@@ -15,6 +15,7 @@
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_view.h"
 #include "third_party/blink/renderer/modules/ml/webnn/allow_shared_buffer_source_util.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph.h"
+#include "third_party/blink/renderer/modules/ml/webnn/ml_operand.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_operator.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
@@ -59,6 +60,7 @@ class MLTensor;
 class MLTransposeOptions;
 class MLTriangularOptions;
 class MLOperand;
+class MLInputOperandDescriptor;
 class MLOperandDescriptor;
 class ScriptState;
 
@@ -97,7 +99,7 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
   // ml_graph_builder.idl
   MLOperand* input(ScriptState* script_state,
                    String name,
-                   const MLOperandDescriptor* desc,
+                   const MLInputOperandDescriptor* desc,
                    ExceptionState& exception_state);
   MLOperand* constant(ScriptState* script_state,
                       const MLOperandDescriptor* desc,
@@ -289,7 +291,7 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                  ExceptionState& exception_state);
 
   MLOperand* expand(MLOperand* input,
-                    const Vector<uint32_t>& new_shape,
+                    const MLDynamicShape& new_shape,
                     MLOperatorOptions* options,
                     ExceptionState& exception_state);
 
@@ -445,7 +447,7 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                   ExceptionState& exception_state);
 
   MLOperand* reshape(MLOperand* input,
-                     const Vector<uint32_t>& new_shape,
+                     const MLDynamicShape& new_shape,
                      MLOperatorOptions* options,
                      ExceptionState& exception_state);
 
@@ -531,6 +533,12 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
 
   void OnConnectionError();
 
+  // Registers all DynamicDimension entries in `descriptor` into
+  // `known_dynamic_dimensions_`. Propagated input dims are already present
+  // and DCHECKed for matching constraints; newly derived dims are new entries.
+  void RegisterOutputDynamicDimensions(
+      const webnn::OperandDescriptor& descriptor);
+
  private:
   void DidCreateWebNNGraph(
       ScriptPromiseResolver<blink::MLGraph>* resolver,
@@ -566,6 +574,14 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
   // Keep the unresolved `ScriptPromiseResolver` which will be rejected when the
   // Mojo pipe is unexpectedly disconnected.
   Member<ScriptPromiseResolver<MLGraph>> pending_resolver_;
+
+  // Track all input operands to collect their dynamic dimensions for
+  // validation.
+  HeapVector<Member<MLOperand>> input_operands_;
+
+  // Store all dynamic dimensions from created inputs for validation.
+  // Maps dimension name to its DynamicDimension (with min_size and max_size).
+  HashMap<String, webnn::DynamicDimension> known_dynamic_dimensions_;
 };
 
 }  // namespace blink

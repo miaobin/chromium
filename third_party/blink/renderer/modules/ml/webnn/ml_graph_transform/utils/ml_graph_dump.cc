@@ -58,8 +58,9 @@ wtf_size_t GetOutputIndex(MLOperator* op, MLOperand* operand) {
   NOTREACHED() << "Operand is not an output of the operator.";
 }
 
-Vector<Vector<uint32_t>> GetShapesOfOperatorOutputPorts(const MLOperator* op) {
-  Vector<Vector<uint32_t>> shapes;
+Vector<Vector<webnn::Dimension>> GetShapesOfOperatorOutputPorts(
+    const MLOperator* op) {
+  Vector<Vector<webnn::Dimension>> shapes;
   for (const auto& output : op->Outputs()) {
     shapes.push_back(output->Shape());
   }
@@ -75,10 +76,17 @@ Vector<V8MLOperandDataType> GetDataTypesOfOperatorOutputPorts(
   return data_types;
 }
 
-std::string GetTensorShapeString(const Vector<uint32_t>& shape) {
+std::string GetTensorShapeString(const Vector<webnn::Dimension>& shape) {
   std::string result = "tensor<";
   for (wtf_size_t i = 0; i < shape.size(); ++i) {
-    result += base::NumberToString(shape[i]);
+    if (std::holds_alternative<uint32_t>(shape[i])) {
+      result += base::NumberToString(std::get<uint32_t>(shape[i]));
+    } else {
+      const auto& dynamic_dim = std::get<webnn::DynamicDimension>(shape[i]);
+      result += "{" + dynamic_dim.name +
+                "}[maxSize=" + base::NumberToString(dynamic_dim.max_size) +
+                ", minSize=" + base::NumberToString(dynamic_dim.min_size) + "]";
+    }
     if (i != shape.size() - 1) {
       result += "x";
     }
@@ -197,7 +205,7 @@ class Node : public GarbageCollected<Node> {
   Node(wtf_size_t id,
        const std::string_view& opkind,
        const std::string_view& label,
-       const Vector<Vector<uint32_t>>& output_shapes,
+       const Vector<Vector<webnn::Dimension>>& output_shapes,
        const Vector<V8MLOperandDataType>& output_data_types)
       : id_(id),
         opkind_(opkind),
@@ -985,7 +993,7 @@ class Node : public GarbageCollected<Node> {
 
   Vector<IncomingEdge> incoming_edges_;
   Vector<NodeAttribute> attributes_;
-  Vector<Vector<uint32_t>> output_shapes_;
+  Vector<Vector<webnn::Dimension>> output_shapes_;
   Vector<V8MLOperandDataType> output_data_types_;
 };
 
@@ -1081,9 +1089,10 @@ void MLGraphDumper::RecordGraph(const std::string& graph_id,
                 ? "Input"
                 : "Constant";
         if (!input_or_constant_operand_to_node_map.Contains(input_operand)) {
+          Vector<Vector<webnn::Dimension>> shapes;
+          shapes.push_back(input_operand->Shape());
           input = MakeGarbageCollected<Node>(
-              node_id_mapper_->NextId(input_operand), opkind, "",
-              Vector<Vector<uint32_t>>{input_operand->shape()},
+              node_id_mapper_->NextId(input_operand), opkind, "", shapes,
               Vector<V8MLOperandDataType>{input_operand->dataType()});
           nodes.push_back(input);
           input_or_constant_operand_to_node_map.Set(input_operand, input);
@@ -1114,9 +1123,10 @@ void MLGraphDumper::RecordGraph(const std::string& graph_id,
     MLOperand* output_operand = named_output.second;
     MLOperator* output_operator = output_operand->Operator();
 
+    Vector<Vector<webnn::Dimension>> shapes;
+    shapes.push_back(output_operand->Shape());
     Node* output = MakeGarbageCollected<Node>(
-        node_id_mapper_->NextId(output_name), "Output", "",
-        Vector<Vector<uint32_t>>{output_operand->shape()},
+        node_id_mapper_->NextId(output_name), "Output", "", shapes,
         Vector<V8MLOperandDataType>{output_operand->dataType()});
     output->SetAttribute("output_name", output_name);
     nodes.push_back(output);

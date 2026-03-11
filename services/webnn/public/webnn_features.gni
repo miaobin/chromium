@@ -7,7 +7,5 @@ import("//build/config/dcheck_always_on.gni")
 
 declare_args() {
   # This flag enables the graph dump feature for WebNN.
-  # TODO(crbug.com/485677947): Re-enable this flag for debug builds once this
-  # bug is fixed.
-  webnn_enable_graph_dump = false
+  webnn_enable_graph_dump = true
 }

@@ -243,12 +243,15 @@ webnn::Conv2dAttributes ConvertToConv2dAttributes(
           GetMojoOperand(operands, conv2d.input_operand_id);
       CHECK(input);
       CHECK_EQ(input->descriptor.Rank(), 4u);
-      const uint32_t input_channels = input->descriptor.shape()[3];
+      // TODO(ningxin): Support dynamic dimension.
+      const uint32_t input_channels =
+          std::get<uint32_t>(input->descriptor.shape()[3]);
       const auto* const output =
           GetMojoOperand(operands, conv2d.output_operand_id);
       CHECK(output);
       CHECK_EQ(output->descriptor.Rank(), 4u);
-      const uint32_t output_channels = output->descriptor.shape()[3];
+      const uint32_t output_channels =
+          std::get<uint32_t>(output->descriptor.shape()[3]);
       // Depthwise conv2d is "options.groups == input_channels ==
       // output_channels".
       const bool depthwise = webnn::IsDepthwiseConv2d(
@@ -341,15 +344,15 @@ webnn::ConvTranspose2dAttributes ConvertToConvTranspose2dAttributes(
   switch (context_properties.input_operand_layout) {
     case webnn::InputOperandLayout::kNchw:
       // "channelsFirst": [batches, input_channels, height, width]
-      output_sizes.height = output->descriptor.shape()[2];
-      output_sizes.width = output->descriptor.shape()[3];
+      output_sizes.height = std::get<uint32_t>(output->descriptor.shape()[2]);
+      output_sizes.width = std::get<uint32_t>(output->descriptor.shape()[3]);
       component_attributes.filter_layout =
           ConvTranspose2dFilterOperandLayout::kIohw;
       break;
     case webnn::InputOperandLayout::kNhwc:
       // "channelsLast": [batches, height, width, input_channels]
-      output_sizes.height = output->descriptor.shape()[1];
-      output_sizes.width = output->descriptor.shape()[2];
+      output_sizes.height = std::get<uint32_t>(output->descriptor.shape()[1]);
+      output_sizes.width = std::get<uint32_t>(output->descriptor.shape()[2]);
       component_attributes.filter_layout =
           ConvTranspose2dFilterOperandLayout::kOhwi;
       break;
@@ -386,8 +389,10 @@ webnn::Pool2dAttributes ConvertToPool2dAttributes(
     const mojom::Operand* output) {
   webnn::Pool2dAttributes component_attributes;
   auto& window_dimensions = pool2d.window_dimensions;
-  component_attributes.window_dimensions = webnn::Size2d<uint32_t>{
-      .height = window_dimensions->height, .width = window_dimensions->width};
+  if (window_dimensions) {
+    component_attributes.window_dimensions = webnn::Size2d<uint32_t>{
+        .height = window_dimensions->height, .width = window_dimensions->width};
+  }
   auto& mojo_padding = pool2d.padding;
   component_attributes.padding = webnn::Padding2d{
       .beginning =
@@ -403,14 +408,20 @@ webnn::Pool2dAttributes ConvertToPool2dAttributes(
   CHECK_EQ(output->descriptor.Rank(), 4u);
   switch (component_attributes.layout) {
     case webnn::InputOperandLayout::kNchw:
-      component_attributes.output_sizes =
-          webnn::Size2d<uint32_t>{.height = output->descriptor.shape()[2],
-                                  .width = output->descriptor.shape()[3]};
+      if (std::holds_alternative<uint32_t>(output->descriptor.shape()[2]) &&
+          std::holds_alternative<uint32_t>(output->descriptor.shape()[3])) {
+        component_attributes.output_sizes = webnn::Size2d<uint32_t>{
+            .height = std::get<uint32_t>(output->descriptor.shape()[2]),
+            .width = std::get<uint32_t>(output->descriptor.shape()[3])};
+      }
       break;
     case webnn::InputOperandLayout::kNhwc:
-      component_attributes.output_sizes =
-          webnn::Size2d<uint32_t>{.height = output->descriptor.shape()[1],
-                                  .width = output->descriptor.shape()[2]};
+      if (std::holds_alternative<uint32_t>(output->descriptor.shape()[1]) &&
+          std::holds_alternative<uint32_t>(output->descriptor.shape()[2])) {
+        component_attributes.output_sizes = webnn::Size2d<uint32_t>{
+            .height = std::get<uint32_t>(output->descriptor.shape()[1]),
+            .width = std::get<uint32_t>(output->descriptor.shape()[2])};
+      }
       break;
   }
   component_attributes.label = pool2d.label;
@@ -655,6 +666,23 @@ class OperationValidationContext {
         processed_operands_(std::move(processed_operands)) {
     operand_to_dependent_operations_.reserve(operands.size());
     operand_to_producing_operation_.reserve(operands.size());
+
+    // Collect dynamic dimensions from all operands for expand validation.
+    for (size_t i = 0; i < operands.size(); ++i) {
+      const mojom::Operand* operand = operands[i].get();
+      if (!operand) {
+        continue;
+      }
+      for (const auto& dim : operand->descriptor.shape()) {
+        if (std::holds_alternative<DynamicDimension>(dim)) {
+          const auto& dyn = std::get<DynamicDimension>(dim);
+          if (std::ranges::find(known_dynamic_dims_, dyn) ==
+              known_dynamic_dims_.end()) {
+            known_dynamic_dims_.push_back(dyn);
+          }
+        }
+      }
+    }
   }
 
   const mojom::Operand* GetMojoOperand(OperandId operand_id);
@@ -756,6 +784,9 @@ class OperationValidationContext {
 
   DependentOperationsMap operand_to_dependent_operations_;
   base::flat_map<OperandId, OperationId> operand_to_producing_operation_;
+
+  // Dynamic dimensions from input operands, used for expand validation.
+  std::vector<DynamicDimension> known_dynamic_dims_;
 };
 
 const mojom::Operand* OperationValidationContext::GetMojoOperand(
@@ -1385,7 +1416,8 @@ bool OperationValidationContext::ValidateExpand(const mojom::Expand& expand,
 
   const base::expected<OperandDescriptor, std::string> validated_output =
       ValidateExpandAndInferOutput(*context_properties_, input->descriptor,
-                                   output->descriptor.shape(), expand.label);
+                                   output->descriptor.shape(), expand.label,
+                                   known_dynamic_dims_);
   if (!validated_output.has_value()) {
     return false;
   }
@@ -2208,7 +2240,8 @@ bool OperationValidationContext::ValidateResample2d(
   if (resample2d.scales) {
     scales_or_sizes = resample2d.scales.value();
   } else {
-    sizes = {output_dimensions[axes[0]], output_dimensions[axes[1]]};
+    sizes = {std::get<uint32_t>(output->descriptor.shape()[axes[0]]),
+             std::get<uint32_t>(output->descriptor.shape()[axes[1]])};
     scales_or_sizes = sizes;
   }
 
@@ -2255,6 +2288,32 @@ bool OperationValidationContext::ValidateReshape(const mojom::Reshape& reshape,
     // The output shape is not expected.
     return false;
   }
+
+  // For a dynamic dimension in output shape, validate input shape has it
+  // uniquely.
+  auto available_input_shape = input->descriptor.shape();
+  for (const auto& dim : output->descriptor.shape()) {
+    if (std::holds_alternative<DynamicDimension>(dim)) {
+      auto it = std::find(available_input_shape.begin(),
+                          available_input_shape.end(), dim);
+      if (it == available_input_shape.end()) {
+        // The dynamic dimension is not present in the input shape.
+        return false;
+      }
+      available_input_shape.erase(it);
+    }
+  }
+
+  // If there are remaining dynamic dimensions in the input that weren't used
+  // in the output, we cannot verify the static dimensions match at build time.
+  for (const auto& dim : available_input_shape) {
+    if (std::holds_alternative<DynamicDimension>(dim)) {
+      // Cannot reshape when input has dynamic dimensions that are not
+      // preserved in the output shape.
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -2432,7 +2491,8 @@ bool OperationValidationContext::ValidateSplit(const mojom::Split& split,
     if (split.axis >= output->descriptor.Rank()) {
       return false;
     }
-    splits.push_back(output->descriptor.shape()[split.axis]);
+    splits.push_back(
+        std::get<uint32_t>(output->descriptor.shape()[split.axis]));
   }
 
   const base::expected<std::vector<OperandDescriptor>, std::string>
@@ -2770,10 +2830,11 @@ TransposePendingPermutation(
     for (size_t i = 0; i < rank; ++i) {
       inverse_permutation[permutation[i]] = i;
     }
-    auto& transposed_shape = descriptor.shape();
+    auto transposed_shape = descriptor.StaticShape().value();
     base::FixedArray<uint32_t> original_shape(rank);
     for (size_t i = 0; i < rank; ++i) {
-      original_shape[i] = descriptor.shape()[inverse_permutation[i]];
+      original_shape[i] =
+          descriptor.StaticShape().value()[inverse_permutation[i]];
     }
 
     std::vector<uint32_t> original_strides = CalculateStrides(original_shape);
@@ -3091,6 +3152,26 @@ WebNNGraphBuilderImpl::ValidateGraphImpl(
     if (byte_length > context_properties.tensor_byte_length_limit) {
       return std::nullopt;
     }
+
+    // Validate dynamic dimensions.
+    for (const auto& dimension : operand->descriptor.shape()) {
+      if (std::holds_alternative<DynamicDimension>(dimension)) {
+        const auto& dynamic_dim = std::get<DynamicDimension>(dimension);
+        if (dynamic_dim.min_size == 0) {
+          // minSize must be at least 1.
+          return std::nullopt;
+        }
+        if (dynamic_dim.max_size == 0) {
+          // maxSize must be at least 1.
+          return std::nullopt;
+        }
+        if (dynamic_dim.min_size > dynamic_dim.max_size) {
+          // minSize must be less than or equal to maxSize.
+          return std::nullopt;
+        }
+      }
+    }
+
     const std::optional<std::string>& name = operand->name;
     switch (operand->kind) {
       case mojom::Operand::Kind::kInput: {

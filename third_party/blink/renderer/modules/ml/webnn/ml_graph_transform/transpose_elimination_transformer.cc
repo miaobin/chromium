@@ -323,7 +323,8 @@ void TransposeEliminationTransformer::HandleTranspose(
   }
 
   // Perform the eliminations.
-  auto original_input_shape = context->in_transposes[0]->Inputs()[0]->shape();
+  const auto& original_input_shape =
+      context->in_transposes[0]->Inputs()[0]->Shape();
 
   visited_transposes_.insert(transpose);
   for (auto& in_transpose : context->in_transposes) {

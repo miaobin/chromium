@@ -10,7 +10,9 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_tester.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_context.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_input_operand_descriptor.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_operand_descriptor.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_union_mldynamicdimension_unsignedlongenforcerange.h"
 #include "third_party/blink/renderer/modules/ml/ml.h"
 #include "third_party/blink/renderer/modules/ml/ml_context.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph_builder.h"
@@ -24,8 +26,13 @@ MLOperand* BuildInput(ScriptState* script_state,
                       const Vector<uint32_t>& dimensions,
                       V8MLOperandDataType::Enum data_type,
                       ExceptionState& exception_state) {
-  auto* desc = MLOperandDescriptor::Create();
-  desc->setShape(dimensions);
+  auto* desc = MLInputOperandDescriptor::Create();
+  HeapVector<Member<V8UnionMLDynamicDimensionOrUnsignedLongEnforceRange>> shape;
+  for (uint32_t dim : dimensions) {
+    shape.push_back(MakeGarbageCollected<
+                    V8UnionMLDynamicDimensionOrUnsignedLongEnforceRange>(dim));
+  }
+  desc->setShape(shape);
   desc->setDataType(data_type);
   return builder->input(script_state, name, desc, exception_state);
 }

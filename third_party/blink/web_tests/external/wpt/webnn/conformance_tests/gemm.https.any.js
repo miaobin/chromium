@@ -2407,6 +2407,172 @@ const gemmTests = [
         }
       }
     }
+  },
+  {
+    'name': 'gemm two float32 2D tensors with dynamic batch dimension',
+    'graph': {
+      'inputs': {
+        'inputA': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 4], dataType: 'float32'},
+          'shape': [2, 4]
+        },
+        'inputB': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'descriptor': {shape: [4, 3], dataType: 'float32'},
+          'constant': true
+        }
+      },
+      'operators': [{
+        'name': 'gemm',
+        'arguments': [{'a': 'inputA'}, {'b': 'inputB'}],
+        'outputs': 'gemmOutput'
+      }],
+      'expectedOutputs': {
+        'gemmOutput': {
+          'data': [70.0, 80.0, 90.0, 158.0, 184.0, 210.0],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 3], dataType: 'float32'},
+          'shape': [2, 3]
+        }
+      }
+    }
+  },
+  {
+    'name': 'gemm two float32 2D tensors with dynamic contracting dimension',
+    'graph': {
+      'inputs': {
+        'inputA': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'descriptor':
+              {shape: [2, {name: 'k', maxSize: 100}], dataType: 'float32'},
+          'shape': [2, 3]
+        },
+        'inputB': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'descriptor':
+              {shape: [{name: 'k', maxSize: 100}, 2], dataType: 'float32'},
+          'shape': [3, 2]
+        }
+      },
+      'operators': [{
+        'name': 'gemm',
+        'arguments': [{'a': 'inputA'}, {'b': 'inputB'}],
+        'outputs': 'gemmOutput'
+      }],
+      'expectedOutputs': {
+        'gemmOutput': {
+          'data': [22.0, 28.0, 49.0, 64.0],
+          'descriptor': {shape: [2, 2], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name': 'gemm two float32 2D tensors with dynamic output dimensions',
+    'graph': {
+      'inputs': {
+        'inputA': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 2], dataType: 'float32'},
+          'shape': [3, 2]
+        },
+        'inputB': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'descriptor':
+              {shape: [2, {name: 'n', maxSize: 50}], dataType: 'float32'},
+          'shape': [2, 3]
+        }
+      },
+      'operators': [{
+        'name': 'gemm',
+        'arguments': [{'a': 'inputA'}, {'b': 'inputB'}],
+        'outputs': 'gemmOutput'
+      }],
+      'expectedOutputs': {
+        'gemmOutput': {
+          'data': [9.0, 12.0, 15.0, 19.0, 26.0, 33.0, 29.0, 40.0, 51.0],
+          'descriptor': {
+            shape: [{name: 'batch', maxSize: 10}, {name: 'n', maxSize: 50}],
+            dataType: 'float32'
+          },
+          'shape': [3, 3]
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'gemm two float32 2D tensors with aTranspose and dynamic dimensions',
+    'graph': {
+      'inputs': {
+        'inputA': {
+          'data': [1.0, 3.0, 5.0, 2.0, 4.0, 6.0],
+          'descriptor': {
+            shape: [{name: 'k', maxSize: 100}, {name: 'batch', maxSize: 10}],
+            dataType: 'float32'
+          },
+          'shape': [2, 3]
+        },
+        'inputB': {
+          'data': [1.0, 2.0, 3.0, 4.0],
+          'descriptor':
+              {shape: [{name: 'k', maxSize: 100}, 2], dataType: 'float32'},
+          'shape': [2, 2]
+        }
+      },
+      'operators': [{
+        'name': 'gemm',
+        'arguments': [
+          {'a': 'inputA'}, {'b': 'inputB'}, {'options': {'aTranspose': true}}
+        ],
+        'outputs': 'gemmOutput'
+      }],
+      'expectedOutputs': {
+        'gemmOutput': {
+          'data': [7.0, 10.0, 15.0, 22.0, 23.0, 34.0],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 2], dataType: 'float32'},
+          'shape': [3, 2]
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'gemm two float32 2D tensors with bTranspose and dynamic dimensions',
+    'graph': {
+      'inputs': {
+        'inputA': {
+          'data': [1.0, 2.0, 3.0, 4.0],
+          'descriptor': {shape: [2, 2], dataType: 'float32'}
+        },
+        'inputB': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'descriptor':
+              {shape: [{name: 'n', maxSize: 50}, 2], dataType: 'float32'},
+          'shape': [3, 2]
+        }
+      },
+      'operators': [{
+        'name': 'gemm',
+        'arguments': [
+          {'a': 'inputA'}, {'b': 'inputB'}, {'options': {'bTranspose': true}}
+        ],
+        'outputs': 'gemmOutput'
+      }],
+      'expectedOutputs': {
+        'gemmOutput': {
+          'data': [5.0, 11.0, 17.0, 11.0, 25.0, 39.0],
+          'descriptor':
+              {shape: [2, {name: 'n', maxSize: 50}], dataType: 'float32'},
+          'shape': [2, 3]
+        }
+      }
+    }
   }
 ];
 

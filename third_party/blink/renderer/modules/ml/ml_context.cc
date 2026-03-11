@@ -1175,7 +1175,7 @@ ScriptPromise<MLTensor> MLContext::createTensor(
       webnn::OperandDescriptor validated_descriptor,
       webnn::OperandDescriptor::Create(
           properties_, FromBlinkDataType(descriptor->dataType().AsEnum()),
-          descriptor->shape(), kTensorLabel),
+          webnn::ToDimensionVector(descriptor->shape()), kTensorLabel),
       [&exception_state](std::string error) {
         exception_state.ThrowTypeError(String(error));
         return ScriptPromise<MLTensor>();
@@ -1262,7 +1262,7 @@ ScriptPromise<MLTensor> MLContext::createExportableTensor(
       webnn::OperandDescriptor validated_descriptor,
       webnn::OperandDescriptor::Create(
           properties_, FromBlinkDataType(descriptor->dataType().AsEnum()),
-          descriptor->shape(), kTensorLabel),
+          webnn::ToDimensionVector(descriptor->shape()), kTensorLabel),
       [&exception_state](std::string error) {
         exception_state.ThrowTypeError(String(error));
         return ScriptPromise<MLTensor>();
@@ -1334,7 +1334,9 @@ ScriptPromise<MLTensor> MLContext::createExportableTensor(
     return EmptyPromise();
   }
 
-  auto size_result = ShapeToSharedImageSize(validated_descriptor.shape());
+  auto size_result =
+      ShapeToSharedImageSize(validated_descriptor.StaticShape().value());
+
   if (!size_result.has_value()) {
     exception_state.ThrowTypeError(size_result.error());
     return EmptyPromise();
@@ -1395,7 +1397,7 @@ ScriptPromise<MLTensor> MLContext::createConstantTensor(
       webnn::OperandDescriptor validated_descriptor,
       webnn::OperandDescriptor::Create(
           properties_, FromBlinkDataType(descriptor->dataType().AsEnum()),
-          descriptor->shape(), "constant_tensor"),
+          webnn::ToDimensionVector(descriptor->shape()), "constant_tensor"),
       [&exception_state](std::string error) {
         exception_state.ThrowTypeError(String(error));
         return ScriptPromise<MLTensor>();

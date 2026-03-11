@@ -165,17 +165,54 @@ const scatterNDTests = [
     'name': 'scatterND 2D int8 tensors with index out of bound',
     'graph': {
       'inputs': {
-        'input': {
-          'data': [0, 0],
-          'descriptor': {shape: [2, 1], dataType: 'int8'}
-        },
+        'input':
+            {'data': [0, 0], 'descriptor': {shape: [2, 1], dataType: 'int8'}},
         'indices': {
           'data': [2147483647 /* INT32_MAX */],
           'descriptor': {shape: [1, 1], dataType: 'int32'}
         },
+        'updates':
+            {'data': [1], 'descriptor': {shape: [1, 1], dataType: 'int8'}}
+      },
+      'operators': [{
+        'name': 'scatterND',
+        'arguments': [
+          {'input': 'input'}, {'indices': 'indices'}, {'updates': 'updates'}
+        ],
+        'outputs': 'output'
+      }],
+      'expectedOutputs': {
+        'output':
+            {'data': [0, 1], 'descriptor': {shape: [2, 1], dataType: 'int8'}}
+      }
+    }
+  },
+  {
+    'name':
+        'scatterND float32 3D input with dynamic batch and 2D indices (concrete shapes [4, 4, 4], [2, 1], [2, 4, 4])',
+    'graph': {
+      'inputs': {
+        'input': {
+          'data': [
+            1, 2, 3, 4, 5, 6, 7, 8, 8, 7, 6, 5, 4, 3, 2, 1, 1, 2, 3, 4, 5, 6,
+            7, 8, 8, 7, 6, 5, 4, 3, 2, 1, 8, 7, 6, 5, 4, 3, 2, 1, 1, 2, 3, 4,
+            5, 6, 7, 8, 8, 7, 6, 5, 4, 3, 2, 1, 1, 2, 3, 4, 5, 6, 7, 8
+          ],
+          'shape': [4, 4, 4],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 4, 4], dataType: 'float32'}
+        },
+        'indices': {
+          'data': [0, 2],
+          'descriptor': {shape: [2, 1], dataType: 'int64'},
+          'constant': true
+        },
         'updates': {
-          'data': [1],
-          'descriptor': {shape: [1, 1], dataType: 'int8'}
+          'data': [
+            5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8,
+            1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4
+          ],
+          'descriptor': {shape: [2, 4, 4], dataType: 'float32'}
         }
       },
       'operators': [{
@@ -187,8 +224,54 @@ const scatterNDTests = [
       }],
       'expectedOutputs': {
         'output': {
-          'data': [0, 1],
-          'descriptor': {shape: [2, 1], dataType: 'int8'}
+          'data': [
+            5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 1, 2, 3, 4, 5, 6,
+            7, 8, 8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+            4, 4, 4, 4, 8, 7, 6, 5, 4, 3, 2, 1, 1, 2, 3, 4, 5, 6, 7, 8
+          ],
+          'shape': [4, 4, 4],
+          'descriptor':
+              {shape: [{name: 'batch', maxSize: 10}, 4, 4], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'scatterND float32 1D input and 2D indices with dynamic size (concrete shapes [8], [4, 1], [4])',
+    'graph': {
+      'inputs': {
+        'input': {
+          'data': [1, 2, 3, 4, 5, 6, 7, 8],
+          'descriptor': {shape: [8], dataType: 'float32'}
+        },
+        'indices': {
+          'data': [4, 3, 1, 7],
+          'shape': [4, 1],
+          'descriptor': {
+            shape: [{name: 'num_indices', maxSize: 10}, 1],
+            dataType: 'int32'
+          }
+        },
+        'updates': {
+          'data': [9, 10, 11, 12],
+          'shape': [4],
+          'descriptor':
+              {shape: [{name: 'num_indices', maxSize: 10}], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'scatterND',
+        'arguments': [
+          {'input': 'input'}, {'indices': 'indices'}, {'updates': 'updates'}
+        ],
+        'outputs': 'output'
+      }],
+      'expectedOutputs': {
+        'output': {
+          'data': [1, 11, 3, 10, 9, 6, 7, 12],
+          'shape': [8],
+          'descriptor': {shape: [8], dataType: 'float32'}
         }
       }
     }

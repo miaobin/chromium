@@ -235,37 +235,40 @@ bool IsDepthwiseConv2d(const MLOperator* conv2d) {
   CHECK(options);
   const MLOperand* input = conv2d->PositionalInputs()[0];
   CHECK(input);
-  const std::vector<uint32_t>& input_shape = input->Shape();
+  const std::vector<webnn::Dimension>& input_shape = input->Shape();
   CHECK_EQ(input_shape.size(), 4u);
   const MLOperand* output = conv2d->Outputs()[0].Get();
   CHECK(output);
-  const std::vector<uint32_t>& output_shape = output->Shape();
+  const std::vector<webnn::Dimension>& output_shape = output->Shape();
   CHECK_EQ(output_shape.size(), 4u);
+  // Conv2d channels are static dimensions.
   uint32_t input_channels, output_channels;
   switch (options->inputLayout().AsEnum()) {
     case blink::V8MLInputOperandLayout::Enum::kNchw:
-      input_channels = input_shape[1];
-      output_channels = output_shape[1];
+      input_channels = std::get<uint32_t>(input_shape[1]);
+      output_channels = std::get<uint32_t>(output_shape[1]);
       break;
     case blink::V8MLInputOperandLayout::Enum::kNhwc:
-      input_channels = input_shape[3];
-      output_channels = output_shape[3];
+      input_channels = std::get<uint32_t>(input_shape[3]);
+      output_channels = std::get<uint32_t>(output_shape[3]);
       break;
   }
   const uint32_t groups = base::checked_cast<uint32_t>(options->groups());
   return webnn::IsDepthwiseConv2d(input_channels, output_channels, groups);
 }
 
-Vector<uint32_t> PermuteShape(base::span<const uint32_t> shape,
-                              base::span<const uint32_t> permutation) {
+std::vector<webnn::Dimension> PermuteShape(
+    base::span<const webnn::Dimension> shape,
+    base::span<const uint32_t> permutation) {
   OperandIndex shape_size = base::checked_cast<OperandIndex>(shape.size());
-  Vector<uint32_t> permuted_array(shape_size);
+  std::vector<webnn::Dimension> permuted_array(shape_size);
   CHECK_EQ(shape_size, permutation.size());
   for (OperandIndex i = 0; i < shape_size; ++i) {
     permuted_array[i] = shape[permutation[i]];
   }
   return permuted_array;
 }
+
 constexpr std::array<uint32_t, 2> kResample2dChannelFirstAxes{2u, 3u};
 constexpr std::array<uint32_t, 2> kResample2dChannelLastAxes{1u, 2u};
 std::optional<std::vector<uint32_t>> GetResample2DPermutation(

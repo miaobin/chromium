@@ -50,10 +50,7 @@ const cumulativeSumTests = [
       },
       'operators': [{
         'name': 'cumulativeSum',
-        'arguments': [
-          {'input': 'cumulativeSumInput'},
-          {'axis': 3}
-        ],
+        'arguments': [{'input': 'cumulativeSumInput'}, {'axis': 3}],
         'outputs': 'cumulativeSumOutput'
       }],
       'expectedOutputs': {
@@ -85,8 +82,7 @@ const cumulativeSumTests = [
       'operators': [{
         'name': 'cumulativeSum',
         'arguments': [
-          {'input': 'cumulativeSumInput'},
-          {'axis': 3},
+          {'input': 'cumulativeSumInput'}, {'axis': 3},
           {'options': {'exclusive': true}}
         ],
         'outputs': 'cumulativeSumOutput'
@@ -119,8 +115,7 @@ const cumulativeSumTests = [
       'operators': [{
         'name': 'cumulativeSum',
         'arguments': [
-          {'input': 'cumulativeSumInput'},
-          {'axis': 3},
+          {'input': 'cumulativeSumInput'}, {'axis': 3},
           {'options': {'reversed': true}}
         ],
         'outputs': 'cumulativeSumOutput'
@@ -242,16 +237,112 @@ const cumulativeSumTests = [
       },
       'operators': [{
         'name': 'cumulativeSum',
-        'arguments': [
-          {'input': 'cumulativeSumInput'},
-          {'axis': 2}
-        ],
+        'arguments': [{'input': 'cumulativeSumInput'}, {'axis': 2}],
         'outputs': 'cumulativeSumOutput'
       }],
       'expectedOutputs': {
         'cumulativeSumOutput': {
           'data': [2, 1, 3, 5, 5, 9, 10, 8, 14, 15, 12, 12],
           'descriptor': {shape: [1, 1, 3, 4], dataType: 'int32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'cumulativeSum with float32 2D tensor with dynamic dimension on axis (concrete shape [3, 4])',
+    'graph': {
+      'inputs': {
+        'cumulativeSumInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'batch', 'maxSize': 10}, 4],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'cumulativeSum',
+        'arguments': [{'input': 'cumulativeSumInput'}, {'axis': 0}],
+        'outputs': 'cumulativeSumOutput'
+      }],
+      'expectedOutputs': {
+        'cumulativeSumOutput': {
+          'data': [
+            1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 18.0, 21.0, 24.0
+          ],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: [{'name': 'batch', 'maxSize': 10}, 4],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'cumulativeSum with float32 2D tensor with dynamic dimension off axis (concrete shape [2, 5])',
+    'graph': {
+      'inputs': {
+        'cumulativeSumInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+          'shape': [2, 5],
+          'descriptor': {
+            shape: [2, {'name': 'features', 'maxSize': 20}],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'cumulativeSum',
+        'arguments': [{'input': 'cumulativeSumInput'}, {'axis': 0}],
+        'outputs': 'cumulativeSumOutput'
+      }],
+      'expectedOutputs': {
+        'cumulativeSumOutput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0],
+          'shape': [2, 5],
+          'descriptor': {
+            shape: [2, {'name': 'features', 'maxSize': 20}],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'cumulativeSum with float32 3D tensor with dynamic dimension on axis and exclusive option (concrete shape [1, 2, 3])',
+    'graph': {
+      'inputs': {
+        'cumulativeSumInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+          'shape': [1, 2, 3],
+          'descriptor': {
+            shape: [1, {'name': 'seq', 'maxSize': 8}, 3],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'cumulativeSum',
+        'arguments': [
+          {'input': 'cumulativeSumInput'}, {'axis': 1},
+          {'options': {'exclusive': true}}
+        ],
+        'outputs': 'cumulativeSumOutput'
+      }],
+      'expectedOutputs': {
+        'cumulativeSumOutput': {
+          'data': [0.0, 0.0, 0.0, 1.0, 2.0, 3.0],
+          'shape': [1, 2, 3],
+          'descriptor': {
+            shape: [1, {'name': 'seq', 'maxSize': 8}, 3],
+            dataType: 'float32'
+          }
         }
       }
     }

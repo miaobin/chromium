@@ -522,3 +522,55 @@ const identityTests = [
 
 webnn_conformance_test(
     identityTests, buildAndExecuteGraph, getZeroULPTolerance);
+
+promise_test(async t => {
+  const context = await getContext();
+  const builder = new MLGraphBuilder(context);
+  const descriptor = {
+    shape: [{'name': 'N', 'maxSize': 5}, 4],
+    dataType: 'float32'
+  };
+  const inputOperand = builder.input('input', descriptor);
+  const outputOperand = builder.identity(inputOperand);
+  const graph = await builder.build({'output': outputOperand});
+
+  const inputTensor = await context.createTensor({
+    dataType: 'float32',
+    shape: [6, 4],  // Larger than maxSize 5
+    readable: true,
+    writable: true
+  });
+
+  const outputTensor = await context.createTensor(
+      {dataType: 'float32', shape: [6, 4], readable: true, writable: true});
+
+  assert_throws_js(TypeError, () => {
+    context.dispatch(graph, {'input': inputTensor}, {'output': outputTensor});
+  });
+}, 'identity float32 2D tensor with input dimension larger than maxSize');
+
+promise_test(async t => {
+  const context = await getContext();
+  const builder = new MLGraphBuilder(context);
+  const descriptor = {
+    shape: [{'name': 'N', 'minSize': 3, 'maxSize': 10}, 4],
+    dataType: 'float32'
+  };
+  const inputOperand = builder.input('input', descriptor);
+  const outputOperand = builder.identity(inputOperand);
+  const graph = await builder.build({'output': outputOperand});
+
+  const inputTensor = await context.createTensor({
+    dataType: 'float32',
+    shape: [2, 4],  // Smaller than minSize 3
+    readable: true,
+    writable: true
+  });
+
+  const outputTensor = await context.createTensor(
+      {dataType: 'float32', shape: [2, 4], readable: true, writable: true});
+
+  assert_throws_js(TypeError, () => {
+    context.dispatch(graph, {'input': inputTensor}, {'output': outputTensor});
+  });
+}, 'identity float32 2D tensor with input dimension smaller than minSize');

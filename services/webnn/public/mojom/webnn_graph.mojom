@@ -25,13 +25,24 @@ enum DataType {
   kInt8,
   kUint8,
   kInt4,
-  kUint4
+  kUint4,
+};
+
+struct DynamicDimension {
+  string name;
+  uint32 max_size;
+  uint32 min_size;
+};
+
+union Dimension {
+  uint32 size;
+  DynamicDimension dynamic_dimension;
 };
 
 // Represents the `MLOperandDescriptor` in the WebIDL definition.
 struct OperandDescriptor {
   DataType data_type;
-  array<uint32> shape;
+  array<Dimension> shape;
   // Permutation that needs to be performed on service side for constant
   // operands.
   array<uint32> pending_permutation;
@@ -486,9 +497,10 @@ struct Pool2d {
   // `GraphInfo.operands`.
   OperandId output_operand_id;
 
-  // The dimensions of the sliding window which is supplied by user or the
+  // The dimensions of the sliding window which is supplied by user. If it is
+  // not present, assume the
   // element of input operand height and width.
-  Size2d window_dimensions;
+  Size2d? window_dimensions;
   // The padding for each spatial dimension of input.
   Padding2d padding;
   // The element stride of the sliding window for each spatial dimension of

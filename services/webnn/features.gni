@@ -9,7 +9,7 @@ assert(use_blink)
 
 declare_args() {
   # TFLite is used as a fallback option on Apple and Windows.
-  webnn_use_tflite = is_android || is_chromeos || is_linux || is_apple || is_win
+  webnn_use_tflite = false
 
   # TODO(crbug.com/454732289): Enable LiteRT after migration is complete.
   webnn_use_litert = false
@@ -23,4 +23,6 @@ declare_args() {
   # Enable installation of the Windows App Runtime package in the Chrome
   # installer.
   webnn_install_runtime_in_chrome_installer = true
+
+  webnn_use_dml = false
 }

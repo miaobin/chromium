@@ -995,7 +995,121 @@ const addTests = [
         }
       }
     }
+  },
+  {
+    'name':
+        'add float32 2D tensor broadcasting with dynamic shape (static 1 broadcast to Dynamic N)',
+    'graph': {
+      'inputs': {
+        'inputA': {
+          'data': [1, 2, 3, 4, 5, 6, 7, 8],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 5}, 4], dataType: 'float32'}
+        },
+        'inputB': {
+          'data': [10, 20, 30, 40],
+          'descriptor': {shape: [1, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'add',
+        'arguments': [{'a': 'inputA'}, {'b': 'inputB'}],
+        'outputs': 'output'
+      }],
+      'expectedOutputs': {
+        'output': {
+          'data': [11, 22, 33, 44, 15, 26, 37, 48],
+          'shape': [2, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 5}, 4], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'add float32 2D tensor broadcasting with dynamic shape (dynamic N broadcast to dynamic N)',
+    'graph': {
+      'inputs': {
+        'inputA': {
+          'data': [1, 2, 3, 4],
+          'shape': [1, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 5}, 4], dataType: 'float32'}
+        },
+        'inputB': {
+          'data': [10, 20, 30, 40],
+          'shape': [1, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 5}, 4], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'add',
+        'arguments': [{'a': 'inputA'}, {'b': 'inputB'}],
+        'outputs': 'output'
+      }],
+      'expectedOutputs': {
+        'output': {
+          'data': [11, 22, 33, 44],
+          'shape': [1, 4],
+          'descriptor':
+              {shape: [{'name': 'batch', 'maxSize': 5}, 4], dataType: 'float32'}
+        }
+      }
+    }
   }
 ];
 
 webnn_conformance_test(addTests, buildAndExecuteGraph, getPrecisionTolerance);
+
+promise_test(async t => {
+  const context = await getContext();
+  const builder = new MLGraphBuilder(context);
+  const inputA = builder.input('inputA', {dataType: 'float32', shape: [2, 4]});
+  const inputB = builder.input(
+      'inputB',
+      {dataType: 'float32', shape: [{'name': 'batch', 'maxSize': 5}, 4]});
+
+  assert_throws_js(TypeError, () => builder.add(inputA, inputB));
+}, 'throw if float32 2D tensor broadcasting from dynamic dimension to non-1 static dimension is not supported');
+
+promise_test(async t => {
+  const context = await getContext();
+  const builder = new MLGraphBuilder(context);
+  const inputA = builder.input(
+      'inputA',
+      {dataType: 'float32', shape: [{'name': 'batchA', 'maxSize': 5}, 4]});
+  const inputB = builder.input(
+      'inputB',
+      {dataType: 'float32', shape: [{'name': 'batchB', 'maxSize': 5}, 4]});
+
+  assert_throws_js(TypeError, () => builder.add(inputA, inputB));
+}, 'throw if float32 2D tensor broadcasting with two different dynamic dimensions is not supported');
+
+promise_test(async t => {
+  const context = await getContext();
+  const builder = new MLGraphBuilder(context);
+  const inputA = builder.input(
+      'inputA',
+      {dataType: 'float32', shape: [{'name': 'batch', 'maxSize': 5}, 4]});
+  const inputB = builder.input(
+      'inputB',
+      {dataType: 'float32', shape: [{'name': 'batch', 'maxSize': 5}, 4]});
+  const output = builder.add(inputA, inputB);
+  const graph = await builder.build({'output': output});
+
+  const inputTensorA = await context.createTensor(
+      {dataType: 'float32', shape: [2, 4], readable: true, writable: true});
+  const inputTensorB = await context.createTensor(
+      {dataType: 'float32', shape: [1, 4], readable: true, writable: true});
+  const outputTensor = await context.createTensor(
+      {dataType: 'float32', shape: [2, 4], readable: true, writable: true});
+
+  assert_throws_js(
+      TypeError,
+      () => context.dispatch(
+          graph, {'inputA': inputTensorA, 'inputB': inputTensorB},
+          {'output': outputTensor}));
+}, 'throw if two dynamic dimensions with same name are passed different values');
