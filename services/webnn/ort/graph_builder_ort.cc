@@ -3494,6 +3494,7 @@ void GraphBuilderOrt::AddReshapeOperation(const mojom::Reshape& reshape) {
   // Build a mapping from input shape to find dynamic dimensions.
   const std::vector<webnn::Dimension>& input_shape = input_descriptor.shape();
 
+  bool has_inferred_dim = false;
   for (const auto& dim : output_shape) {
     if (std::holds_alternative<uint32_t>(dim)) {
       // Static dimension: create a 1-D constant with shape [1].
@@ -3502,36 +3503,42 @@ void GraphBuilderOrt::AddReshapeOperation(const mojom::Reshape& reshape) {
       std::string const_name = Create1DInitializer<int64_t>(value_array);
       dimension_names.push_back(std::move(const_name));
     } else {
-      // Dynamic dimension: find its index in input shape and gather it.
+      // Dynamic dimension: first try to find it in the input shape.
       CHECK(std::holds_alternative<DynamicDimension>(dim));
 
-      // Find the index of this dynamic dimension in the input shape.
       auto it = std::ranges::find(input_shape, dim);
-      CHECK(it != input_shape.end())
-          << "Dynamic dimension not found in input shape";
-      int64_t input_axis = std::distance(input_shape.begin(), it);
+      if (it != input_shape.end()) {
+        // Directly matching dynamic dimension: gather from input shape.
+        int64_t input_axis = std::distance(input_shape.begin(), it);
 
-      // Create a Gather node to extract this dimension from input shape.
-      // Use axis=0 since input_shape is 1-D, and indices as a 1-D tensor with
-      // shape [1] to get output shape [1].
-      const std::string gather_output = GenerateOperandName();
-      std::array<int64_t, 1> indices_array = {input_axis};
-      const std::string indices_const =
-          Create1DInitializer<int64_t>(indices_array);
+        const std::string gather_output = GenerateOperandName();
+        std::array<int64_t, 1> indices_array = {input_axis};
+        const std::string indices_const =
+            Create1DInitializer<int64_t>(indices_array);
 
-      std::array<const char*, 2> gather_inputs = {input_shape_name.c_str(),
-                                                  indices_const.c_str()};
-      std::array<const char*, 1> gather_outputs = {gather_output.c_str()};
-      std::array<ScopedOrtOpAttr, 1> gather_attributes = {
-          model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
-      const std::string gather_node_name = GenerateNodeName(
-          base::JoinString({kInserted, kOpTypeGather, kToEmulate, reshape.label,
-                            base::NumberToString(input_axis)},
-                           kUnderscore));
-      model_editor_.AddNode(kOpTypeGather, gather_node_name, gather_inputs,
-                            gather_outputs, gather_attributes);
+        std::array<const char*, 2> gather_inputs = {input_shape_name.c_str(),
+                                                    indices_const.c_str()};
+        std::array<const char*, 1> gather_outputs = {gather_output.c_str()};
+        std::array<ScopedOrtOpAttr, 1> gather_attributes = {
+            model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
+        const std::string gather_node_name = GenerateNodeName(
+            base::JoinString({kInserted, kOpTypeGather, kToEmulate,
+                              reshape.label, base::NumberToString(input_axis)},
+                             kUnderscore));
+        model_editor_.AddNode(kOpTypeGather, gather_node_name, gather_inputs,
+                              gather_outputs, gather_attributes);
 
-      dimension_names.push_back(std::move(gather_output));
+        dimension_names.push_back(std::move(gather_output));
+      } else {
+        // Derived dynamic dimension (not in input shape): use -1 to let
+        // ONNX Runtime infer it. At most one -1 is allowed per reshape.
+        CHECK(!has_inferred_dim)
+            << "Only one inferred dimension (-1) is allowed per reshape";
+        has_inferred_dim = true;
+        std::array<int64_t, 1> value_array = {-1};
+        std::string const_name = Create1DInitializer<int64_t>(value_array);
+        dimension_names.push_back(std::move(const_name));
+      }
     }
   }
 

@@ -2292,26 +2292,80 @@ bool OperationValidationContext::ValidateReshape(const mojom::Reshape& reshape,
   // For a dynamic dimension in output shape, validate input shape has it
   // uniquely.
   auto available_input_shape = input->descriptor.shape();
-  for (const auto& dim : output->descriptor.shape()) {
-    if (std::holds_alternative<DynamicDimension>(dim)) {
-      auto it = std::find(available_input_shape.begin(),
-                          available_input_shape.end(), dim);
-      if (it == available_input_shape.end()) {
-        // The dynamic dimension is not present in the input shape.
-        return false;
+  auto available_output_shape = output->descriptor.shape();
+  // First pass: eliminate directly matching dynamic dimensions.
+  for (auto out_it = available_output_shape.begin();
+       out_it != available_output_shape.end();) {
+    if (std::holds_alternative<DynamicDimension>(*out_it)) {
+      auto in_it = std::find(available_input_shape.begin(),
+                             available_input_shape.end(), *out_it);
+      if (in_it != available_input_shape.end()) {
+        available_input_shape.erase(in_it);
+        out_it = available_output_shape.erase(out_it);
+        continue;
       }
-      available_input_shape.erase(it);
+    }
+    ++out_it;
+  }
+
+  // Count remaining dynamic dimensions on each side.
+  size_t remaining_input_dynamic_count = 0;
+  size_t remaining_output_dynamic_count = 0;
+  base::CheckedNumeric<size_t> input_static_product = 1;
+  base::CheckedNumeric<size_t> output_static_product = 1;
+  const DynamicDimension* remaining_input_dyn = nullptr;
+  const DynamicDimension* remaining_output_dyn = nullptr;
+
+  for (const auto& dim : available_input_shape) {
+    if (std::holds_alternative<DynamicDimension>(dim)) {
+      ++remaining_input_dynamic_count;
+      remaining_input_dyn = &std::get<DynamicDimension>(dim);
+    } else {
+      input_static_product *= std::get<uint32_t>(dim);
+    }
+  }
+  for (const auto& dim : available_output_shape) {
+    if (std::holds_alternative<DynamicDimension>(dim)) {
+      ++remaining_output_dynamic_count;
+      remaining_output_dyn = &std::get<DynamicDimension>(dim);
+    } else {
+      output_static_product *= std::get<uint32_t>(dim);
     }
   }
 
-  // If there are remaining dynamic dimensions in the input that weren't used
-  // in the output, we cannot verify the static dimensions match at build time.
-  for (const auto& dim : available_input_shape) {
-    if (std::holds_alternative<DynamicDimension>(dim)) {
-      // Cannot reshape when input has dynamic dimensions that are not
-      // preserved in the output shape.
+  if (remaining_input_dynamic_count == 0 &&
+      remaining_output_dynamic_count == 0) {
+    // All dynamic dims were directly matched. Remaining are all static.
+  } else if (remaining_input_dynamic_count == 1 &&
+             remaining_output_dynamic_count == 1) {
+    // One unmatched dynamic dim on each side: verify algebraic relationship.
+    size_t s_in, s_out;
+    if (!input_static_product.AssignIfValid(&s_in) ||
+        !output_static_product.AssignIfValid(&s_out)) {
       return false;
     }
+    base::CheckedNumeric<size_t> input_max_total =
+        base::CheckedNumeric<size_t>(remaining_input_dyn->max_size) * s_in;
+    base::CheckedNumeric<size_t> output_max_total =
+        base::CheckedNumeric<size_t>(remaining_output_dyn->max_size) * s_out;
+    base::CheckedNumeric<size_t> input_min_total =
+        base::CheckedNumeric<size_t>(remaining_input_dyn->min_size) * s_in;
+    base::CheckedNumeric<size_t> output_min_total =
+        base::CheckedNumeric<size_t>(remaining_output_dyn->min_size) * s_out;
+
+    size_t in_max, out_max, in_min, out_min;
+    if (!input_max_total.AssignIfValid(&in_max) ||
+        !output_max_total.AssignIfValid(&out_max) ||
+        !input_min_total.AssignIfValid(&in_min) ||
+        !output_min_total.AssignIfValid(&out_min)) {
+      return false;
+    }
+    if (in_max != out_max || in_min != out_min) {
+      return false;
+    }
+  } else {
+    // Unsupported: multiple unmatched dynamic dims on either side.
+    return false;
   }
 
   return true;

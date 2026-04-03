@@ -3197,41 +3197,109 @@ MLOperand* MLGraphBuilder::reshape(MLOperand* input,
   // For a dynamic dimension in output shape, validate input shape has it
   // uniquely.
   auto available_input_shape = input->Descriptor().shape();
-  for (const auto& dim : output_descriptor.shape()) {
-    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
-      auto it = std::find(available_input_shape.begin(),
-                          available_input_shape.end(), dim);
-      if (it == available_input_shape.end()) {
-        const auto& dynamic_dim = std::get<webnn::DynamicDimension>(dim);
-        exception_state.ThrowTypeError(BuildErrorMessage(
-            label, String::Format("The dynamic dimension name '%s' with max "
-                                  "size %u and min size %u is "
-                                  "not present in the input shape.",
-                                  dynamic_dim.name.c_str(),
-                                  dynamic_dim.max_size, dynamic_dim.min_size)));
-        return nullptr;
+  auto available_output_shape = output_descriptor.shape();
+  // First pass: eliminate directly matching dynamic dimensions.
+  for (auto out_it = available_output_shape.begin();
+       out_it != available_output_shape.end();) {
+    if (std::holds_alternative<webnn::DynamicDimension>(*out_it)) {
+      auto in_it = std::find(available_input_shape.begin(),
+                             available_input_shape.end(), *out_it);
+      if (in_it != available_input_shape.end()) {
+        available_input_shape.erase(in_it);
+        out_it = available_output_shape.erase(out_it);
+        continue;
       }
-      available_input_shape.erase(it);
+    }
+    ++out_it;
+  }
+
+  // Count remaining dynamic dimensions on each side.
+  size_t remaining_input_dynamic_count = 0;
+  size_t remaining_output_dynamic_count = 0;
+  base::CheckedNumeric<size_t> input_static_product = 1;
+  base::CheckedNumeric<size_t> output_static_product = 1;
+  const webnn::DynamicDimension* remaining_input_dyn = nullptr;
+  const webnn::DynamicDimension* remaining_output_dyn = nullptr;
+
+  for (const auto& dim : available_input_shape) {
+    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+      ++remaining_input_dynamic_count;
+      remaining_input_dyn = &std::get<webnn::DynamicDimension>(dim);
+    } else {
+      input_static_product *= std::get<uint32_t>(dim);
+    }
+  }
+  for (const auto& dim : available_output_shape) {
+    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+      ++remaining_output_dynamic_count;
+      remaining_output_dyn = &std::get<webnn::DynamicDimension>(dim);
+    } else {
+      output_static_product *= std::get<uint32_t>(dim);
     }
   }
 
-  // If there are remaining dynamic dimensions in the input that weren't used
-  // in the output, we cannot verify the static dimensions match at build time.
-  for (const auto& dim : available_input_shape) {
-    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+  if (remaining_input_dynamic_count == 0 &&
+      remaining_output_dynamic_count == 0) {
+    // All dynamic dims were directly matched. Remaining are all static.
+    // Element count equality is already verified above.
+  } else if (remaining_input_dynamic_count == 1 &&
+             remaining_output_dynamic_count == 1) {
+    // One unmatched dynamic dim on each side: verify algebraic relationship.
+    // input_dyn.max * S_in == output_dyn.max * S_out
+    // input_dyn.min * S_in == output_dyn.min * S_out
+    size_t s_in, s_out;
+    if (!input_static_product.AssignIfValid(&s_in) ||
+        !output_static_product.AssignIfValid(&s_out)) {
       exception_state.ThrowTypeError(BuildErrorMessage(
-          label,
-          "Cannot reshape when input has dynamic dimensions that are not "
-          "preserved in the output shape, as the static dimension "
-          "compatibility cannot be verified at build time."));
+          label, "Static dimension product overflow in reshape."));
       return nullptr;
     }
+    base::CheckedNumeric<size_t> input_max_total =
+        base::CheckedNumeric<size_t>(remaining_input_dyn->max_size) * s_in;
+    base::CheckedNumeric<size_t> output_max_total =
+        base::CheckedNumeric<size_t>(remaining_output_dyn->max_size) * s_out;
+    base::CheckedNumeric<size_t> input_min_total =
+        base::CheckedNumeric<size_t>(remaining_input_dyn->min_size) * s_in;
+    base::CheckedNumeric<size_t> output_min_total =
+        base::CheckedNumeric<size_t>(remaining_output_dyn->min_size) * s_out;
+
+    size_t in_max, out_max, in_min, out_min;
+    if (!input_max_total.AssignIfValid(&in_max) ||
+        !output_max_total.AssignIfValid(&out_max) ||
+        !input_min_total.AssignIfValid(&in_min) ||
+        !output_min_total.AssignIfValid(&out_min)) {
+      exception_state.ThrowTypeError(
+          BuildErrorMessage(label, "Element count overflow in reshape."));
+      return nullptr;
+    }
+    if (in_max != out_max || in_min != out_min) {
+      exception_state.ThrowTypeError(BuildErrorMessage(
+          label,
+          String::Format(
+              "The unmatched dynamic dimensions are not compatible: "
+              "input '%s'{min=%u,max=%u} * %zu != output '%s'{min=%u,max=%u} "
+              "* %zu.",
+              remaining_input_dyn->name.c_str(), remaining_input_dyn->min_size,
+              remaining_input_dyn->max_size, s_in,
+              remaining_output_dyn->name.c_str(),
+              remaining_output_dyn->min_size, remaining_output_dyn->max_size,
+              s_out)));
+      return nullptr;
+    }
+  } else {
+    // Unsupported: multiple unmatched dynamic dims on either side.
+    exception_state.ThrowTypeError(BuildErrorMessage(
+        label,
+        "Cannot reshape when there are multiple unmatched dynamic dimensions "
+        "between input and output shapes."));
+    return nullptr;
   }
 
   auto* reshape = MakeGarbageCollected<MLOperator>(
       this, blink_mojom::Operation::Tag::kReshape, options);
   MLOperand* output =
       MLOperand::CreateOutput(this, std::move(output_descriptor), reshape);
+  RegisterOutputDynamicDimensions(output->Descriptor());
 
   reshape->Connect({input}, {output});
   return output;
