@@ -9,6 +9,7 @@
 
 #include "base/containers/span.h"
 #include "base/containers/span_reader.h"
+#include "base/logging.h"
 #include "base/numerics/checked_math.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom.h"
@@ -161,6 +162,7 @@ std::optional<std::vector<int64_t>> ShapeFoldingInterpreter::EvaluateImpl(
     OperandId operand_id) {
   if (operand_id.value() >= operands_.size() ||
       !operands_[operand_id.value()]) {
+    LOG(ERROR) << "[WebNN-DIAG][SFI] operand_id=" << operand_id.value() << " out-of-range or null";
     return std::nullopt;
   }
 
@@ -168,27 +170,46 @@ std::optional<std::vector<int64_t>> ShapeFoldingInterpreter::EvaluateImpl(
 
   // Constants: read values directly from stored data.
   if (operand->kind == mojom::Operand::Kind::kConstant) {
-    return ReadConstantValues(operand_id);
+    auto r = ReadConstantValues(operand_id);
+    if (!r) {
+      LOG(ERROR) << "[WebNN-DIAG][SFI] operand_id=" << operand_id.value()
+                 << " kConstant but ReadConstantValues failed";
+    }
+    return r;
   }
 
   // Input operands: not evaluable as values (we know their shape but not
   // their tensor data at validation time).
   if (operand->kind == mojom::Operand::Kind::kInput) {
+    LOG(ERROR) << "[WebNN-DIAG][SFI] operand_id=" << operand_id.value()
+               << " kInput name='" << (operand->name ? *operand->name : std::string("?"))
+               << "' - not foldable (graph input)";
     return std::nullopt;
   }
 
   // Output operand: look up producing operation and interpret it.
   auto prod_it = operand_to_producing_operation_->find(operand_id);
   if (prod_it == operand_to_producing_operation_->end()) {
+    LOG(ERROR) << "[WebNN-DIAG][SFI] operand_id=" << operand_id.value()
+               << " kOutput but no producing op found";
     return std::nullopt;
   }
 
   OperationId op_id = prod_it->second;
   if (op_id >= operations_->size()) {
+    LOG(ERROR) << "[WebNN-DIAG][SFI] operand_id=" << operand_id.value()
+               << " producing op_id=" << op_id << " out of range";
     return std::nullopt;
   }
 
-  return InterpretOperation(*(*operations_)[op_id], operand_id);
+  auto r = InterpretOperation(*(*operations_)[op_id], operand_id);
+  if (!r) {
+    LOG(ERROR) << "[WebNN-DIAG][SFI] operand_id=" << operand_id.value()
+               << " InterpretOperation(op_id=" << op_id
+               << ", tag=" << static_cast<int>((*operations_)[op_id]->which())
+               << ") returned nullopt";
+  }
+  return r;
 }
 
 std::optional<std::vector<int64_t>>
@@ -310,6 +331,37 @@ ShapeFoldingInterpreter::InterpretOperation(
             return std::nullopt;
           }
           rv = av % bv;
+          break;
+        case mojom::ElementWiseBinary::Kind::kEqual:
+          rv = (av == bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kGreater:
+          rv = (av > bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kGreaterOrEqual:
+          rv = (av >= bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLesser:
+          rv = (av < bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLesserOrEqual:
+          rv = (av <= bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kNotEqual:
+          rv = (av != bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLogicalAnd:
+          rv = (av != 0 && bv != 0) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLogicalOr:
+          rv = (av != 0 || bv != 0) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLogicalXor:
+          rv = ((av != 0) != (bv != 0)) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kPow:
+          rv = static_cast<int64_t>(std::pow(static_cast<double>(av),
+                                             static_cast<double>(bv)));
           break;
         default:
           // Unsupported binary op for shape folding.

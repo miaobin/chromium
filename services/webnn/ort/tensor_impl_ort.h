@@ -37,7 +37,7 @@ class TensorImplOrt final : public WebNNTensorImpl {
   TensorImplOrt& operator=(const TensorImplOrt&) = delete;
 
   OrtValue* tensor() const {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return tensor_.get();
   }
 
