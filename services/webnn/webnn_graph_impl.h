@@ -6,10 +6,12 @@
 #define SERVICES_WEBNN_WEBNN_GRAPH_IMPL_H_
 
 #include <string>
+#include <vector>
 
 #include "base/component_export.h"
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ref.h"
+#include "base/types/expected.h"
 #include "base/types/pass_key.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -53,8 +55,7 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphImpl
         std::vector<mojom::OperandPtr> graph_operands,
         std::vector<mojom::OperationPtr> graph_operations,
         std::vector<OperandId> graph_input_operand_ids,
-        base::flat_map<OperandId, std::vector<uint8_t>>
-            integer_constant_data,
+        base::flat_map<OperandId, std::vector<uint8_t>> integer_constant_data,
         base::PassKey<WebNNGraphBuilderImpl> pass_key);
     ~ComputeResourceInfo();
 
@@ -101,6 +102,11 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphImpl
 
   const std::vector<mojom::Device>& devices() { return devices_; }
 
+  // mojom::WebNNGraph:
+  void ComputeShapes(const base::flat_map<std::string, std::vector<uint32_t>>&
+                         named_input_shapes,
+                     ComputeShapesCallback callback) override;
+
   // Execute the dispatch on the GPU sequence (or directly if no GPU sequence).
   // Called by WebNNContextImpl::Dispatch() after input/output tensors have been
   // validated and resolved. Schedules the backend's DispatchImpl() on the GPU
@@ -110,6 +116,22 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphImpl
       base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>> named_outputs,
       webnn::ScopedTrace scoped_trace,
       mojo::ReportBadMessageCallback bad_message_cb);
+
+  // Runs forward shape inference for a graph with dynamic input dimensions:
+  // given the concrete shapes of the graph's inputs (keyed by input name),
+  // substitutes the symbolic dimensions and infers a concrete
+  // `OperandDescriptor` for every graph output.
+  //
+  // Returns the inferred output descriptors keyed by output name, or an error
+  // message if the output shapes cannot be resolved from the input shapes
+  // alone (e.g. a shape that would require reading input tensor data). Callers
+  // must validate the input shapes against the graph's input constraints
+  // beforehand, and must only call this when
+  // `compute_resource_info().has_dynamic_inputs` is true.
+  base::expected<base::flat_map<std::string, OperandDescriptor>, std::string>
+  InferConcreteOutputShapes(
+      const base::flat_map<std::string, std::vector<uint32_t>>&
+          named_input_shapes) const;
 
  protected:
   ~WebNNGraphImpl() override;

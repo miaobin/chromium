@@ -5,6 +5,7 @@
 module webnn.mojom;
 
 import "services/webnn/public/mojom/webnn_context_properties.mojom";
+import "services/webnn/public/mojom/webnn_error.mojom";
 import "third_party/blink/public/mojom/tokens/tokens.mojom";
 
 // Represents the `MLNumber` in the WebIDL definition.
@@ -1582,8 +1583,33 @@ struct GraphInfo {
       id_to_constant_tensor_operand_map;
 };
 
+// Pairs a graph output's name with its inferred concrete descriptor, returned
+// by WebNNGraph::ComputeShapes(). A `map<string, OperandDescriptor>` is not used
+// because `OperandDescriptor` is typemapped to a type that is not
+// default-constructible and therefore cannot be a WTF::HashMap value in Blink.
+struct NamedOutputDescriptor {
+  string name;
+  OperandDescriptor descriptor;
+};
+
+// The successful result of WebNNGraph::ComputeShapes(): the inferred concrete
+// descriptor of each graph output. After inference every dimension is concrete
+// (i.e. each `Dimension` is the `size` variant).
+struct ComputeShapesSuccess {
+  array<NamedOutputDescriptor> output_descriptors;
+};
+
 // WebNNGraph runs in the GPU process and is called by the renderer process.
 // Graph execution is performed via WebNNContext::Dispatch().
-// This interface is lifecycle-only: pipe disconnect signals graph destruction.
+// This interface is lifecycle-only (pipe disconnect signals graph destruction)
+// apart from the device-independent shape query below.
 interface WebNNGraph {
+  // Runs forward shape inference for a graph that has dynamic input
+  // dimensions. `named_input_shapes` maps each graph input name to its concrete
+  // shape. On success returns the inferred concrete descriptor of every graph
+  // output; returns an `Error` if the output shapes cannot be resolved from the
+  // input shapes alone (for example a shape that would require reading input
+  // tensor data). This does not execute the graph.
+  ComputeShapes(map<string, array<uint32>> named_input_shapes)
+      => result<ComputeShapesSuccess, Error>;
 };

@@ -13,7 +13,6 @@
 #include "base/files/file_util.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
-
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/sequence_checker.h"
@@ -675,104 +674,23 @@ void WebNNContextImpl::Dispatch(
   // dynamic inputs, for precise output tensor validation after inference.
   base::flat_map<std::string, OperandDescriptor> concrete_output_descriptors;
 
-  // Phase B Steps 1, 3-4: if the graph has dynamic input dimensions,
-  // substitute them with actual values and re-validate the full graph.
+  // Phase B: if the graph has dynamic input dimensions, run forward shape
+  // inference from the concrete input shapes to obtain concrete output
+  // descriptors. The input tensors were validated against the graph's input
+  // constraints above, so any inference failure here indicates a misbehaving
+  // renderer.
   if (!skip_tensor_validation &&
       graph_impl->compute_resource_info().has_dynamic_inputs) {
-    const auto& resource_info = graph_impl->compute_resource_info();
-
-    // Build a mapping from dynamic dimension names to their actual values,
-    // gathered from the input tensors.
-    base::flat_map<std::string, uint32_t> dim_name_to_value;
-    for (const auto& [tensor_name, tensor_impl] : name_to_input_tensor_map) {
-      auto it =
-          resource_info.input_names_to_descriptors.find(tensor_name);
-      CHECK(it != resource_info.input_names_to_descriptors.end());
-      const std::vector<uint32_t>& actual_shape = tensor_impl->shape();
-      const std::vector<Dimension>& spec_shape = it->second.shape();
-      for (size_t i = 0; i < spec_shape.size(); ++i) {
-        if (const auto* dynamic_dim =
-                std::get_if<DynamicDimension>(&spec_shape[i])) {
-          dim_name_to_value[dynamic_dim->name] = actual_shape[i];
-        }
-      }
+    base::flat_map<std::string, std::vector<uint32_t>> named_input_shapes;
+    for (const auto& [name, tensor_impl] : name_to_input_tensor_map) {
+      named_input_shapes.emplace(name, tensor_impl->shape());
     }
-
-    // Clone all operands. For input operands, substitute DynamicDimension
-    // values with concrete values from the dispatch inputs. For intermediate
-    // and output operands, also try to resolve DynamicDimension from the map.
-    std::vector<mojom::OperandPtr> concrete_operands;
-    concrete_operands.reserve(resource_info.graph_operands.size());
-    for (const auto& operand : resource_info.graph_operands) {
-      auto cloned = operand.Clone();
-      const auto& orig_shape = cloned->descriptor.shape();
-      bool has_dynamic = false;
-      for (const auto& dim : orig_shape) {
-        if (std::holds_alternative<DynamicDimension>(dim)) {
-          has_dynamic = true;
-          break;
-        }
-      }
-      if (has_dynamic) {
-        std::vector<uint32_t> concrete_shape;
-        concrete_shape.reserve(orig_shape.size());
-        bool all_resolved = true;
-        for (const auto& dim : orig_shape) {
-          if (std::holds_alternative<uint32_t>(dim)) {
-            concrete_shape.push_back(std::get<uint32_t>(dim));
-          } else {
-            const auto& dyn = std::get<DynamicDimension>(dim);
-            auto val_it = dim_name_to_value.find(dyn.name);
-            if (val_it != dim_name_to_value.end()) {
-              concrete_shape.push_back(val_it->second);
-            } else {
-              all_resolved = false;
-              break;
-            }
-          }
-        }
-        if (all_resolved) {
-          auto new_desc = OperandDescriptor::CreateForDeserialization(
-              cloned->descriptor.data_type(), concrete_shape,
-              cloned->descriptor.pending_permutation());
-          if (!new_desc.has_value()) {
-            GetMojoReceiver().ReportBadMessage(kBadMessageInvalidTensor);
-            return;
-          }
-          cloned->descriptor = std::move(new_desc.value());
-        }
-      }
-      concrete_operands.push_back(std::move(cloned));
-    }
-
-    // Identify pre-processed operands (inputs + constants) for re-validation.
-    base::flat_set<OperandId> processed_operands;
-    for (size_t i = 0; i < concrete_operands.size(); ++i) {
-      if (concrete_operands[i]->kind == mojom::Operand::Kind::kInput ||
-          concrete_operands[i]->kind == mojom::Operand::Kind::kConstant) {
-        processed_operands.insert(OperandId(base::checked_cast<uint32_t>(i)));
-      }
-    }
-
-    // Use infer mode: forward-propagate concrete shapes through the graph
-    // by writing inferred output descriptors back into the operands vector.
-    if (!WebNNGraphBuilderImpl::InferAndValidateConcreteShapes(
-            properties(), concrete_operands, resource_info.graph_operations,
-            processed_operands, resource_info.integer_constant_data,
-            dim_name_to_value)) {
+    auto inferred = graph_impl->InferConcreteOutputShapes(named_input_shapes);
+    if (!inferred.has_value()) {
       GetMojoReceiver().ReportBadMessage(kBadMessageInvalidTensor);
       return;
     }
-
-    // Extract inferred concrete output descriptors for precise validation
-    // against user-provided output tensors.
-    for (size_t i = 0; i < concrete_operands.size(); ++i) {
-      const auto& operand = concrete_operands[i];
-      if (operand->kind == mojom::Operand::Kind::kOutput && operand->name) {
-        concrete_output_descriptors.emplace(*operand->name,
-                                            operand->descriptor);
-      }
-    }
+    concrete_output_descriptors = std::move(inferred.value());
   }
 
   // Resolve the token of an output MLTensor to the corresponding `WebNNTensor`
