@@ -3235,50 +3235,17 @@ MLOperand* MLGraphBuilder::reshape(MLOperand* input,
     return nullptr;
   }
 
-  // Setting the initial number of elements to 1 would cover the 0-D scalar with
-  // empty dimensions.
-  bool all_dims_bounded = true;
-  base::CheckedNumeric<size_t> checked_newshape_number_of_elements = 1;
-  for (wtf_size_t i = 0; i < new_shape.size(); ++i) {
-    auto dim = GetStaticOrMaxSize(new_shape[i]);
-    if (!dim.has_value()) {
-      all_dims_bounded = false;
-      continue;
-    }
-    if (*dim == 0) {
+  // A new-shape dimension of zero is invalid regardless of dynamism. Element
+  // count compatibility (including the dynamic cases) is checked below against
+  // the created output descriptor via ValidateReshapeDynamicDimsCompatible().
+  for (const auto& new_dim : new_shape) {
+    auto dim = GetStaticOrMaxSize(new_dim);
+    if (dim.has_value() && *dim == 0) {
       exception_state.ThrowTypeError(
           BuildErrorMessage(label, "The value of new shape should not be 0."));
       return nullptr;
     }
-    checked_newshape_number_of_elements *= *dim;
   }
-
-  if (all_dims_bounded) {
-    size_t newshape_number_of_elements;
-    if (!checked_newshape_number_of_elements.AssignIfValid(
-            &newshape_number_of_elements)) {
-      exception_state.ThrowTypeError(BuildErrorMessage(
-          label, "The number of elements implied by new shape is too large."));
-      return nullptr;
-    }
-    DCHECK_NE(newshape_number_of_elements, size_t(0));
-
-    // The number of elements implied by new shape must be the same as the
-    // number of elements in the input tensor.
-    auto input_num_elements = input->Descriptor().NumberOfElements();
-    if (input_num_elements.has_value() &&
-        *input_num_elements != newshape_number_of_elements) {
-      exception_state.ThrowTypeError(BuildErrorMessage(
-          label,
-          String::Format(
-              "The number of elements (%zu) implied by new shape doesn't match "
-              "the number of elements (%zu) in the input tensor.",
-              newshape_number_of_elements, *input_num_elements)));
-      return nullptr;
-    }
-  }
-  // When unbounded dims are present, skip element count validation.
-  // Shape consistency will be validated at dispatch time.
 
   // The output tensor byte length is valid because the data type and element
   // count are the same as input.
@@ -3288,129 +3255,14 @@ MLOperand* MLGraphBuilder::reshape(MLOperand* input,
                                        input->DataType(),
                                        ToDimensionVector(new_shape), label));
 
-  // For a dynamic dimension in output shape, validate input shape has it
-  // uniquely.
-  auto available_input_shape = input->Descriptor().shape();
-  auto available_output_shape = output_descriptor.shape();
-  // First pass: eliminate directly matching dynamic dimensions.
-  for (auto out_it = available_output_shape.begin();
-       out_it != available_output_shape.end();) {
-    if (std::holds_alternative<webnn::DynamicDimension>(*out_it)) {
-      auto in_it = std::find(available_input_shape.begin(),
-                             available_input_shape.end(), *out_it);
-      if (in_it != available_input_shape.end()) {
-        available_input_shape.erase(in_it);
-        out_it = available_output_shape.erase(out_it);
-        continue;
-      }
-    }
-    ++out_it;
-  }
-
-  // Count remaining dynamic dimensions on each side.
-  size_t remaining_input_dynamic_count = 0;
-  size_t remaining_output_dynamic_count = 0;
-  base::CheckedNumeric<size_t> input_static_product = 1;
-  base::CheckedNumeric<size_t> output_static_product = 1;
-  const webnn::DynamicDimension* remaining_input_dyn = nullptr;
-  const webnn::DynamicDimension* remaining_output_dyn = nullptr;
-
-  for (const auto& dim : available_input_shape) {
-    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
-      ++remaining_input_dynamic_count;
-      remaining_input_dyn = &std::get<webnn::DynamicDimension>(dim);
-    } else {
-      input_static_product *= std::get<uint32_t>(dim);
-    }
-  }
-  for (const auto& dim : available_output_shape) {
-    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
-      ++remaining_output_dynamic_count;
-      remaining_output_dyn = &std::get<webnn::DynamicDimension>(dim);
-    } else {
-      output_static_product *= std::get<uint32_t>(dim);
-    }
-  }
-
-  if (remaining_input_dynamic_count == 0 &&
-      remaining_output_dynamic_count == 0) {
-    // All dynamic dims were directly matched. Remaining are all static.
-    // Element count equality is already verified above.
-  } else if (remaining_input_dynamic_count == 1 &&
-             remaining_output_dynamic_count == 1) {
-    // One unmatched dynamic dim on each side: verify algebraic relationship
-    // only if both sides have max_size (bounded).
-    if (remaining_input_dyn->max_size.has_value() &&
-        remaining_output_dyn->max_size.has_value()) {
-      // input_dyn.max * S_in == output_dyn.max * S_out
-      // input_dyn.min * S_in == output_dyn.min * S_out
-      size_t s_in, s_out;
-      if (!input_static_product.AssignIfValid(&s_in) ||
-          !output_static_product.AssignIfValid(&s_out)) {
-        exception_state.ThrowTypeError(BuildErrorMessage(
-            label, "Static dimension product overflow in reshape."));
-        return nullptr;
-      }
-      base::CheckedNumeric<size_t> input_max_total =
-          base::CheckedNumeric<size_t>(*remaining_input_dyn->max_size) * s_in;
-      base::CheckedNumeric<size_t> output_max_total =
-          base::CheckedNumeric<size_t>(*remaining_output_dyn->max_size) * s_out;
-      base::CheckedNumeric<size_t> input_min_total =
-          base::CheckedNumeric<size_t>(remaining_input_dyn->min_size) * s_in;
-      base::CheckedNumeric<size_t> output_min_total =
-          base::CheckedNumeric<size_t>(remaining_output_dyn->min_size) * s_out;
-
-      size_t in_max, out_max, in_min, out_min;
-      if (!input_max_total.AssignIfValid(&in_max) ||
-          !output_max_total.AssignIfValid(&out_max) ||
-          !input_min_total.AssignIfValid(&in_min) ||
-          !output_min_total.AssignIfValid(&out_min)) {
-        exception_state.ThrowTypeError(
-            BuildErrorMessage(label, "Element count overflow in reshape."));
-        return nullptr;
-      }
-      if (in_max != out_max || in_min != out_min) {
-        exception_state.ThrowTypeError(BuildErrorMessage(
-            label,
-            "The unmatched dynamic dimensions are not compatible for "
-            "reshape."));
-        return nullptr;
-      }
-    }
-    // When either side is unbounded (no max_size), skip algebraic verification.
-    // Shape consistency will be validated at dispatch time with real values.
-  } else if (remaining_input_dynamic_count >= 1 ||
-             remaining_output_dynamic_count >= 1) {
-    // Multiple unmatched dynamic dims: skip build-time validation when any
-    // are unbounded. Trust the user-specified output shape and defer
-    // verification to dispatch time.
-    bool all_bounded = true;
-    for (const auto& dim : available_input_shape) {
-      if (std::holds_alternative<webnn::DynamicDimension>(dim) &&
-          !std::get<webnn::DynamicDimension>(dim).max_size.has_value()) {
-        all_bounded = false;
-        break;
-      }
-    }
-    if (all_bounded) {
-      for (const auto& dim : available_output_shape) {
-        if (std::holds_alternative<webnn::DynamicDimension>(dim) &&
-            !std::get<webnn::DynamicDimension>(dim).max_size.has_value()) {
-          all_bounded = false;
-          break;
-        }
-      }
-    }
-    if (all_bounded) {
-      // All dims are bounded but there are multiple unmatched — this is
-      // unsupported even with bounded dims.
-      exception_state.ThrowTypeError(BuildErrorMessage(
-          label,
-          "Cannot reshape when there are multiple unmatched dynamic "
-          "dimensions between input and output shapes."));
-      return nullptr;
-    }
-    // Unbounded dims present: defer validation to dispatch time.
+  // Reject only a definite element-count contradiction; any dynamic dimension
+  // defers the check to dispatch time. Shared with the service-side validator
+  // (`WebNNGraphBuilderImpl`) so both layers apply identical rules.
+  if (auto compatible = webnn::ValidateReshapeDynamicDimsCompatible(
+          input->Descriptor().shape(), output_descriptor.shape(), label);
+      !compatible.has_value()) {
+    exception_state.ThrowTypeError(String::FromUtf8(compatible.error()));
+    return nullptr;
   }
 
   auto* reshape = MakeGarbageCollected<MLOperator>(

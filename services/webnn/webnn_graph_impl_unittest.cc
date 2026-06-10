@@ -2631,6 +2631,31 @@ TEST_F(WebNNGraphImplTest, ExpandTest) {
                                       uint32_t{1}, uint32_t{2}});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
+  {
+    // A dynamic input dimension may broadcast to a different static size once
+    // its value is known at dispatch, so build-time validation defers instead
+    // of rejecting the unprovable relationship.
+    auto context_properties = GetContextPropertiesForTesting();
+    mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+    GraphInfoBuilder builder(remote);
+    const DynamicDimension n{/*name=*/"n", /*max_size=*/4u, /*min_size=*/2u};
+    OperandId input_operand_id = builder.BuildDynamicInput(
+        "input", std::vector<Dimension>{n}, OperandDataType::kFloat32);
+    OperandId output_operand_id =
+        builder.BuildOutput("output", {4}, OperandDataType::kFloat32);
+    builder.BuildExpand(input_operand_id, output_operand_id,
+                        std::vector<webnn::Dimension>{uint32_t{4}});
+    EXPECT_TRUE(builder.IsValidGraphForTesting(context_properties));
+  }
+  {
+    // A definite size disagreement between two static dimensions is still
+    // rejected; the loosening only defers the dynamic cases.
+    ExpandTester{
+        .input = {.type = OperandDataType::kFloat32, .dimensions = {3}},
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {4}},
+        .expected = false}
+        .Test(*this);
+  }
 }
 
 struct GatherAttributes {
@@ -6152,6 +6177,42 @@ TEST_F(WebNNGraphImplTest, ReshapeTest) {
         builder.BuildInput("input", {2}, OperandDataType::kFloat32);
     OperandId output_operand_id = builder.BuildOutput(
         "output", {2, 1, 1, 1, 1}, OperandDataType::kFloat32);
+    builder.BuildReshape(input_operand_id, output_operand_id);
+    EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
+  }
+  {
+    // Multiple unmatched bounded dynamic dimensions on each side: the element
+    // counts cannot be refuted at build time (every dimension is symbolic), so
+    // validation defers to dispatch instead of rejecting.
+    auto context_properties = GetContextPropertiesForTesting();
+    mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+    GraphInfoBuilder builder(remote);
+    const DynamicDimension a{/*name=*/"a", /*max_size=*/4u, /*min_size=*/2u};
+    const DynamicDimension b{/*name=*/"b", /*max_size=*/6u, /*min_size=*/2u};
+    const DynamicDimension c{/*name=*/"c", /*max_size=*/8u, /*min_size=*/2u};
+    const DynamicDimension d{/*name=*/"d", /*max_size=*/3u, /*min_size=*/2u};
+    OperandId input_operand_id = builder.BuildDynamicInput(
+        "input", std::vector<Dimension>{a, b}, OperandDataType::kFloat32);
+    OperandId output_operand_id = builder.BuildDynamicOutput(
+        "output", std::vector<Dimension>{c, d}, OperandDataType::kFloat32);
+    builder.BuildReshape(input_operand_id, output_operand_id);
+    EXPECT_TRUE(builder.IsValidGraphForTesting(context_properties));
+  }
+  {
+    // A definite element-count contradiction is still rejected at build time
+    // even with a dynamic dimension present: the shared "batch" cancels,
+    // leaving static 4 vs 8, which cannot match for any value of batch.
+    auto context_properties = GetContextPropertiesForTesting();
+    mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+    GraphInfoBuilder builder(remote);
+    const DynamicDimension batch{/*name=*/"batch", /*max_size=*/4u,
+                                 /*min_size=*/2u};
+    OperandId input_operand_id = builder.BuildDynamicInput(
+        "input", std::vector<Dimension>{batch, Dimension(4u)},
+        OperandDataType::kFloat32);
+    OperandId output_operand_id = builder.BuildDynamicOutput(
+        "output", std::vector<Dimension>{batch, Dimension(8u)},
+        OperandDataType::kFloat32);
     builder.BuildReshape(input_operand_id, output_operand_id);
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }

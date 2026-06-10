@@ -372,6 +372,62 @@ bool DimensionsAreDefinitelyUnequal(const Dimension& a, const Dimension& b) {
   return a_static && b_static && *a_static != *b_static;
 }
 
+std::optional<uint64_t> TryGetStaticProduct(base::span<const Dimension> dims) {
+  base::CheckedNumeric<uint64_t> product = 1u;
+  for (const Dimension& dim : dims) {
+    const uint32_t* size = std::get_if<uint32_t>(&dim);
+    if (!size) {
+      // A dynamic dimension makes the product unknown at build time.
+      return std::nullopt;
+    }
+    product *= *size;
+  }
+  uint64_t result;
+  return product.AssignIfValid(&result) ? std::make_optional(result)
+                                        : std::nullopt;
+}
+
+base::expected<void, std::string> ValidateReshapeDynamicDimsCompatible(
+    base::span<const Dimension> input_shape,
+    base::span<const Dimension> output_shape,
+    std::string_view label) {
+  // Cancel dynamic dimensions that appear identically on both sides: a shared
+  // name denotes the same runtime value, so it contributes the same factor to
+  // both element counts and can be removed from each before comparing.
+  std::vector<Dimension> remaining_input(input_shape.begin(),
+                                         input_shape.end());
+  std::vector<Dimension> remaining_output(output_shape.begin(),
+                                          output_shape.end());
+  for (auto out_it = remaining_output.begin();
+       out_it != remaining_output.end();) {
+    if (std::holds_alternative<DynamicDimension>(*out_it)) {
+      auto in_it =
+          std::find(remaining_input.begin(), remaining_input.end(), *out_it);
+      if (in_it != remaining_input.end()) {
+        remaining_input.erase(in_it);
+        out_it = remaining_output.erase(out_it);
+        continue;
+      }
+    }
+    ++out_it;
+  }
+
+  // The reshape is only refutable at build time when both remainders are fully
+  // static and their products disagree. Any surviving dynamic dimension makes
+  // the element count unknown, so the check is deferred to dispatch.
+  std::optional<uint64_t> input_elements = TryGetStaticProduct(remaining_input);
+  std::optional<uint64_t> output_elements =
+      TryGetStaticProduct(remaining_output);
+  if (input_elements.has_value() && output_elements.has_value() &&
+      *input_elements != *output_elements) {
+    return base::unexpected(ErrorWithLabel(
+        label,
+        "The number of elements implied by the new shape doesn't match the "
+        "number of elements in the input tensor."));
+  }
+  return base::ok();
+}
+
 base::expected<double, std::string> CalculateConv2dOutputSize(
     uint32_t input_size,
     uint32_t filter_size,
@@ -2087,6 +2143,22 @@ ValidateLayerNormalizationAndInferOutput(
       axes, std::back_inserter(reduction_dimensions),
       [&input_dimensions](uint32_t axis) { return input_dimensions[axis]; });
 
+  // scale/bias must match the reduction dimensions. Reject only on a definite
+  // mismatch (a different rank, or a dimension pair that is statically
+  // unequal); a dynamic dimension on either side is deferred to dispatch.
+  auto shape_definitely_mismatches = [&reduction_dimensions](
+                                         base::span<const Dimension> shape) {
+    if (shape.size() != reduction_dimensions.size()) {
+      return true;
+    }
+    for (size_t i = 0; i < shape.size(); ++i) {
+      if (DimensionsAreDefinitelyUnequal(shape[i], reduction_dimensions[i])) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   // Validate the scale operand.
   if (attributes.scale.has_value()) {
     if (attributes.scale->data_type() != input.data_type()) {
@@ -2095,7 +2167,7 @@ ValidateLayerNormalizationAndInferOutput(
           "For scale operand: the data type doesn't match the input data "
           "type."));
     }
-    if (attributes.scale->shape() != reduction_dimensions) {
+    if (shape_definitely_mismatches(attributes.scale->shape())) {
       return base::unexpected(ErrorWithLabel(
           label,
           "For scale operand: the shape doesn't match the axis dimensions of "
@@ -2111,7 +2183,7 @@ ValidateLayerNormalizationAndInferOutput(
                          "For bias operand: the data type doesn't match the "
                          "input data type."));
     }
-    if (attributes.bias->shape() != reduction_dimensions) {
+    if (shape_definitely_mismatches(attributes.bias->shape())) {
       return base::unexpected(ErrorWithLabel(
           label,
           "For bias operand: the shape doesn't match the axis dimensions of "
@@ -3957,7 +4029,10 @@ std::optional<std::vector<Dimension>> ExpandShape(
     bool new_is_dynamic = std::holds_alternative<DynamicDimension>(dim_new);
 
     // Check if dimensions are compatible for unidirectional broadcasting.
-    if (dim_input != dim_new && !input_is_1) {
+    // Reject only on a definite size disagreement: a dynamic dimension on
+    // either side may still broadcast at dispatch (the values become known
+    // then), so it is deferred rather than rejected here.
+    if (DimensionsAreDefinitelyUnequal(dim_input, dim_new) && !input_is_1) {
       return std::nullopt;
     }
 

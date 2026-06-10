@@ -1030,7 +1030,12 @@ bool OperationValidationContext::ValidateUnaryOperation(
   if constexpr (std::is_same_v<Operation, mojom::ElementWiseUnary>) {
     if (IsLogicalElementWiseUnary(operation.kind)) {
       // For logical unary operations, output must be uint8 but shape should
-      // match input.
+      // match input. This branch stays mode-gated on purpose: the inferred
+      // descriptor carries the input's pending permutation, whereas the
+      // renderer builds the output with none, so routing the build-time check
+      // through VerifyOrWriteBackOutput (full-descriptor equality) would reject
+      // graphs whose input has a pending permutation. Output inference is
+      // unaffected by symbolic dimensions here.
       if (infer_output_shapes_) {
         auto inferred = OperandDescriptor::CreateForDeserialization(
             OperandDataType::kUint8, input->descriptor.shape(),
@@ -1038,8 +1043,7 @@ bool OperationValidationContext::ValidateUnaryOperation(
         if (!inferred.has_value()) {
           return false;
         }
-        return VerifyOrWriteBackOutput(operation.output_operand_id,
-                                       *inferred);
+        return VerifyOrWriteBackOutput(operation.output_operand_id, *inferred);
       }
       if (output->descriptor.data_type() != OperandDataType::kUint8) {
         return false;
@@ -1048,13 +1052,12 @@ bool OperationValidationContext::ValidateUnaryOperation(
     }
   }
 
-  // For all other operations, output descriptor should match input descriptor
-  // exactly.
-  if (infer_output_shapes_) {
-    return VerifyOrWriteBackOutput(operation.output_operand_id,
-                                   input->descriptor);
-  }
-  return output->descriptor == input->descriptor;
+  // For all other operations the output descriptor must match the input
+  // exactly. VerifyOrWriteBackOutput compares the inferred descriptor against
+  // the declared output (build) or writes it back (dispatch), so build and
+  // dispatch share a single un-gated path.
+  return VerifyOrWriteBackOutput(operation.output_operand_id,
+                                 input->descriptor);
 }
 
 bool OperationValidationContext::ValidateCastOperation(
@@ -1476,24 +1479,20 @@ bool OperationValidationContext::ValidateElementWiseBinary(
     // The input shapes are not broadcastable.
     return false;
   }
-  if (infer_output_shapes_) {
-    OperandDataType output_type =
-        IsLogicalElementWiseBinary(operation.kind)
-            ? OperandDataType::kUint8
-            : a->descriptor.data_type();
-    auto inferred = OperandDescriptor::CreateForDeserialization(
-        output_type, dims_output.value(),
-        output->descriptor.pending_permutation());
-    if (!inferred.has_value()) {
-      return false;
-    }
-    return VerifyOrWriteBackOutput(operation.output_operand_id, *inferred);
-  }
-  if (!std::ranges::equal(output->descriptor.shape(), dims_output.value())) {
-    // The output shape is not expected.
+  OperandDataType output_type = IsLogicalElementWiseBinary(operation.kind)
+                                    ? OperandDataType::kUint8
+                                    : a->descriptor.data_type();
+  auto inferred = OperandDescriptor::CreateForDeserialization(
+      output_type, dims_output.value(),
+      output->descriptor.pending_permutation());
+  if (!inferred.has_value()) {
     return false;
   }
-  return true;
+  // Build and dispatch share a single un-gated path. The inferred descriptor
+  // reuses the output's own pending permutation, so the build-time
+  // full-descriptor comparison stays behavior-preserving for valid graphs while
+  // also rejecting a malformed output data type at the service trust boundary.
+  return VerifyOrWriteBackOutput(operation.output_operand_id, *inferred);
 }
 
 bool OperationValidationContext::ValidateElu(const mojom::Elu& elu,
@@ -2489,121 +2488,18 @@ bool OperationValidationContext::ValidateReshape(const mojom::Reshape& reshape,
     return false;
   }
 
-  // When both sides are bounded, verify element count equality.
-  // When either side is unbounded, skip this check (defer to dispatch time).
-  auto input_elements = input->descriptor.NumberOfElements();
-  auto output_elements = output->descriptor.NumberOfElements();
-  if (input_elements.has_value() && output_elements.has_value() &&
-      *input_elements != *output_elements) {
-    // The output shape is not expected.
+  // Reject only a definite element-count contradiction; any dynamic dimension
+  // defers the check to dispatch time. Shared with the renderer-side builder
+  // (`MLGraphBuilder::reshape`) so both layers apply identical rules.
+  if (!ValidateReshapeDynamicDimsCompatible(
+           input->descriptor.shape(), output->descriptor.shape(), reshape.label)
+           .has_value()) {
     return false;
   }
 
-  // For a dynamic dimension in output shape, validate input shape has it
-  // uniquely.
-  auto available_input_shape = input->descriptor.shape();
-  auto available_output_shape = output->descriptor.shape();
-  // First pass: eliminate directly matching dynamic dimensions.
-  for (auto out_it = available_output_shape.begin();
-       out_it != available_output_shape.end();) {
-    if (std::holds_alternative<DynamicDimension>(*out_it)) {
-      auto in_it = std::find(available_input_shape.begin(),
-                             available_input_shape.end(), *out_it);
-      if (in_it != available_input_shape.end()) {
-        available_input_shape.erase(in_it);
-        out_it = available_output_shape.erase(out_it);
-        continue;
-      }
-    }
-    ++out_it;
-  }
-
-  // Count remaining dynamic dimensions on each side.
-  size_t remaining_input_dynamic_count = 0;
-  size_t remaining_output_dynamic_count = 0;
-  base::CheckedNumeric<size_t> input_static_product = 1;
-  base::CheckedNumeric<size_t> output_static_product = 1;
-  const DynamicDimension* remaining_input_dyn = nullptr;
-  const DynamicDimension* remaining_output_dyn = nullptr;
-
-  for (const auto& dim : available_input_shape) {
-    if (std::holds_alternative<DynamicDimension>(dim)) {
-      ++remaining_input_dynamic_count;
-      remaining_input_dyn = &std::get<DynamicDimension>(dim);
-    } else {
-      input_static_product *= std::get<uint32_t>(dim);
-    }
-  }
-  for (const auto& dim : available_output_shape) {
-    if (std::holds_alternative<DynamicDimension>(dim)) {
-      ++remaining_output_dynamic_count;
-      remaining_output_dyn = &std::get<DynamicDimension>(dim);
-    } else {
-      output_static_product *= std::get<uint32_t>(dim);
-    }
-  }
-
-  if (remaining_input_dynamic_count == 0 &&
-      remaining_output_dynamic_count == 0) {
-    // All dynamic dims were directly matched. Remaining are all static.
-  } else if (remaining_input_dynamic_count == 1 &&
-             remaining_output_dynamic_count == 1) {
-    // One unmatched dynamic dim on each side: verify algebraic relationship
-    // only if both have max_size (bounded).
-    if (remaining_input_dyn->max_size.has_value() &&
-        remaining_output_dyn->max_size.has_value()) {
-      size_t s_in, s_out;
-      if (!input_static_product.AssignIfValid(&s_in) ||
-          !output_static_product.AssignIfValid(&s_out)) {
-        return false;
-      }
-      base::CheckedNumeric<size_t> input_max_total =
-          base::CheckedNumeric<size_t>(*remaining_input_dyn->max_size) * s_in;
-      base::CheckedNumeric<size_t> output_max_total =
-          base::CheckedNumeric<size_t>(*remaining_output_dyn->max_size) * s_out;
-      base::CheckedNumeric<size_t> input_min_total =
-          base::CheckedNumeric<size_t>(remaining_input_dyn->min_size) * s_in;
-      base::CheckedNumeric<size_t> output_min_total =
-          base::CheckedNumeric<size_t>(remaining_output_dyn->min_size) * s_out;
-
-      size_t in_max, out_max, in_min, out_min;
-      if (!input_max_total.AssignIfValid(&in_max) ||
-          !output_max_total.AssignIfValid(&out_max) ||
-          !input_min_total.AssignIfValid(&in_min) ||
-          !output_min_total.AssignIfValid(&out_min)) {
-        return false;
-      }
-      if (in_max != out_max || in_min != out_min) {
-        return false;
-      }
-    }
-    // When either side is unbounded, skip algebraic verification.
-  } else {
-    // Multiple unmatched dynamic dims: allow when any are unbounded,
-    // defer validation to dispatch time.
-    bool has_unbounded = false;
-    for (const auto& dim : available_input_shape) {
-      if (std::holds_alternative<DynamicDimension>(dim) &&
-          !std::get<DynamicDimension>(dim).max_size.has_value()) {
-        has_unbounded = true;
-        break;
-      }
-    }
-    if (!has_unbounded) {
-      for (const auto& dim : available_output_shape) {
-        if (std::holds_alternative<DynamicDimension>(dim) &&
-            !std::get<DynamicDimension>(dim).max_size.has_value()) {
-          has_unbounded = true;
-          break;
-        }
-      }
-    }
-    if (!has_unbounded) {
-      // All bounded but multiple unmatched — unsupported.
-      return false;
-    }
-    // Unbounded: defer to dispatch time.
-  }
+  // The input element count (known only when the input shape is fully static)
+  // is used below to resolve a single dynamic output dimension at dispatch.
+  auto input_elements = input->descriptor.NumberOfElements();
 
   // In infer mode, resolve any dynamic dims in the output shape and write back.
   if (infer_output_shapes_) {
@@ -2666,7 +2562,7 @@ bool OperationValidationContext::ValidateReshape(const mojom::Reshape& reshape,
           } else {
             dyn_count++;
             dyn_idx = i;
-            concrete_dims.push_back(uint32_t(0));  // placeholder
+            concrete_dims.push_back(uint32_t{0});  // placeholder
           }
         }
       }

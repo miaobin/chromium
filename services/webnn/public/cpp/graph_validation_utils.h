@@ -41,6 +41,32 @@ using DynamicDimensionNameGenerator = base::FunctionRef<std::string()>;
 bool COMPONENT_EXPORT(WEBNN_PUBLIC_CPP)
     DimensionsAreDefinitelyUnequal(const Dimension& a, const Dimension& b);
 
+// Returns the product of all dimensions in `dims` if *every* dimension is
+// static, or `std::nullopt` if any dimension is dynamic or the product
+// overflows `uint64_t`. Used for element-count reasoning (e.g. reshape): a
+// `nullopt` result means the count cannot be known at build time and any
+// equality check against it must be deferred to dispatch.
+std::optional<uint64_t> COMPONENT_EXPORT(WEBNN_PUBLIC_CPP)
+    TryGetStaticProduct(base::span<const Dimension> dims);
+
+// Validates that a reshape from `input_shape` to `output_shape` can preserve
+// the element count, given that either shape may carry dynamic dimensions.
+// Shared by the renderer-side builder (`MLGraphBuilder::reshape`) and the
+// service-side validator so both apply identical rules.
+//
+// Rule (three-valued, "unknown ⇒ defer"): dynamic dimensions that appear
+// identically on both sides are cancelled (same name ⇒ same runtime value),
+// then the remaining dimensions are compared by static element count. The
+// reshape is rejected only when *both* remainders are fully static and their
+// products differ — a definite contradiction. If a dynamic dimension survives
+// on either side the element counts cannot be known at build time, so the
+// check is deferred to dispatch and `base::ok()` is returned.
+base::expected<void, std::string> COMPONENT_EXPORT(WEBNN_PUBLIC_CPP)
+    ValidateReshapeDynamicDimsCompatible(
+        base::span<const Dimension> input_shape,
+        base::span<const Dimension> output_shape,
+        std::string_view label);
+
 // Represents the `MLConv2dFilterOperandLayout` that specifies the layout format
 // of the filter tensor. O is output channels, I is input channels / groups, H
 // is height and W is the width of filter.
