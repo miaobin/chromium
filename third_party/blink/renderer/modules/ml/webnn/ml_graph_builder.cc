@@ -3849,17 +3849,24 @@ MLOperand* MLGraphBuilder::dynamicSlice(MLOperand* input,
   HeapVector<Member<MLOperand>> inputs = {input, starts, ends};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
-  // starts and ends must be 1-D int64 tensors.
-  if (starts->Descriptor().Rank() != 1 ||
-      starts->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+  // starts and ends must be 1-D int32 or int64 tensors. ONNX Slice allows
+  // either; the shape-folding interpreter and the native ONNX Slice emitted at
+  // dispatch both handle int32, so accept it here rather than forcing int64.
+  auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
+    return operand->Descriptor().Rank() == 1 &&
+           (operand->Descriptor().data_type() ==
+                webnn::OperandDataType::kInt32 ||
+            operand->Descriptor().data_type() ==
+                webnn::OperandDataType::kInt64);
+  };
+  if (!is_1d_int32_or_int64(starts)) {
     exception_state.ThrowTypeError(
-        "The starts operand must be a 1-D int64 tensor.");
+        "The starts operand must be a 1-D int32 or int64 tensor.");
     return nullptr;
   }
-  if (ends->Descriptor().Rank() != 1 ||
-      ends->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+  if (!is_1d_int32_or_int64(ends)) {
     exception_state.ThrowTypeError(
-        "The ends operand must be a 1-D int64 tensor.");
+        "The ends operand must be a 1-D int32 or int64 tensor.");
     return nullptr;
   }
 
@@ -3900,11 +3907,20 @@ MLOperand* MLGraphBuilder::dynamicPad(MLOperand* input,
   HeapVector<Member<MLOperand>> inputs = {input, pads};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
-  // pads must be 1-D int64 tensor of length 2 * input_rank.
-  if (pads->Descriptor().Rank() != 1 ||
-      pads->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+  // pads must be a 1-D int32 or int64 tensor of length 2 * input_rank. ONNX Pad
+  // requires int64, but tf2onnx models often produce int32 pads (and int32 is
+  // preferred for backends like CoreML that lack int64); the int64 cast is
+  // inserted at dispatch by the service backend, so accept either here.
+  auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
+    return operand->Descriptor().Rank() == 1 &&
+           (operand->Descriptor().data_type() ==
+                webnn::OperandDataType::kInt32 ||
+            operand->Descriptor().data_type() ==
+                webnn::OperandDataType::kInt64);
+  };
+  if (!is_1d_int32_or_int64(pads)) {
     exception_state.ThrowTypeError(
-        "The pads operand must be a 1-D int64 tensor.");
+        "The pads operand must be a 1-D int32 or int64 tensor.");
     return nullptr;
   }
 

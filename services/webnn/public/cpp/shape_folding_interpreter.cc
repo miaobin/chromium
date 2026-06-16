@@ -311,8 +311,40 @@ ShapeFoldingInterpreter::InterpretOperation(
           }
           rv = av % bv;
           break;
+        // Comparison and logical ops produce a boolean (0/1) result. These are
+        // common in shape computations (e.g. Equal/Where chains that resolve a
+        // -1 or dynamic dimension).
+        case mojom::ElementWiseBinary::Kind::kEqual:
+          rv = (av == bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kNotEqual:
+          rv = (av != bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kGreater:
+          rv = (av > bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kGreaterOrEqual:
+          rv = (av >= bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLesser:
+          rv = (av < bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLesserOrEqual:
+          rv = (av <= bv) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLogicalAnd:
+          rv = (av != 0 && bv != 0) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLogicalOr:
+          rv = (av != 0 || bv != 0) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kLogicalXor:
+          rv = ((av != 0) != (bv != 0)) ? 1 : 0;
+          break;
+        case mojom::ElementWiseBinary::Kind::kPow:
         default:
-          // Unsupported binary op for shape folding.
+          // kPow and any future kinds are not folded (integer pow risks
+          // overflow and is essentially absent from shape arithmetic).
           return std::nullopt;
       }
       result.push_back(rv);
@@ -607,6 +639,118 @@ ShapeFoldingInterpreter::InterpretOperation(
       int64_t tv = (*true_values)[true_values->size() == 1 ? 0 : i];
       int64_t fv = (*false_values)[false_values->size() == 1 ? 0 : i];
       result.push_back(cond != 0 ? tv : fv);
+    }
+    return result;
+  }
+
+  // expand — broadcast a 1-D shape vector to a concrete 1-D target length.
+  // ONNX ConstantOfShape and broadcasts inside shape arithmetic lower to
+  // mojom::Expand. The target length is read from the (already concretized in
+  // infer mode) output operand shape rather than the op's `new_shape`
+  // attribute, which may still carry symbolic dimensions.
+  if (operation.is_expand()) {
+    const auto& expand_op = *operation.get_expand();
+    if (output_operand_id.value() >= operands_.size() ||
+        !operands_[output_operand_id.value()]) {
+      return std::nullopt;
+    }
+    const auto& out_shape =
+        operands_[output_operand_id.value()]->descriptor.shape();
+    if (out_shape.size() != 1 ||
+        !std::holds_alternative<uint32_t>(out_shape[0])) {
+      return std::nullopt;
+    }
+    const size_t target = std::get<uint32_t>(out_shape[0]);
+    auto input_values = Evaluate(expand_op.input_operand_id);
+    if (!input_values) {
+      return std::nullopt;
+    }
+    if (input_values->size() == target) {
+      return input_values;  // Identity broadcast.
+    }
+    if (input_values->size() == 1) {
+      return std::vector<int64_t>(target, (*input_values)[0]);
+    }
+    return std::nullopt;
+  }
+
+  // split — partition a 1-D shape vector along axis 0 and return the segment
+  // that corresponds to the requested output. mojom::Split carries no explicit
+  // split sizes, so per-segment lengths are taken from each output operand's
+  // concrete length when available, falling back to an equal split otherwise.
+  if (operation.is_split()) {
+    const auto& split_op = *operation.get_split();
+
+    // Locate which output this evaluation targets.
+    size_t target_index = split_op.output_operand_ids.size();
+    for (size_t i = 0; i < split_op.output_operand_ids.size(); ++i) {
+      if (split_op.output_operand_ids[i] == output_operand_id) {
+        target_index = i;
+        break;
+      }
+    }
+    if (target_index == split_op.output_operand_ids.size()) {
+      return std::nullopt;
+    }
+
+    // Only 1-D shape vectors split along axis 0 are foldable; higher-rank
+    // splits are not shape computations.
+    if (split_op.input_operand_id.value() >= operands_.size() ||
+        !operands_[split_op.input_operand_id.value()]) {
+      return std::nullopt;
+    }
+    const auto& input_shape =
+        operands_[split_op.input_operand_id.value()]->descriptor.shape();
+    if (split_op.axis != 0 || input_shape.size() != 1) {
+      return std::nullopt;
+    }
+
+    auto input_values = Evaluate(split_op.input_operand_id);
+    if (!input_values) {
+      return std::nullopt;
+    }
+    const size_t output_count = split_op.output_operand_ids.size();
+
+    // Prefer per-output concrete lengths; if any is non-concrete, fall back to
+    // an equal split of the input.
+    std::vector<size_t> sizes;
+    sizes.reserve(output_count);
+    bool all_concrete = true;
+    size_t total = 0;
+    for (OperandId out_id : split_op.output_operand_ids) {
+      if (out_id.value() >= operands_.size() || !operands_[out_id.value()]) {
+        return std::nullopt;
+      }
+      const auto& out_shape = operands_[out_id.value()]->descriptor.shape();
+      if (out_shape.size() == 1 &&
+          std::holds_alternative<uint32_t>(out_shape[0])) {
+        size_t seg = std::get<uint32_t>(out_shape[0]);
+        sizes.push_back(seg);
+        total += seg;
+      } else {
+        all_concrete = false;
+        break;
+      }
+    }
+    if (!all_concrete || total != input_values->size()) {
+      if (output_count == 0 || input_values->size() % output_count != 0) {
+        return std::nullopt;
+      }
+      sizes.assign(output_count, input_values->size() / output_count);
+    }
+
+    size_t offset = 0;
+    for (size_t i = 0; i < target_index; ++i) {
+      offset += sizes[i];
+    }
+    const size_t target_size = sizes[target_index];
+    if (offset + target_size > input_values->size()) {
+      return std::nullopt;
+    }
+    std::vector<int64_t> result;
+    result.reserve(target_size);
+    for (size_t i = 0; i < target_size; ++i) {
+      result.push_back((*input_values)[offset + i]);
     }
     return result;
   }

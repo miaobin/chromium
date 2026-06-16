@@ -2648,14 +2648,9 @@ base::expected<OperandDescriptor, std::string> ValidatePadAndInferOutput(
                        "equal to the rank of the input tensor."));
   }
 
-  // TODO(crbug.com/329482489): Support dynamic shapes.
-  const auto input_shape = input.StaticShape();
-  if (!input_shape.has_value()) {
-    return base::unexpected(
-        ErrorWithLabel(label, "Dynamic input is not supported."));
-  }
-
-  // Validate padding size restrictions for reflection mode.
+  // Validate padding size restrictions for reflection mode. Reject only on a
+  // definite violation (padding >= the dimension's known upper bound); an
+  // unbounded dynamic dimension defers this check to dispatch.
   switch (mode) {
     case PaddingMode::kConstant:
     case PaddingMode::kEdge: {
@@ -2664,38 +2659,86 @@ base::expected<OperandDescriptor, std::string> ValidatePadAndInferOutput(
     }
     case PaddingMode::kReflection: {
       for (size_t i = 0; i < input.Rank(); ++i) {
-        if (beginning_padding[i] >= (*input_shape)[i]) {
+        std::optional<uint32_t> max_size = GetStaticOrMaxSize(input.shape()[i]);
+        if (!max_size.has_value()) {
+          continue;
+        }
+        if (beginning_padding[i] >= *max_size) {
           return base::unexpected(ErrorWithLabel(
               label,
               base::StringPrintf("The beginningPadding size (%u) must be less "
                                  "than input size (%u) of dimension (%zu).",
-                                 beginning_padding[i], (*input_shape)[i], i)));
+                                 beginning_padding[i], *max_size, i)));
         }
-        if (ending_padding[i] >= (*input_shape)[i]) {
+        if (ending_padding[i] >= *max_size) {
           return base::unexpected(ErrorWithLabel(
               label,
               base::StringPrintf("The endingPadding size (%u) must be less "
                                  "than input size (%u) of dimension (%zu).",
-                                 ending_padding[i], (*input_shape)[i], i)));
+                                 ending_padding[i], *max_size, i)));
         }
       }
     }
   }
 
-  // Infer the output.
-  // Each dimension of the output tensor can be calculated as follow:
-  // input_size = input_shape[i];
-  // output_size = beginning_padding + input_size + ending_padding.
-  std::vector<uint32_t> output_shape(input.Rank());
+  // Infer the output. Each output dimension is:
+  //   output_size = beginning_padding + input_size + ending_padding.
+  // A static input dimension yields a static output; a dynamic input dimension
+  // yields a dynamic output whose bounds (if any) are shifted by the padding.
+  std::vector<Dimension> output_shape;
+  output_shape.reserve(input.Rank());
   for (size_t i = 0; i < input.Rank(); ++i) {
-    auto checked_output_size =
-        base::CheckedNumeric<uint32_t>((*input_shape)[i]) +
-        beginning_padding[i] + ending_padding[i];
-    if (!checked_output_size.AssignIfValid(&output_shape[i])) {
+    const Dimension& input_dimension = input.shape()[i];
+    base::CheckedNumeric<uint32_t> checked_total_padding =
+        base::CheckedNumeric<uint32_t>(beginning_padding[i]) +
+        ending_padding[i];
+
+    if (const uint32_t* static_size = std::get_if<uint32_t>(&input_dimension)) {
+      uint32_t output_size;
+      if (!(checked_total_padding + *static_size).AssignIfValid(&output_size)) {
+        return base::unexpected(ErrorWithLabel(
+            label, base::StringPrintf(
+                       "The padding of dimension (%zu) is too large.", i)));
+      }
+      output_shape.emplace_back(output_size);
+      continue;
+    }
+
+    // Dynamic dimension: shift its bounds by the total padding (padding only
+    // grows a dimension, so output >= input).
+    const DynamicDimension& dynamic_dimension =
+        std::get<DynamicDimension>(input_dimension);
+    uint32_t output_min_size;
+    if (!(checked_total_padding + dynamic_dimension.min_size)
+             .AssignIfValid(&output_min_size)) {
       return base::unexpected(ErrorWithLabel(
           label, base::StringPrintf(
                      "The padding of dimension (%zu) is too large.", i)));
     }
+    std::optional<uint32_t> output_max_size;
+    std::string output_name;
+    if (dynamic_dimension.max_size.has_value()) {
+      uint32_t max_size;
+      if (!(checked_total_padding + *dynamic_dimension.max_size)
+               .AssignIfValid(&max_size)) {
+        return base::unexpected(ErrorWithLabel(
+            label, base::StringPrintf(
+                       "The padding of dimension (%zu) is too large.", i)));
+      }
+      output_max_size = max_size;
+      output_name = DerivedDynamicDimName(
+          dynamic_dimension.name, *dynamic_dimension.max_size, max_size);
+    } else {
+      const uint32_t total_padding = checked_total_padding.ValueOrDie();
+      output_name =
+          total_padding == 0
+              ? dynamic_dimension.name
+              : base::StrCat({dynamic_dimension.name, "+",
+                              base::StringPrintf("%u", total_padding)});
+    }
+    output_shape.emplace_back(DynamicDimension{.name = output_name,
+                                               .max_size = output_max_size,
+                                               .min_size = output_min_size});
   }
 
   return OperandDescriptor::Create(context_properties, input.data_type(),
@@ -3614,32 +3657,50 @@ ValidateSplitAndInferOutput(const ContextProperties& context_properties,
                              kMaxValidTensorCount)));
     }
 
-    if (!split_dimension_size.has_value()) {
-      return base::unexpected(ErrorWithLabel(
-          label,
-          "The dimension size of the input tensor along options.axis must be "
-          "static when splits is given as a single number."));
-    }
-
-    if (*split_dimension_size % splits != 0) {
-      return base::unexpected(
-          ErrorWithLabel(label,
-                         "The dimension size of the input tensor along "
-                         "options.axis must be divisible by splits."));
+    // Determine the per-part size along the split axis. With a static axis it
+    // is computed directly (and divisibility is verified); with a dynamic axis
+    // each part is axis_size / splits, expressed as a derived dynamic dimension
+    // whose bounds are scaled down, and the divisibility check is deferred to
+    // dispatch where the concrete axis size is known.
+    Dimension part_dimension;
+    if (split_dimension_size.has_value()) {
+      if (*split_dimension_size % splits != 0) {
+        return base::unexpected(
+            ErrorWithLabel(label,
+                           "The dimension size of the input tensor along "
+                           "options.axis must be divisible by splits."));
+      }
+      part_dimension = *split_dimension_size / splits;
+    } else {
+      const auto& axis_dynamic = std::get<DynamicDimension>(axis_dimension);
+      // Equal split defers the divisibility check to dispatch, so at runtime
+      // the axis size is a multiple of `splits`; the smallest valid axis size
+      // is `splits` itself, which yields a per-part size of 1. Clamp the
+      // derived bounds to at least 1 so integer truncation of small bounds
+      // (e.g. an axis whose min_size is 1 split into 2) never produces an
+      // invalid zero-sized dynamic dimension.
+      std::optional<uint32_t> part_max_size;
+      if (axis_dynamic.max_size.has_value()) {
+        part_max_size = std::max(1u, *axis_dynamic.max_size / splits);
+      }
+      part_dimension = DynamicDimension{
+          .name = base::StrCat(
+              {axis_dynamic.name, "/", base::StringPrintf("%u", splits)}),
+          .max_size = part_max_size,
+          .min_size = std::max(1u, axis_dynamic.min_size / splits)};
     }
 
     outputs.reserve(splits);
     for (uint32_t i = 0; i < splits; ++i) {
-      // When splits is of type uint32_t, we create splits number of Operands.
-      // Each Operand will have the same new_dimensions shape.
+      // Each of the `splits` outputs has the same shape: the input shape with
+      // the split axis replaced by the per-part size.
       std::vector<Dimension> new_dimensions = input.shape();
-      new_dimensions[attributes.axis] = *split_dimension_size / splits;
-      auto split_descriptor = OperandDescriptor::Create(
-          context_properties, input.data_type(), new_dimensions, label);
-      // `split_descriptor` should always be valid, since it's a subset of the
-      // input.
-      CHECK(split_descriptor.has_value());
-      outputs.push_back(*std::move(split_descriptor));
+      new_dimensions[attributes.axis] = part_dimension;
+      ASSIGN_OR_RETURN(
+          OperandDescriptor split_descriptor,
+          OperandDescriptor::Create(context_properties, input.data_type(),
+                                    new_dimensions, label));
+      outputs.push_back(std::move(split_descriptor));
     }
   } else if (std::holds_alternative<base::span<const uint32_t>>(
                  attributes.splits)) {
@@ -3713,25 +3774,57 @@ base::expected<OperandDescriptor, std::string> ValidateTileAndInferOutput(
         "the input tensor."));
   }
 
-  // TODO(crbug.com/329482489): Support dynamic shapes.
-  const auto input_shape = input.StaticShape();
-  if (!input_shape.has_value()) {
-    return base::unexpected(
-        ErrorWithLabel(label, "Dynamic input is not supported."));
-  }
-
-  std::vector<uint32_t> output_shape(input.Rank());
+  // Infer the output. Each output dimension is repetitions[i] * input[i].
+  // A static input dimension yields a static output; a dynamic input dimension
+  // yields a dynamic output whose bounds (if any) are scaled by repetitions[i].
+  std::vector<Dimension> output_shape;
+  output_shape.reserve(input.Rank());
   for (size_t i = 0; i < input.Rank(); ++i) {
     if (repetitions[i] == 0) {
       return base::unexpected(
           ErrorWithLabel(label, "Any value in repetitions must not be 0."));
     }
-    auto tiled_dim =
-        base::CheckedNumeric<uint32_t>(repetitions[i]) * (*input_shape)[i];
-    if (!tiled_dim.AssignIfValid(&output_shape[i])) {
+    const Dimension& input_dimension = input.shape()[i];
+
+    if (const uint32_t* static_size = std::get_if<uint32_t>(&input_dimension)) {
+      uint32_t output_size;
+      if (!(base::CheckedNumeric<uint32_t>(repetitions[i]) * *static_size)
+               .AssignIfValid(&output_size)) {
+        return base::unexpected(
+            ErrorWithLabel(label, "The tiled dimension size is too large."));
+      }
+      output_shape.emplace_back(output_size);
+      continue;
+    }
+
+    const DynamicDimension& dynamic_dimension =
+        std::get<DynamicDimension>(input_dimension);
+    std::optional<uint32_t> output_max_size;
+    if (dynamic_dimension.max_size.has_value()) {
+      uint32_t max_size;
+      if (!(base::CheckedNumeric<uint32_t>(repetitions[i]) *
+            *dynamic_dimension.max_size)
+               .AssignIfValid(&max_size)) {
+        return base::unexpected(
+            ErrorWithLabel(label, "The tiled dimension size is too large."));
+      }
+      output_max_size = max_size;
+    }
+    uint32_t output_min_size;
+    if (!(base::CheckedNumeric<uint32_t>(repetitions[i]) *
+          dynamic_dimension.min_size)
+             .AssignIfValid(&output_min_size)) {
       return base::unexpected(
           ErrorWithLabel(label, "The tiled dimension size is too large."));
     }
+    std::string output_name =
+        repetitions[i] == 1
+            ? dynamic_dimension.name
+            : base::StrCat({dynamic_dimension.name, "*",
+                            base::StringPrintf("%u", repetitions[i])});
+    output_shape.emplace_back(DynamicDimension{.name = output_name,
+                                               .max_size = output_max_size,
+                                               .min_size = output_min_size});
   }
 
   return OperandDescriptor::Create(context_properties, input.data_type(),

@@ -3896,19 +3896,6 @@ void GraphBuilderOrt::AddSplitOperation(const mojom::Split& split) {
       GetOperand(split.input_operand_id).descriptor));
 
   const auto output_count = split.output_operand_ids.size();
-  // 'split' is a 1-D tensor which specifies the length of each output. The sum
-  // of the values must be equal to the input size along 'axis'.
-  // https://onnx.ai/onnx/operators/onnx__Split.html#inputs
-  base::FixedArray<uint32_t> split_sizes(output_count);
-  for (size_t i = 0; i < output_count; i++) {
-    const std::vector<Dimension> output_shape =
-        GetOperand(split.output_operand_ids[i]).descriptor.shape();
-    CHECK_LT(split.axis, output_shape.size());
-    split_sizes[i] = std::get<uint32_t>(output_shape[split.axis]);
-  }
-  const std::string split_input =
-      CreateInt64InitializerForUint32Array(split_sizes);
-  std::array<const char*, 2> inputs = {input.c_str(), split_input.c_str()};
 
   base::FixedArray<std::string> output_names(output_count);
   base::FixedArray<const char*> outputs(output_count);
@@ -3916,6 +3903,50 @@ void GraphBuilderOrt::AddSplitOperation(const mojom::Split& split) {
     output_names[i] = GetOperandNameById(split.output_operand_ids[i]);
     outputs[i] = output_names[i].c_str();
   }
+
+  // Decide which of ONNX Split's two mutually exclusive forms to emit by
+  // inspecting the outputs' size along `axis`. A dynamic output axis can only
+  // arise from an equal split of a dynamic input axis: WebNN's `splits`
+  // sequence is build-time constant, so explicit per-part sizes are always
+  // static, whereas an equal split of a dynamic axis derives a symbolic
+  // per-part size. The two cases map onto:
+  //   * static axis  -> the `split` input tensor of concrete per-part sizes.
+  //   * dynamic axis -> the `num_outputs` attribute, letting ORT divide the
+  //     runtime axis size into `output_count` equal parts at dispatch.
+  bool dynamic_split_axis = false;
+  for (size_t i = 0; i < output_count; i++) {
+    const std::vector<Dimension>& output_shape =
+        GetOperand(split.output_operand_ids[i]).descriptor.shape();
+    CHECK_LT(split.axis, output_shape.size());
+    if (!std::holds_alternative<uint32_t>(output_shape[split.axis])) {
+      dynamic_split_axis = true;
+      break;
+    }
+  }
+
+  if (dynamic_split_axis) {
+    std::array<const char*, 1> inputs = {input.c_str()};
+    std::array<ScopedOrtOpAttr, 2> attributes = {
+        model_editor_.CreateAttribute(kAttrAxis,
+                                      base::checked_cast<int64_t>(split.axis)),
+        model_editor_.CreateAttribute(
+            kAttrNumOutputs, base::checked_cast<int64_t>(output_count))};
+    model_editor_.AddNode(kOpTypeSplit, node_name, inputs, outputs, attributes);
+    return;
+  }
+
+  // 'split' is a 1-D tensor which specifies the length of each output. The sum
+  // of the values must be equal to the input size along 'axis'.
+  // https://onnx.ai/onnx/operators/onnx__Split.html#inputs
+  base::FixedArray<uint32_t> split_sizes(output_count);
+  for (size_t i = 0; i < output_count; i++) {
+    const std::vector<Dimension>& output_shape =
+        GetOperand(split.output_operand_ids[i]).descriptor.shape();
+    split_sizes[i] = std::get<uint32_t>(output_shape[split.axis]);
+  }
+  const std::string split_input =
+      CreateInt64InitializerForUint32Array(split_sizes);
+  std::array<const char*, 2> inputs = {input.c_str(), split_input.c_str()};
 
   std::array<ScopedOrtOpAttr, 1> attributes = {model_editor_.CreateAttribute(
       kAttrAxis, base::checked_cast<int64_t>(split.axis))};
@@ -4090,8 +4121,16 @@ void GraphBuilderOrt::AddDynamicPadOperation(const mojom::DynamicPad& op) {
   const std::string input = GetOperandNameById(op.input_operand_id);
   const std::string pads = GetOperandNameById(op.pads_operand_id);
 
+  // ONNX Pad's `pads` input must be int64, but the WebNN operand may be int32
+  // (preferred for backends like CoreML that lack int64). Cast if needed.
+  std::string pads_int64 = pads;
+  if (GetOperand(op.pads_operand_id).descriptor.data_type() !=
+      OperandDataType::kInt64) {
+    pads_int64 = CreateCastNode(pads, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+  }
+
   // ONNX Pad: inputs are data, pads, [constant_value]
-  std::vector<const char*> pad_inputs = {input.c_str(), pads.c_str()};
+  std::vector<const char*> pad_inputs = {input.c_str(), pads_int64.c_str()};
 
   std::string constant_value;
   if (op.constant_value_operand_id.has_value()) {

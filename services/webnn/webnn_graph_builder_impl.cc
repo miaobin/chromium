@@ -296,6 +296,14 @@ webnn::ConvTranspose2dAttributes ConvertToConvTranspose2dAttributes(
       ConvertToConv2dAttributes<webnn::ConvTranspose2dAttributes>(
           context_properties, operands, conv2d, std::move(bias_operand));
 
+  // The mojom Conv2d message carries no outputPadding field: the renderer bakes
+  // its effect into the output operand's shape (read back as `output_sizes`
+  // below for static spatial dimensions). Initialize it to zero explicitly so
+  // the validator's dynamic-shape path, which reads `output_padding` when
+  // `output_sizes` is absent, never observes an uninitialized value.
+  component_attributes.output_padding =
+      webnn::Size2d<uint32_t>{.height = 0, .width = 0};
+
   // Convert the output sizes that fetched from dimensions of output operand.
   auto* output = GetMojoOperand(operands, conv2d.output_operand_id);
   CHECK_EQ(output->descriptor.Rank(), 4u);
@@ -2799,32 +2807,57 @@ bool OperationValidationContext::ValidateSplit(const mojom::Split& split,
     // The split operator is invalid.
     return false;
   }
-  std::vector<uint32_t> splits;
-  splits.reserve(split.output_operand_ids.size());
+  if (split.axis >= input->descriptor.Rank()) {
+    return false;
+  }
+  bool any_dynamic_output_axis = false;
   for (OperandId output_id : split.output_operand_ids) {
     auto* output = GetMojoOperand(output_id);
     if (!output || input == output) {
       return false;
     }
-
     if (split.axis >= output->descriptor.Rank()) {
       return false;
     }
-    // The per-output split sizes are derived from each output's size along the
-    // split axis, so that size must be static. A dynamic split-axis size on the
-    // *input* is fine — it is deferred to dispatch time in
-    // ValidateSplitAndInferOutput.
-    const auto& output_axis_dim = output->descriptor.shape()[split.axis];
-    if (!std::holds_alternative<uint32_t>(output_axis_dim)) {
-      return false;
+    if (!std::holds_alternative<uint32_t>(
+            output->descriptor.shape()[split.axis])) {
+      any_dynamic_output_axis = true;
     }
-    splits.push_back(std::get<uint32_t>(output_axis_dim));
+  }
+
+  // The mojom Split carries only the output operands, not the original split
+  // sizes, so the SplitAttributes are reconstructed from the output split-axis
+  // dimensions:
+  //   * All static: derive explicit per-part sizes from each output's axis dim,
+  //     exactly reproducing the renderer's intended (possibly uneven) split.
+  //   * Any dynamic: static per-part sizes cannot sum to a dynamic total, so
+  //   the
+  //     only consistent form is an equal split into `output_count` parts;
+  //     divisibility is deferred to dispatch time in
+  //     ValidateSplitAndInferOutput.
+  // Keying on the output (rather than input) axis also keeps this correct under
+  // shape inference, where the input has been concretized but the outputs still
+  // carry their symbolic build-time dimensions.
+  SplitAttribute attributes;
+  attributes.axis = split.axis;
+  attributes.label = split.label;
+  std::vector<uint32_t> split_sizes;
+  if (any_dynamic_output_axis) {
+    attributes.splits =
+        base::checked_cast<uint32_t>(split.output_operand_ids.size());
+  } else {
+    split_sizes.reserve(split.output_operand_ids.size());
+    for (OperandId output_id : split.output_operand_ids) {
+      auto* output = GetMojoOperand(output_id);
+      split_sizes.push_back(
+          std::get<uint32_t>(output->descriptor.shape()[split.axis]));
+    }
+    attributes.splits = base::span<const uint32_t>(split_sizes);
   }
 
   const base::expected<std::vector<OperandDescriptor>, std::string>
       validated_output = ValidateSplitAndInferOutput(
-          *context_properties_, input->descriptor,
-          {.splits = splits, .axis = split.axis, .label = split.label});
+          *context_properties_, input->descriptor, attributes);
   if (!validated_output.has_value()) {
     return false;
   }
@@ -3201,9 +3234,50 @@ bool OperationValidationContext::ValidateDynamicExpand(
       new_shape_dims.push_back(base::checked_cast<uint32_t>(val));
     }
 
-    auto validated_output = ValidateExpandAndInferOutput(
-        *context_properties_, input->descriptor, new_shape_dims, op.label,
-        known_dynamic_dims_);
+    // ONNX Expand uses numpy bidirectional broadcasting (output = broadcast of
+    // input and new_shape): a new_shape dimension of 1 — or a missing leading
+    // dimension when new_shape has lower rank than the input — keeps the
+    // corresponding input dimension, so the output shape may differ from
+    // new_shape. This mirrors the dispatch path, which lowers dynamicExpand to
+    // a native ONNX Expand node (see AddDynamicExpandOperation). WebNN's own
+    // expand() is unidirectional (output == new_shape) and must NOT be used to
+    // infer the output here.
+    const auto& input_shape = input->descriptor.shape();
+    const size_t input_rank = input_shape.size();
+    const size_t new_rank = new_shape_dims.size();
+    const size_t output_rank = std::max(input_rank, new_rank);
+    std::vector<Dimension> output_dims(output_rank);
+    for (size_t i = 0; i < output_rank; ++i) {
+      // Right-align: index from the trailing dimension.
+      const Dimension in_dim = i < input_rank ? input_shape[input_rank - 1 - i]
+                                              : Dimension(uint32_t{1});
+      // new_shape_dims are all concrete after folding; a missing leading
+      // dimension behaves as 1 (keep the input dimension).
+      const uint32_t new_dim =
+          i < new_rank ? std::get<uint32_t>(new_shape_dims[new_rank - 1 - i])
+                       : 1u;
+      Dimension out_dim;
+      if (new_dim == 1) {
+        // Keep the input dimension (which may still be dynamic).
+        out_dim = in_dim;
+      } else {
+        // Expand to new_dim. A concrete input dimension that is neither 1 nor
+        // equal to new_dim is a definite broadcast incompatibility; a dynamic
+        // input dimension is deferred (validated at dispatch by ONNX Expand).
+        if (std::holds_alternative<uint32_t>(in_dim)) {
+          const uint32_t in_val = std::get<uint32_t>(in_dim);
+          if (in_val != 1 && in_val != new_dim) {
+            return false;
+          }
+        }
+        out_dim = Dimension(new_dim);
+      }
+      output_dims[output_rank - 1 - i] = out_dim;
+    }
+
+    auto validated_output = OperandDescriptor::Create(
+        *context_properties_, input->descriptor.data_type(), output_dims,
+        op.label);
     if (!validated_output.has_value()) {
       return false;
     }

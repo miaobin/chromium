@@ -27,7 +27,11 @@ namespace webnn {
 //   - Constant operands (integer types)
 //   - shape() — returns input tensor dimensions as int64 values
 //   - concat, gather, slice, reshape, reverse, transpose
-//   - add, sub, mul, div, min, max (element-wise integer arithmetic)
+//   - split (1-D shape vectors along axis 0)
+//   - expand (broadcast a 1-D shape vector to a concrete 1-D target)
+//   - add, sub, mul, div, min, max, mod (element-wise integer arithmetic)
+//   - equal, notEqual, greater(OrEqual), lesser(OrEqual), logicalAnd/Or/Xor
+//     (element-wise comparison/logical, producing 0/1)
 //   - cast to integer types
 //
 // Returns nullopt if the chain contains unsupported operations or non-integer
