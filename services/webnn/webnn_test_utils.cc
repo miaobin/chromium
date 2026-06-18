@@ -810,7 +810,9 @@ ContextProperties GetContextPropertiesForTesting() {
        /*dynamic_split_input=*/{SupportedDataTypes::All(), kMaxRank},
        /*dynamic_split_splits=*/{SupportedDataTypes::All(), kMaxRank},
        /*dynamic_resample_2d_input=*/{SupportedDataTypes::All(), kMaxRank},
-       /*dynamic_resample_2d_sizes=*/{SupportedDataTypes::All(), kMaxRank}}));
+       /*dynamic_resample_2d_sizes=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_tile_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes::All(), kMaxRank}}));
 }
 
 }  // namespace webnn

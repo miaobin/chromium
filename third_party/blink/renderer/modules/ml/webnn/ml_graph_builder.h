@@ -559,9 +559,15 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                           ExceptionState& exception_state);
 
   MLOperand* dynamicPad(MLOperand* input,
-                        MLOperand* pads,
+                        MLOperand* beginning_padding,
+                        MLOperand* ending_padding,
                         MLOperatorOptions* options,
                         ExceptionState& exception_state);
+
+  MLOperand* dynamicTile(MLOperand* input,
+                         MLOperand* repetitions,
+                         MLOperatorOptions* options,
+                         ExceptionState& exception_state);
 
   HeapVector<Member<MLOperand>> dynamicSplit(MLOperand* input,
                                              MLOperand* splits,

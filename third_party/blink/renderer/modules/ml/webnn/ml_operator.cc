@@ -317,6 +317,9 @@ String MLOperator::OperatorKindToString(
     case webnn::mojom::blink::Operation::Tag::kDynamicResample2d:
       CHECK(std::holds_alternative<std::monostate>(sub_kind));
       return "dynamicResample2d";
+    case webnn::mojom::blink::Operation::Tag::kDynamicTile:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "dynamicTile";
   }
 }
 
@@ -529,7 +532,8 @@ void MLOperator::AddOptionalInputs(
     case webnn::mojom::blink::Operation::Tag::kDynamicSlice:
     case webnn::mojom::blink::Operation::Tag::kDynamicPad:
     case webnn::mojom::blink::Operation::Tag::kDynamicSplit:
-    case webnn::mojom::blink::Operation::Tag::kDynamicResample2d: {
+    case webnn::mojom::blink::Operation::Tag::kDynamicResample2d:
+    case webnn::mojom::blink::Operation::Tag::kDynamicTile: {
       break;
     }
   }

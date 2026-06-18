@@ -513,6 +513,12 @@ ContextProperties ContextImplOrt::GetContextProperties(
        /*dynamic_resample_2d_sizes=*/
        {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
                            OperandDataType::kInt64},
+        SupportedRanks::Exactly(1)},
+       /*dynamic_tile_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       /*dynamic_tile_repetitions=*/
+       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
+                           OperandDataType::kInt64},
         SupportedRanks::Exactly(1)}});
 }
 

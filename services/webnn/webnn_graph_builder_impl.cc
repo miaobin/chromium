@@ -626,6 +626,8 @@ std::vector<OperandId> GetOperationOutputs(const mojom::Operation& operation) {
       return operation.get_dynamic_split()->output_operand_ids;
     case mojom::Operation::Tag::kDynamicResample2d:
       return {operation.get_dynamic_resample_2d()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicTile:
+      return {operation.get_dynamic_tile()->output_operand_id};
   }
 }
 
@@ -828,6 +830,8 @@ class OperationValidationContext {
                             OperationId operation_id);
   bool ValidateDynamicResample2d(const mojom::DynamicResample2d& op,
                                  OperationId operation_id);
+  bool ValidateDynamicTile(const mojom::DynamicTile& op,
+                           OperationId operation_id);
   bool ValidateReduce(const mojom::Reduce& reduce, OperationId operation_id);
 
   bool ValidateOperation(const mojom::Operation& operation,
@@ -3449,11 +3453,13 @@ bool OperationValidationContext::ValidateDynamicPad(
     const mojom::DynamicPad& op,
     OperationId operation_id) {
   if (!IsProcessedOperand(op.input_operand_id) ||
-      !IsProcessedOperand(op.pads_operand_id)) {
+      !IsProcessedOperand(op.beginning_padding_operand_id) ||
+      !IsProcessedOperand(op.ending_padding_operand_id)) {
     return false;
   }
   NoteInputDependency(op.input_operand_id, operation_id);
-  NoteInputDependency(op.pads_operand_id, operation_id);
+  NoteInputDependency(op.beginning_padding_operand_id, operation_id);
+  NoteInputDependency(op.ending_padding_operand_id, operation_id);
 
   if (op.constant_value_operand_id.has_value()) {
     if (!IsProcessedOperand(*op.constant_value_operand_id)) {
@@ -3469,23 +3475,24 @@ bool OperationValidationContext::ValidateDynamicPad(
   }
 
   if (infer_output_shapes_) {
-    auto pads_values = EvaluateShapeOperand(
-        op.pads_operand_id, "dynamicPad", "pads");
-    if (!pads_values) {
+    auto beginning_values = EvaluateShapeOperand(
+        op.beginning_padding_operand_id, "dynamicPad", "beginningPadding");
+    auto ending_values = EvaluateShapeOperand(op.ending_padding_operand_id,
+                                              "dynamicPad", "endingPadding");
+    if (!beginning_values || !ending_values) {
       return false;
     }
 
     const size_t rank = input->descriptor.Rank();
-    if (pads_values->size() != 2 * rank) {
+    if (beginning_values->size() != rank || ending_values->size() != rank) {
       return false;
     }
 
-    // Split interleaved pads into beginning and ending padding.
     std::vector<uint32_t> beginning_padding(rank);
     std::vector<uint32_t> ending_padding(rank);
     for (size_t i = 0; i < rank; ++i) {
-      int64_t begin_val = (*pads_values)[2 * i];
-      int64_t end_val = (*pads_values)[2 * i + 1];
+      int64_t begin_val = (*beginning_values)[i];
+      int64_t end_val = (*ending_values)[i];
       if (begin_val < 0 || end_val < 0 ||
           !base::IsValueInRangeForNumericType<uint32_t>(begin_val) ||
           !base::IsValueInRangeForNumericType<uint32_t>(end_val)) {
@@ -3502,6 +3509,74 @@ bool OperationValidationContext::ValidateDynamicPad(
       return false;
     }
     if (!VerifyOrWriteBackOutput(op.output_operand_id, *validated_output)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateDynamicTile(
+    const mojom::DynamicTile& op,
+    OperationId operation_id) {
+  if (!IsProcessedOperand(op.input_operand_id) ||
+      !IsProcessedOperand(op.repetitions_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(op.input_operand_id, operation_id);
+  NoteInputDependency(op.repetitions_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(op.input_operand_id);
+  auto* output = GetMojoOperand(op.output_operand_id);
+  if (!input || !output || output == input) {
+    return false;
+  }
+
+  if (infer_output_shapes_) {
+    auto repetitions_values = EvaluateShapeOperand(
+        op.repetitions_operand_id, "dynamicTile", "repetitions");
+    if (!repetitions_values) {
+      return false;
+    }
+
+    const size_t rank = input->descriptor.Rank();
+    if (repetitions_values->size() != rank) {
+      return false;
+    }
+
+    // Infer the output. Each output dimension is repetitions[i] * input[i]. A
+    // static input dimension yields a static output; a dynamic input dimension
+    // stays dynamic. Unlike the static tile operator, repetitions of 0 are not
+    // rejected here (ONNX Tile permits them), yielding a 0-size dimension.
+    std::vector<Dimension> output_shape;
+    output_shape.reserve(rank);
+    for (size_t i = 0; i < rank; ++i) {
+      int64_t repetition = (*repetitions_values)[i];
+      if (repetition < 0 ||
+          !base::IsValueInRangeForNumericType<uint32_t>(repetition)) {
+        return false;
+      }
+      const Dimension& input_dimension = input->descriptor.shape()[i];
+      if (const uint32_t* static_size =
+              std::get_if<uint32_t>(&input_dimension)) {
+        uint32_t output_size;
+        if (!(base::CheckedNumeric<uint32_t>(repetition) * *static_size)
+                 .AssignIfValid(&output_size)) {
+          return false;
+        }
+        output_shape.emplace_back(output_size);
+      } else {
+        output_shape.push_back(input_dimension);
+      }
+    }
+
+    auto inferred = OperandDescriptor::CreateForDeserialization(
+        input->descriptor.data_type(), output_shape,
+        output->descriptor.pending_permutation());
+    if (!inferred.has_value()) {
+      return false;
+    }
+    if (!VerifyOrWriteBackOutput(op.output_operand_id, *inferred)) {
       return false;
     }
   }
@@ -3806,6 +3881,8 @@ bool OperationValidationContext::ValidateOperation(
     case mojom::Operation::Tag::kDynamicResample2d:
       return ValidateDynamicResample2d(*operation.get_dynamic_resample_2d(),
                                        operation_id);
+    case mojom::Operation::Tag::kDynamicTile:
+      return ValidateDynamicTile(*operation.get_dynamic_tile(), operation_id);
   }
 }
 

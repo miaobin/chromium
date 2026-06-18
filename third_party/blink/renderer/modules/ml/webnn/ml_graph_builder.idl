@@ -435,11 +435,13 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand dynamicSlice(MLOperand input, MLOperand starts, MLOperand ends, optional MLOperatorOptions options = {});
 
-  [RaisesException] MLOperand dynamicPad(MLOperand input, MLOperand pads, optional MLOperatorOptions options = {});
+  [RaisesException] MLOperand dynamicPad(MLOperand input, MLOperand beginningPadding, MLOperand endingPadding, optional MLOperatorOptions options = {});
 
   [RaisesException] sequence<MLOperand> dynamicSplit(MLOperand input, MLOperand splits, unsigned long numOutputs, optional MLOperatorOptions options = {});
 
   [RaisesException] MLOperand dynamicResample2d(MLOperand input, MLOperand sizes, optional MLDynamicResample2dOptions options = {});
+
+  [RaisesException] MLOperand dynamicTile(MLOperand input, MLOperand repetitions, optional MLOperatorOptions options = {});
 
   [
     CallWith=ScriptState,

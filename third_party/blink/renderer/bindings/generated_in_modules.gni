@@ -826,6 +826,8 @@ generated_dictionary_sources_in_modules = [
   "$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_slice_support_limits.h",
   "$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_split_support_limits.cc",
   "$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_split_support_limits.h",
+  "$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_tile_support_limits.cc",
+  "$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_tile_support_limits.h",
   "$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_ml_arg_min_max_options.cc",
   "$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_ml_arg_min_max_options.h",
   "$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_ml_batch_normalization_options.cc",

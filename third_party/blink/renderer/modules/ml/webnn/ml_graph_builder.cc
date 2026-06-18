@@ -204,8 +204,9 @@ enum class MLGraphOperatorUma {
   kDynamicSplit = 102,
   kShape = 103,
   kDynamicResample2d = 104,
+  kDynamicTile = 105,
   kMinValue = kGraphBuilt,
-  kMaxValue = kDynamicResample2d,
+  kMaxValue = kDynamicTile,
 };
 
 std::vector<webnn::Dimension> ToDimensionVector(
@@ -483,6 +484,8 @@ MLGraphOperatorUma GetUmaValueForOperation(
       return MLGraphOperatorUma::kDynamicSplit;
     case blink_mojom::Operation::Tag::kDynamicResample2d:
       return MLGraphOperatorUma::kDynamicResample2d;
+    case blink_mojom::Operation::Tag::kDynamicTile:
+      return MLGraphOperatorUma::kDynamicTile;
   }
 }
 
@@ -1530,7 +1533,8 @@ Vector<webnn::OperandId> GetInputs(const blink_mojom::Operation& operation) {
     case blink_mojom::Operation::Tag::kDynamicPad: {
       Vector<webnn::OperandId> ids = {
           operation.get_dynamic_pad()->input_operand_id,
-          operation.get_dynamic_pad()->pads_operand_id};
+          operation.get_dynamic_pad()->beginning_padding_operand_id,
+          operation.get_dynamic_pad()->ending_padding_operand_id};
       if (operation.get_dynamic_pad()->constant_value_operand_id) {
         ids.push_back(
             *operation.get_dynamic_pad()->constant_value_operand_id);
@@ -1543,6 +1547,9 @@ Vector<webnn::OperandId> GetInputs(const blink_mojom::Operation& operation) {
     case blink_mojom::Operation::Tag::kDynamicResample2d:
       return {operation.get_dynamic_resample_2d()->input_operand_id,
               operation.get_dynamic_resample_2d()->sizes_operand_id};
+    case blink_mojom::Operation::Tag::kDynamicTile:
+      return {operation.get_dynamic_tile()->input_operand_id,
+              operation.get_dynamic_tile()->repetitions_operand_id};
   }
 }
 
@@ -3899,18 +3906,21 @@ MLOperand* MLGraphBuilder::dynamicSlice(MLOperand* input,
 }
 
 MLOperand* MLGraphBuilder::dynamicPad(MLOperand* input,
-                                      MLOperand* pads,
+                                      MLOperand* beginning_padding,
+                                      MLOperand* ending_padding,
                                       MLOperatorOptions* options,
                                       ExceptionState& exception_state) {
   THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
 
-  HeapVector<Member<MLOperand>> inputs = {input, pads};
+  HeapVector<Member<MLOperand>> inputs = {input, beginning_padding,
+                                          ending_padding};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
-  // pads must be a 1-D int32 or int64 tensor of length 2 * input_rank. ONNX Pad
-  // requires int64, but tf2onnx models often produce int32 pads (and int32 is
-  // preferred for backends like CoreML that lack int64); the int64 cast is
-  // inserted at dispatch by the service backend, so accept either here.
+  // beginningPadding and endingPadding must each be a 1-D int32 or int64
+  // tensor of length input_rank. ONNX Pad requires int64, but tf2onnx models
+  // often produce int32 pads (and int32 is preferred for backends like CoreML
+  // that lack int64); the int64 cast is inserted at dispatch by the service
+  // backend, so accept either here.
   auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
     return operand->Descriptor().Rank() == 1 &&
            (operand->Descriptor().data_type() ==
@@ -3918,9 +3928,14 @@ MLOperand* MLGraphBuilder::dynamicPad(MLOperand* input,
             operand->Descriptor().data_type() ==
                 webnn::OperandDataType::kInt64);
   };
-  if (!is_1d_int32_or_int64(pads)) {
+  if (!is_1d_int32_or_int64(beginning_padding)) {
     exception_state.ThrowTypeError(
-        "The pads operand must be a 1-D int32 or int64 tensor.");
+        "The beginningPadding operand must be a 1-D int32 or int64 tensor.");
+    return nullptr;
+  }
+  if (!is_1d_int32_or_int64(ending_padding)) {
+    exception_state.ThrowTypeError(
+        "The endingPadding operand must be a 1-D int32 or int64 tensor.");
     return nullptr;
   }
 
@@ -3944,6 +3959,57 @@ MLOperand* MLGraphBuilder::dynamicPad(MLOperand* input,
 
   auto* op = MakeGarbageCollected<MLOperator>(
       this, blink_mojom::Operation::Tag::kDynamicPad, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), op);
+  op->Connect(std::move(inputs), {output});
+  return output;
+}
+
+MLOperand* MLGraphBuilder::dynamicTile(MLOperand* input,
+                                       MLOperand* repetitions,
+                                       MLOperatorOptions* options,
+                                       ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+
+  HeapVector<Member<MLOperand>> inputs = {input, repetitions};
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
+
+  // repetitions must be a 1-D int32 or int64 tensor of length input_rank. ONNX
+  // Tile requires int64, but models may emit int32 (and int32 is preferred for
+  // backends like CoreML that lack int64); the int64 cast is inserted at
+  // dispatch by the service backend, so accept either here.
+  auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
+    return operand->Descriptor().Rank() == 1 &&
+           (operand->Descriptor().data_type() ==
+                webnn::OperandDataType::kInt32 ||
+            operand->Descriptor().data_type() ==
+                webnn::OperandDataType::kInt64);
+  };
+  if (!is_1d_int32_or_int64(repetitions)) {
+    exception_state.ThrowTypeError(
+        "The repetitions operand must be a 1-D int32 or int64 tensor.");
+    return nullptr;
+  }
+
+  // Output has same rank as input but dynamic dimensions. Per-call unique
+  // name so each dynamicTile() instance gets its own dynamic dim symbols.
+  uint32_t output_rank = input->Descriptor().Rank();
+  const uint64_t inst = dynamic_dim_counter_++;
+  std::vector<webnn::Dimension> output_shape;
+  output_shape.reserve(output_rank);
+  for (uint32_t i = 0; i < output_rank; ++i) {
+    output_shape.push_back(webnn::DynamicDimension{
+        .name = "dynamic_tile_" + base::NumberToString(inst) + "_dim_" +
+                base::NumberToString(i)});
+  }
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
+                                       input->Descriptor().data_type(),
+                                       output_shape, options->label().Utf8()));
+
+  auto* op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kDynamicTile, options);
   MLOperand* output =
       MLOperand::CreateOutput(this, std::move(output_descriptor), op);
   op->Connect(std::move(inputs), {output});

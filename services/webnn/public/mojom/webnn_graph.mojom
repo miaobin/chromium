@@ -1450,15 +1450,34 @@ struct DynamicSlice {
   string label;
 };
 
-// Represents a dynamic pad operation where padding amounts are provided
-// as an operand. Pads is interleaved [begin0, end0, begin1, end1, ...].
+// Represents a dynamic pad operation where padding amounts are provided as
+// operands rather than static attributes. Mirrors the static `pad` operator:
+// `beginning_padding` and `ending_padding` are separate 1-D tensors, each of
+// length equal to the input rank, where entry `i` is the padding added to the
+// beginning/ending of axis `i`.
 struct DynamicPad {
   OperandId input_operand_id;
-  // 1-D int64 tensor of length 2*rank, interleaved begin/end padding.
-  OperandId pads_operand_id;
+  // 1-D int32 or int64 tensor of length `rank`, padding added at the beginning
+  // of each axis.
+  OperandId beginning_padding_operand_id;
+  // 1-D int32 or int64 tensor of length `rank`, padding added at the ending of
+  // each axis.
+  OperandId ending_padding_operand_id;
   // Optional scalar constant value for padding (default 0).
   OperandId? constant_value_operand_id;
   PaddingMode mode;
+  OperandId output_operand_id;
+  string label;
+};
+
+// Represents a dynamic tile operation where the per-axis repetition counts are
+// provided as an operand rather than static attributes. Mirrors the static
+// `tile` operator.
+struct DynamicTile {
+  OperandId input_operand_id;
+  // 1-D int32 or int64 tensor of length `rank`, the number of tiled copies to
+  // make for each axis.
+  OperandId repetitions_operand_id;
   OperandId output_operand_id;
   string label;
 };
@@ -1555,6 +1574,7 @@ union Operation {
   DynamicPad dynamic_pad;
   DynamicSplit dynamic_split;
   DynamicResample2d dynamic_resample_2d;
+  DynamicTile dynamic_tile;
 };
 
 // Describes an entire WebNN graph information.

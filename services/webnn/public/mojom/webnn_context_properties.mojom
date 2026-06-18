@@ -248,6 +248,8 @@ struct DataTypeLimits {
   SupportedTensors dynamic_split_splits;
   SupportedTensors dynamic_resample_2d_input;
   SupportedTensors dynamic_resample_2d_sizes;
+  SupportedTensors dynamic_tile_input;
+  SupportedTensors dynamic_tile_repetitions;
 };
 
 // Represents properties of the `WebNNContext` implementation that has been

@@ -1366,17 +1366,30 @@ OperationPtr CreateDynamicPadOperation(
     const MLOperator* op) {
   auto mojo = blink_mojom::DynamicPad::New();
   mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
-  mojo->pads_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
-  // Optional constant_value at index 2.
-  if (op->Inputs().size() > 2 && op->Inputs()[2]) {
+  mojo->beginning_padding_operand_id =
+      GetOperatorInputId(op, operand_to_id_map, 1);
+  mojo->ending_padding_operand_id =
+      GetOperatorInputId(op, operand_to_id_map, 2);
+  // Optional constant_value at index 3.
+  if (op->Inputs().size() > 3 && op->Inputs()[3]) {
     mojo->constant_value_operand_id =
-        GetOperatorInputId(op, operand_to_id_map, 2);
+        GetOperatorInputId(op, operand_to_id_map, 3);
   }
   mojo->mode = blink_mojom::PaddingMode::NewConstant(
       blink_mojom::ConstantPadding::New());
   mojo->output_operand_id = GetOperatorOutputId(op, operand_to_id_map);
   mojo->label = op->Options()->label();
   return blink_mojom::Operation::NewDynamicPad(std::move(mojo));
+}
+
+OperationPtr CreateDynamicTileOperation(const OperandToIdMap& operand_to_id_map,
+                                        const MLOperator* op) {
+  auto mojo = blink_mojom::DynamicTile::New();
+  mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
+  mojo->repetitions_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+  mojo->output_operand_id = GetOperatorOutputId(op, operand_to_id_map);
+  mojo->label = op->Options()->label();
+  return blink_mojom::Operation::NewDynamicTile(std::move(mojo));
 }
 
 OperationPtr CreateDynamicSplitOperation(
@@ -1685,6 +1698,10 @@ void SerializeMojoOperation(
     case blink_mojom::Operation::Tag::kDynamicResample2d:
       graph_info->operations.push_back(
           CreateDynamicResample2dOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kDynamicTile:
+      graph_info->operations.push_back(
+          CreateDynamicTileOperation(operand_to_id_map, op));
       break;
   }
 }

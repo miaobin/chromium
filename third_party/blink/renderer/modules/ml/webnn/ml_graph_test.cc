@@ -815,17 +815,24 @@ class FakeWebNNContextProvider : public blink_mojom::WebNNContextProvider {
          /*shape_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*shape_output=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_reshape_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
-         /*dynamic_reshape_new_shape=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_reshape_new_shape=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_expand_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
-         /*dynamic_expand_new_shape=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_expand_new_shape=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_slice_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_slice_starts=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_pad_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_pad_pads=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_split_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_split_splits=*/{webnn::SupportedDataTypes::All(), kMaxRank},
-         /*dynamic_resample_2d_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
-         /*dynamic_resample_2d_sizes=*/{webnn::SupportedDataTypes::All(), kMaxRank}});
+         /*dynamic_resample_2d_input=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_resample_2d_sizes=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_tile_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_tile_repetitions=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank}});
     auto success = blink_mojom::CreateContextSuccess::New(
         std::move(blink_remote),
         /*compiler_context_remote=*/mojo::NullRemote(),

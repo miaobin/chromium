@@ -190,7 +190,8 @@ dictionary MLDynamicSliceSupportLimits {
 
 dictionary MLDynamicPadSupportLimits {
   MLTensorLimits input;
-  MLTensorLimits pads;
+  MLTensorLimits beginningPadding;
+  MLTensorLimits endingPadding;
   MLTensorLimits output;
 };
 
@@ -203,6 +204,12 @@ dictionary MLDynamicSplitSupportLimits {
 dictionary MLDynamicResample2dSupportLimits {
   MLTensorLimits input;
   MLTensorLimits sizes;
+  MLTensorLimits output;
+};
+
+dictionary MLDynamicTileSupportLimits {
+  MLTensorLimits input;
+  MLTensorLimits repetitions;
   MLTensorLimits output;
 };
 
@@ -329,6 +336,7 @@ dictionary MLOpSupportLimits {
   MLDynamicPadSupportLimits dynamicPad;
   MLDynamicSplitSupportLimits dynamicSplit;
   MLDynamicResample2dSupportLimits dynamicResample2d;
+  MLDynamicTileSupportLimits dynamicTile;
 };
 
 typedef record<USVString, MLTensor> MLNamedTensors;

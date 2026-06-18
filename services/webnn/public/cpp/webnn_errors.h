@@ -68,6 +68,7 @@ inline constexpr char kDynamicSlice[] = "dynamicSlice";
 inline constexpr char kDynamicPad[] = "dynamicPad";
 inline constexpr char kDynamicSplit[] = "dynamicSplit";
 inline constexpr char kDynamicResample2d[] = "dynamicResample2d";
+inline constexpr char kDynamicTile[] = "dynamicTile";
 
 // conv2d ops.
 inline constexpr char kConv2d[] = "conv2d";

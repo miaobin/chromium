@@ -219,7 +219,8 @@ void UpdateOperatorOptions(MLOperator* op,
     case blink_mojom::Operation::Tag::kDynamicSlice:
     case blink_mojom::Operation::Tag::kDynamicPad:
     case blink_mojom::Operation::Tag::kDynamicSplit:
-    case blink_mojom::Operation::Tag::kDynamicResample2d: {
+    case blink_mojom::Operation::Tag::kDynamicResample2d:
+    case blink_mojom::Operation::Tag::kDynamicTile: {
       break;
     }
   }

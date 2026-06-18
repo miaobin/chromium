@@ -181,6 +181,8 @@ std::string OpTagToString(mojom::Operation::Tag tag) {
       return ops::kDynamicSplit;
     case mojom::Operation::Tag::kDynamicResample2d:
       return ops::kDynamicResample2d;
+    case mojom::Operation::Tag::kDynamicTile:
+      return ops::kDynamicTile;
   }
 }
 

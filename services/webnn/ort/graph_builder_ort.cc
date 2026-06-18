@@ -4119,14 +4119,43 @@ void GraphBuilderOrt::AddDynamicSliceOperation(
 void GraphBuilderOrt::AddDynamicPadOperation(const mojom::DynamicPad& op) {
   const std::string node_name = GenerateNodeName(op.label);
   const std::string input = GetOperandNameById(op.input_operand_id);
-  const std::string pads = GetOperandNameById(op.pads_operand_id);
+  const std::string beginning_padding =
+      GetOperandNameById(op.beginning_padding_operand_id);
+  const std::string ending_padding =
+      GetOperandNameById(op.ending_padding_operand_id);
 
-  // ONNX Pad's `pads` input must be int64, but the WebNN operand may be int32
-  // (preferred for backends like CoreML that lack int64). Cast if needed.
-  std::string pads_int64 = pads;
-  if (GetOperand(op.pads_operand_id).descriptor.data_type() !=
+  // ONNX Pad's `pads` input must be int64, but the WebNN operands may be int32
+  // (preferred for backends like CoreML that lack int64). Cast each operand to
+  // int64 if needed before concatenating, since ONNX Concat requires its
+  // inputs to share a data type and the two operands may differ.
+  std::string beginning_int64 = beginning_padding;
+  if (GetOperand(op.beginning_padding_operand_id).descriptor.data_type() !=
       OperandDataType::kInt64) {
-    pads_int64 = CreateCastNode(pads, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+    beginning_int64 =
+        CreateCastNode(beginning_padding, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+  }
+  std::string ending_int64 = ending_padding;
+  if (GetOperand(op.ending_padding_operand_id).descriptor.data_type() !=
+      OperandDataType::kInt64) {
+    ending_int64 =
+        CreateCastNode(ending_padding, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+  }
+
+  // WebNN provides padding as two separate 1-D tensors of length `rank`
+  // (beginning and ending). ONNX Pad takes a single 1-D `pads` tensor of
+  // length 2*rank laid out as [begin_0..begin_{r-1}, end_0..end_{r-1}], so
+  // concatenate the two operands along axis 0.
+  const std::string pads_int64 = GenerateOperandName();
+  {
+    std::array<const char*, 2> concat_inputs = {beginning_int64.c_str(),
+                                                ending_int64.c_str()};
+    std::array<const char*, 1> concat_outputs = {pads_int64.c_str()};
+    std::array<ScopedOrtOpAttr, 1> concat_attrs = {
+        model_editor_.CreateAttribute(kAttrAxis, static_cast<int64_t>(0))};
+    const std::string concat_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeConcat, kToEmulate, node_name}, kUnderscore));
+    model_editor_.AddNode(kOpTypeConcat, concat_node_name, concat_inputs,
+                          concat_outputs, concat_attrs);
   }
 
   // ONNX Pad: inputs are data, pads, [constant_value]
@@ -4234,6 +4263,26 @@ void GraphBuilderOrt::AddDynamicResample2dOperation(
   }
 
   AddResizeNode(node_name, input, /*scales=*/"", sizes_4, mode, output);
+}
+
+void GraphBuilderOrt::AddDynamicTileOperation(const mojom::DynamicTile& op) {
+  const std::string node_name = GenerateNodeName(op.label);
+  const std::string input = GetOperandNameById(op.input_operand_id);
+  const std::string repetitions = GetOperandNameById(op.repetitions_operand_id);
+  const std::string output = GetOperandNameById(op.output_operand_id);
+
+  // ONNX Tile's `repeats` input must be int64, but the WebNN operand may be
+  // int32 (preferred for backends like CoreML that lack int64). Cast if needed.
+  std::string repeats_int64 = repetitions;
+  if (GetOperand(op.repetitions_operand_id).descriptor.data_type() !=
+      OperandDataType::kInt64) {
+    repeats_int64 =
+        CreateCastNode(repetitions, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+  }
+
+  std::array<const char*, 2> inputs = {input.c_str(), repeats_int64.c_str()};
+  std::array<const char*, 1> outputs = {output.c_str()};
+  model_editor_.AddNode(kOpTypeTile, node_name, inputs, outputs);
 }
 
 // Returns the output operand IDs for `operation`.
@@ -4370,6 +4419,8 @@ std::vector<OperandId> GetOperationOutputOperandIds(
       return {operation.get_dynamic_pad()->output_operand_id};
     case mojom::Operation::Tag::kDynamicResample2d:
       return {operation.get_dynamic_resample_2d()->output_operand_id};
+    case mojom::Operation::Tag::kDynamicTile:
+      return {operation.get_dynamic_tile()->output_operand_id};
   }
 }
 
@@ -4751,6 +4802,10 @@ GraphBuilderOrt::BuildModel() {
       case mojom::Operation::Tag::kDynamicResample2d: {
         AddDynamicResample2dOperation(
             *operation->get_dynamic_resample_2d());
+        break;
+      }
+      case mojom::Operation::Tag::kDynamicTile: {
+        AddDynamicTileOperation(*operation->get_dynamic_tile());
         break;
       }
     }

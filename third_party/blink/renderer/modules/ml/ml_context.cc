@@ -34,12 +34,13 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_context_lost_info.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_context_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_2d_support_limits.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_device_type.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_new_shape_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_pad_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_slice_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_split_support_limits.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_device_type.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_tile_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gather_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gemm_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gru_cell_support_limits.h"
@@ -1412,7 +1413,9 @@ const MLOpSupportLimits* MLContext::opSupportLimits(ScriptState* script_state) {
       MLDynamicPadSupportLimits::Create();
   dynamic_pad->setInput(
       SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_pad_input));
-  dynamic_pad->setPads(
+  dynamic_pad->setBeginningPadding(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_pad_pads));
+  dynamic_pad->setEndingPadding(
       SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_pad_pads));
   dynamic_pad->setOutput(
       SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_pad_input));
@@ -1437,6 +1440,16 @@ const MLOpSupportLimits* MLContext::opSupportLimits(ScriptState* script_state) {
   dynamic_resample_2d->setOutput(SupportedTensorLimitsToTensorLimits(
       data_type_limits.dynamic_resample_2d_input));
   op_support_limits->setDynamicResample2d(dynamic_resample_2d);
+
+  MLDynamicTileSupportLimits* dynamic_tile =
+      MLDynamicTileSupportLimits::Create();
+  dynamic_tile->setInput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_tile_input));
+  dynamic_tile->setRepetitions(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_tile_repetitions));
+  dynamic_tile->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_tile_input));
+  op_support_limits->setDynamicTile(dynamic_tile);
 
   return op_support_limits;
 }

@@ -1430,7 +1430,9 @@ ContextProperties GraphBuilderCoreml::GetContextProperties() {
        /*dynamic_resample_2d_input=*/
        {SupportedDataTypes(), SupportedRanks()},
        /*dynamic_resample_2d_sizes=*/
-       {SupportedDataTypes(), SupportedRanks()}});
+       {SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_tile_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes(), SupportedRanks()}});
 
   if (__builtin_available(macOS 15, *)) {
     properties.data_type_limits.dequantize_linear_input.data_types =
@@ -1788,6 +1790,10 @@ GraphBuilderCoreml::BuildCoreMLModel() {
       case mojom::Operation::Tag::kDynamicResample2d: {
         return NewNotSupportedError(
             "dynamicResample2d is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kDynamicTile: {
+        return NewNotSupportedError(
+            "dynamicTile is not supported on CoreML backend.");
       }
       case mojom::Operation::Tag::kShape: {
         return NewNotSupportedError(

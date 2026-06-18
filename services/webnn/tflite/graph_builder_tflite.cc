@@ -1138,7 +1138,9 @@ ContextProperties GraphBuilderTflite::GetContextProperties() {
        /*dynamic_resample_2d_input=*/
        {SupportedDataTypes(), SupportedRanks()},
        /*dynamic_resample_2d_sizes=*/
-       {SupportedDataTypes(), SupportedRanks()}});
+       {SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_tile_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes(), SupportedRanks()}});
 }
 
 GraphBuilderTflite::GraphBuilderTflite(
@@ -1668,6 +1670,11 @@ base::expected<void, std::string> GraphBuilderTflite::SerializeOperation(
           mojom::Error::Code::kNotSupportedError,
           "dynamicResample2d is not supported on TFLite backend."));
     }
+    case mojom::Operation::Tag::kDynamicTile: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "dynamicTile is not supported on TFLite backend."));
+    }
     case mojom::Operation::Tag::kShape: {
       return base::unexpected(
           CreateError(mojom::Error::Code::kNotSupportedError,
@@ -1768,6 +1775,9 @@ bool GraphBuilderTflite::RequiresFloat32Precision(const mojom::Operation& op) {
       break;
     case mojom::Operation::Tag::kDynamicResample2d:
       input_operand_id = op.get_dynamic_resample_2d()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kDynamicTile:
+      input_operand_id = op.get_dynamic_tile()->input_operand_id;
       break;
     case mojom::Operation::Tag::kShape:
       input_operand_id = op.get_shape()->input_operand_id;

@@ -369,6 +369,7 @@ class GraphBuilderOrt {
   void AddDynamicPadOperation(const mojom::DynamicPad& op);
   void AddDynamicSplitOperation(const mojom::DynamicSplit& op);
   void AddDynamicResample2dOperation(const mojom::DynamicResample2d& op);
+  void AddDynamicTileOperation(const mojom::DynamicTile& op);
 
   // Registers any dynamic dimensions on `operand_id` into `known_dynamic_dims_`
   // so that subsequent operations (e.g. expand) can look them up as Shape

@@ -554,6 +554,14 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.dynamic_resample_2d_sizes;
   }
+  static webnn::SupportedTensors dynamic_tile_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_tile_input;
+  }
+  static webnn::SupportedTensors dynamic_tile_repetitions(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_tile_repetitions;
+  }
 
   static bool Read(webnn::mojom::DataTypeLimitsDataView data,
                    webnn::DataTypeLimits* out) {
@@ -690,9 +698,10 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadDynamicPadPads(&out->dynamic_pad_pads) &&
            data.ReadDynamicSplitInput(&out->dynamic_split_input) &&
            data.ReadDynamicSplitSplits(&out->dynamic_split_splits) &&
-           data.ReadDynamicResample2dInput(
-               &out->dynamic_resample_2d_input) &&
-           data.ReadDynamicResample2dSizes(&out->dynamic_resample_2d_sizes);
+           data.ReadDynamicResample2dInput(&out->dynamic_resample_2d_input) &&
+           data.ReadDynamicResample2dSizes(&out->dynamic_resample_2d_sizes) &&
+           data.ReadDynamicTileInput(&out->dynamic_tile_input) &&
+           data.ReadDynamicTileRepetitions(&out->dynamic_tile_repetitions);
   }
 };
 
