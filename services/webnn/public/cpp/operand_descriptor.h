@@ -6,10 +6,14 @@
 #define SERVICES_WEBNN_PUBLIC_CPP_OPERAND_DESCRIPTOR_H_
 
 #include <algorithm>
+#include <compare>
 #include <cstdint>
 #include <functional>
 #include <numeric>
+#include <optional>
+#include <string>
 #include <type_traits>
+#include <variant>  // For std::variant
 #include <vector>
 
 #include "base/component_export.h"
@@ -19,6 +23,30 @@
 #include "mojo/public/cpp/bindings/default_construct_tag.h"
 
 namespace webnn {
+
+// An unbounded dynamic dimension. `name` carries the symbolic name when the dim
+// is named (mapped to an ONNX symbolic dimension); `nullopt` means an unnamed
+// dynamic dim (ORT's `?`).
+//
+// `operator==` is purely structural (and therefore reflexive): it answers "are
+// these the same descriptor?", which `OperandDescriptor`'s equality and Mojo
+// round-trip checks rely on. It does NOT mean "do these resolve to the same
+// runtime value" — two unnamed dims are independent unknowns even though they
+// compare equal structurally. Code that needs runtime-value identity (e.g.
+// reshape dimension cancellation) must additionally require `name.has_value()`.
+struct DynamicDimension {
+  std::optional<std::string> name;
+
+  friend constexpr bool operator==(const DynamicDimension&,
+                                   const DynamicDimension&) = default;
+};
+
+using Dimension = std::variant<uint32_t, DynamicDimension>;
+
+// Helper to convert a uint32_t vector to a Dimension vector (all static
+// dimensions).
+std::vector<Dimension> COMPONENT_EXPORT(WEBNN_PUBLIC_CPP)
+    ToDimensionVector(base::span<const uint32_t> shape);
 
 enum class OperandDataType {
   kFloat32,
@@ -104,6 +132,13 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
       base::span<const uint32_t> shape,
       std::string_view label);
 
+  // Creates a valid `OperandDescriptor` with dynamic dimensions.
+  static base::expected<OperandDescriptor, std::string> Create(
+      const ContextProperties& context_properties,
+      OperandDataType data_type,
+      base::span<const Dimension> shape,
+      std::string_view label);
+
   // This function is called by `OperandDescriptor` mojom traits that need to be
   // validated tensor size limit later.
   static base::expected<OperandDescriptor, std::string>
@@ -111,11 +146,23 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
                            base::span<const uint32_t> shape,
                            base::span<const uint32_t> pending_permutation);
 
+  // Same as above, but support dynamic dimensions.
+  static base::expected<OperandDescriptor, std::string>
+  CreateForDeserialization(OperandDataType data_type,
+                           base::span<const Dimension> shape,
+                           base::span<const uint32_t> pending_permutation);
+
   // Same as above, but skip validation checks. This may be used to create an
   // invalid descriptor to test that its deserialization fails.
   static OperandDescriptor UnsafeCreateForTesting(
       OperandDataType data_type,
       base::span<const uint32_t> shape,
+      base::span<const uint32_t> pending_permutation = {});
+
+  // Overload that accepts Dimension span for testing with dynamic dimensions.
+  static OperandDescriptor UnsafeCreateForTesting(
+      OperandDataType data_type,
+      base::span<const Dimension> shape,
       base::span<const uint32_t> pending_permutation = {});
 
   static size_t GetBitsPerElement(OperandDataType data_type);
@@ -137,7 +184,7 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
   ~OperandDescriptor();
 
   OperandDataType data_type() const { return data_type_; }
-  const std::vector<uint32_t>& shape() const { return shape_; }
+  const std::vector<Dimension>& shape() const { return shape_; }
   const std::vector<uint32_t>& pending_permutation() const {
     return pending_permutation_;
   }
@@ -145,31 +192,35 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
   uint32_t Rank() const { return static_cast<uint32_t>(shape_.size()); }
   // Total byte length assuming perfect packing. Some tensors described by this
   // `OperandDescriptor` may be stored with more bytes.
+  // CHECK-fails if the shape has any dynamic dimension (tensor descriptors are
+  // always static by design).
   size_t PackedByteLength() const;
-  size_t NumberOfElements() const;
+  // Returns the total number of elements, or nullopt if any dimension is
+  // dynamic.
+  std::optional<size_t> NumberOfElements() const;
 
   void SetPendingPermutation(base::span<const uint32_t> permutation);
 
-  friend constexpr auto operator<=>(const OperandDescriptor& lhs,
-                                    const OperandDescriptor& rhs) {
-    if (auto cmp = lhs.data_type_ <=> rhs.data_type_; cmp != 0) {
-      return cmp;
-    }
-    return lhs.shape_ <=> rhs.shape_;
-  }
+  // Returns the shape as a vector of uint32_t, returns nullopt if any dynamic
+  // dimension is present.
+  std::optional<std::vector<uint32_t>> StaticShape() const;
+
+  // Note: only equality is defined. `Dimension` (specifically the unnamed
+  // dynamic dim) has no total order, and `OperandDescriptor` is only ever used
+  // as a `flat_map` value, never as a key, so no ordering is needed.
   friend constexpr bool operator==(const OperandDescriptor& lhs,
                                    const OperandDescriptor& rhs) {
     return lhs.data_type_ == rhs.data_type_ && lhs.shape_ == rhs.shape_;
   }
 
  private:
-  OperandDescriptor(OperandDataType data_type, std::vector<uint32_t> shape);
+  OperandDescriptor(OperandDataType data_type, std::vector<Dimension> shape);
   OperandDescriptor(OperandDataType data_type,
-                    std::vector<uint32_t> shape,
+                    std::vector<Dimension> shape,
                     std::vector<uint32_t> permutation);
 
   OperandDataType data_type_;
-  std::vector<uint32_t> shape_;
+  std::vector<Dimension> shape_;
   std::vector<uint32_t> pending_permutation_;
 };
 

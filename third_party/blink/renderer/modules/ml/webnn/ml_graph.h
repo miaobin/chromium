@@ -5,14 +5,19 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_ML_WEBNN_ML_GRAPH_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_ML_WEBNN_ML_GRAPH_H_
 
+#include "base/types/expected.h"
 #include "base/types/pass_key.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_device_type.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_input_operand_descriptor.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_operand_descriptor.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
@@ -23,7 +28,10 @@ namespace blink {
 class MLTensor;
 class MLContext;
 class MLGraphBuilder;
+class MLOperandDescriptor;
+class ExceptionState;
 class ExecutionContext;
+class ScriptState;
 
 typedef HeapVector<std::pair<String, Member<MLTensor>>> MLNamedTensors;
 
@@ -62,6 +70,14 @@ class MODULES_EXPORT MLGraph : public ScriptWrappable {
   // ml_graph.idl
   void destroy();
   Vector<V8MLDeviceType> devices() const;
+  HeapVector<std::pair<String, Member<MLInputOperandDescriptor>>> inputs()
+      const;
+  HeapVector<std::pair<String, Member<MLInputOperandDescriptor>>> outputs()
+      const;
+  ScriptPromise<IDLRecord<IDLString, MLOperandDescriptor>> computeShapes(
+      ScriptState* script_state,
+      const Vector<std::pair<String, Vector<uint32_t>>>& input_shapes,
+      ExceptionState& exception_state);
 
   const NamedOperandDescriptors& GetInputConstraints() const;
   const NamedOperandDescriptors& GetOutputConstraints() const;
@@ -75,6 +91,15 @@ class MODULES_EXPORT MLGraph : public ScriptWrappable {
  private:
   void Dispose();
   void OnConnectionError();
+
+  // Reply handler for the WebNNGraph::ComputeShapes() mojo call. Resolves
+  // `resolver` with the inferred output descriptors, or rejects it if the
+  // service could not determine the output shapes.
+  void DidComputeShapes(
+      ScriptPromiseResolver<IDLRecord<IDLString, MLOperandDescriptor>>*
+          resolver,
+      base::expected<webnn::mojom::blink::ComputeShapesSuccessPtr,
+                     webnn::mojom::blink::ErrorPtr> result);
 
   // Describes the constraints on the inputs or outputs to this graph.
   // Note that `HashMap` values must be nullable, but

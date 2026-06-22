@@ -21,3 +21,13 @@ dictionary MLOperandDescriptor {
   required MLOperandDataType dataType;
   required sequence<[EnforceRange] unsigned long> shape;
 };
+
+// A single input dimension. A number is a static dimension; a string is a named
+// dynamic dimension (mapped to an ONNX symbolic dim). In a shape sequence, a
+// null element is an unnamed dynamic dimension (ORT's `?`).
+typedef ([EnforceRange] unsigned long or DOMString) MLDimension;
+
+dictionary MLInputOperandDescriptor {
+  required MLOperandDataType dataType;
+  required sequence<MLDimension?> shape;
+};

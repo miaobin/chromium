@@ -129,6 +129,8 @@ std::string OpTagToString(mojom::Operation::Tag tag) {
       return ops::kPrelu;
     case mojom::Operation::Tag::kQuantizeLinear:
       return ops::kQuantizeLinear;
+    case mojom::Operation::Tag::kRange:
+      return ops::kRange;
     case mojom::Operation::Tag::kReduce:
       return "reduce";
     case mojom::Operation::Tag::kRelu:
@@ -139,6 +141,8 @@ std::string OpTagToString(mojom::Operation::Tag tag) {
       return ops::kReshape;
     case mojom::Operation::Tag::kReverse:
       return ops::kReverse;
+    case mojom::Operation::Tag::kShape:
+      return ops::kShape;
     case mojom::Operation::Tag::kScatterElements:
       return ops::kScatterElements;
     case mojom::Operation::Tag::kScatterNd:
@@ -165,6 +169,20 @@ std::string OpTagToString(mojom::Operation::Tag tag) {
       return ops::kTriangular;
     case mojom::Operation::Tag::kWhere:
       return ops::kWhere;
+    case mojom::Operation::Tag::kDynamicReshape:
+      return ops::kDynamicReshape;
+    case mojom::Operation::Tag::kDynamicExpand:
+      return ops::kDynamicExpand;
+    case mojom::Operation::Tag::kDynamicSlice:
+      return ops::kDynamicSlice;
+    case mojom::Operation::Tag::kDynamicPad:
+      return ops::kDynamicPad;
+    case mojom::Operation::Tag::kDynamicSplit:
+      return ops::kDynamicSplit;
+    case mojom::Operation::Tag::kDynamicResample2d:
+      return ops::kDynamicResample2d;
+    case mojom::Operation::Tag::kDynamicTile:
+      return ops::kDynamicTile;
   }
 }
 
@@ -211,6 +229,8 @@ std::string OpKindToString(mojom::ElementWiseBinary::Kind kind) {
       return ops::kLogicalOr;
     case mojom::ElementWiseBinary::Kind::kLogicalXor:
       return ops::kLogicalXor;
+    case mojom::ElementWiseBinary::Kind::kMod:
+      return ops::kMod;
   }
 }
 
@@ -353,6 +373,7 @@ bool IsLogicalElementWiseBinary(mojom::ElementWiseBinary::Kind kind) {
     case mojom::ElementWiseBinary::Kind::kMax:
     case mojom::ElementWiseBinary::Kind::kMin:
     case mojom::ElementWiseBinary::Kind::kPow:
+    case mojom::ElementWiseBinary::Kind::kMod:
       return false;
     case mojom::ElementWiseBinary::Kind::kEqual:
     case mojom::ElementWiseBinary::Kind::kGreater:

@@ -548,6 +548,53 @@ const tests = [
       groups: 1,
       label: label,
     },
+    name: '[conv2d] Test with dynamic batch dimension.',
+    input: {dataType: 'float32', shape: ['N', 1, 5, 5]},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {dataType: 'float32', shape: ['N', 1, 3, 3]}
+  },
+  {
+    name: '[conv2d] Test with dynamic height dimension.',
+    input: {dataType: 'float32', shape: [1, 1, 'H', 5]},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {dataType: 'float32', shape: [1, 1, null, 3]}
+  },
+  {
+    name: '[conv2d] Test with dynamic width dimension.',
+    input: {dataType: 'float32', shape: [1, 1, 5, 'W']},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {dataType: 'float32', shape: [1, 1, 3, null]}
+  },
+  {
+    name:
+        '[conv2d] Test with dynamic height and width dimensions with padding.',
+    input: {dataType: 'float32', shape: [1, 1, 'H', 'W']},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    options: {
+      padding: [1, 1, 1, 1],
+    },
+    output: {dataType: 'float32', shape: [1, 1, 'H', 'W']}
+  },
+  {
+    name:
+        '[conv2d] Test with dynamic height and width dimensions with padding and strides.',
+    input: {dataType: 'float32', shape: [1, 1, 'H', 'W']},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    options: {
+      padding: [1, 1, 1, 1],
+      strides: [2, 2],
+    },
+    output: {dataType: 'float32', shape: [1, 1, null, null]}
+  },
+  {
+    name: '[conv2d] Test with dynamic dimensions in nhwc layout.',
+    input: {dataType: 'float32', shape: ['N', 'H', 'W', 1]},
+    filter: {dataType: 'float32', shape: [3, 3, 1, 1]},
+    options: {
+      inputLayout: 'nhwc',
+      filterLayout: 'hwio',
+    },
+    output: {dataType: 'float32', shape: ['N', null, null, 1]}
   },
 ];
 
@@ -566,7 +613,14 @@ tests.forEach(
               test.input.dataType)) {
         const output = builder.conv2d(input, filter, test.options);
         assert_equals(output.dataType, test.output.dataType);
-        assert_array_equals(output.shape, test.output.shape);
+        // Compare shapes element by element to handle dynamic dimensions
+        assert_equals(output.shape.length, test.output.shape.length);
+        for (let i = 0; i < output.shape.length; i++) {
+          // A dimension is a number (static), a string (named dynamic), or
+          // null (unnamed dynamic); compare directly.
+          assert_equals(
+              output.shape[i], test.output.shape[i], `Dimension ${i} mismatch`);
+        }
       } else {
         const regrexp = /\[conv_2d_\*\]/;
         assert_throws_with_label(

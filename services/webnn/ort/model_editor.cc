@@ -82,9 +82,33 @@ ScopedOrtValueInfo CreateOrtValueInfo(base::cstring_view name,
       tensor_type_and_shape_info.get(),
       WebnnToOnnxDataType(descriptor.data_type())));
 
-  std::vector<int64_t> int64_shape = WebnnToOnnxShape(descriptor.shape());
+  const base::span<const webnn::Dimension> shape = descriptor.shape();
+  std::vector<int64_t> int64_shape = WebnnToOnnxShape(shape);
   CHECK_STATUS(ort_api->SetDimensions(tensor_type_and_shape_info.get(),
                                       int64_shape.data(), int64_shape.size()));
+
+  // Assign symbolic dimension names so that ORT's shape inference can track
+  // relationships between dynamic dimensions (e.g. batch size shared across
+  // inputs and outputs).
+  bool has_dynamic_dims = false;
+  std::vector<const char*> dim_params;
+  dim_params.reserve(shape.size());
+  for (const auto& dim : shape) {
+    if (std::holds_alternative<webnn::DynamicDimension>(dim)) {
+      // A named dynamic dim emits its symbolic name; an unnamed dim emits "",
+      // which ORT treats as an anonymous dynamic dimension (`?`).
+      const auto& dim_name = std::get<webnn::DynamicDimension>(dim).name;
+      dim_params.push_back(dim_name.has_value() ? dim_name->c_str() : "");
+      has_dynamic_dims = true;
+    } else {
+      dim_params.push_back("");
+    }
+  }
+  if (has_dynamic_dims) {
+    CHECK_STATUS(ort_api->SetSymbolicDimensions(
+        tensor_type_and_shape_info.get(), dim_params.data(),
+        dim_params.size()));
+  }
 
   const OrtModelEditorApi* ort_model_editor_api = GetOrtModelEditorApi();
   ScopedOrtTypeInfo type_info;

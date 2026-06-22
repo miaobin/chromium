@@ -15,6 +15,7 @@
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_view.h"
 #include "third_party/blink/renderer/modules/ml/webnn/allow_shared_buffer_source_util.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph.h"
+#include "third_party/blink/renderer/modules/ml/webnn/ml_operand.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_operator.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
@@ -51,6 +52,7 @@ class MLPadOptions;
 class MLPool2dOptions;
 class MLReduceOptions;
 class MLResample2dOptions;
+class MLDynamicResample2dOptions;
 class MLReverseOptions;
 class MLScatterOptions;
 class MLSliceOptions;
@@ -59,6 +61,7 @@ class MLTensor;
 class MLTransposeOptions;
 class MLTriangularOptions;
 class MLOperand;
+class MLInputOperandDescriptor;
 class MLOperandDescriptor;
 class ScriptState;
 
@@ -97,7 +100,7 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
   // ml_graph_builder.idl
   MLOperand* input(ScriptState* script_state,
                    String name,
-                   const MLOperandDescriptor* desc,
+                   const MLInputOperandDescriptor* desc,
                    ExceptionState& exception_state);
   MLOperand* constant(ScriptState* script_state,
                       const MLOperandDescriptor* desc,
@@ -216,6 +219,10 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                         MLOperand* b,
                         MLOperatorOptions* options,
                         ExceptionState& exception_state);
+  MLOperand* mod(MLOperand* a,
+                 MLOperand* b,
+                 MLOperatorOptions* options,
+                 ExceptionState& exception_state);
 
   // Element-wise unary operations
   MLOperand* abs(MLOperand* input,
@@ -289,7 +296,7 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                  ExceptionState& exception_state);
 
   MLOperand* expand(MLOperand* input,
-                    const Vector<uint32_t>& new_shape,
+                    const MLDynamicShape& new_shape,
                     MLOperatorOptions* options,
                     ExceptionState& exception_state);
 
@@ -445,7 +452,7 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                   ExceptionState& exception_state);
 
   MLOperand* reshape(MLOperand* input,
-                     const Vector<uint32_t>& new_shape,
+                     const MLDynamicShape& new_shape,
                      MLOperatorOptions* options,
                      ExceptionState& exception_state);
 
@@ -469,6 +476,10 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                        MLOperand* updates,
                        MLOperatorOptions* options,
                        ExceptionState& exception_state);
+
+  MLOperand* shape(MLOperand* input,
+                   MLOperatorOptions* options,
+                   ExceptionState& exception_state);
 
   MLOperand* sigmoid(MLOperand* input,
                      MLOperatorOptions* options,
@@ -525,11 +536,61 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                    MLOperatorOptions* options,
                    ExceptionState& exception_state);
 
+  MLOperand* range(MLOperand* start,
+                   MLOperand* limit,
+                   MLOperand* delta,
+                   MLOperatorOptions* options,
+                   ExceptionState& exception_state);
+
+  MLOperand* dynamicReshape(MLOperand* input,
+                            MLOperand* new_shape,
+                            MLOperatorOptions* options,
+                            ExceptionState& exception_state);
+
+  MLOperand* dynamicExpand(MLOperand* input,
+                           MLOperand* new_shape,
+                           MLOperatorOptions* options,
+                           ExceptionState& exception_state);
+
+  MLOperand* dynamicSlice(MLOperand* input,
+                          MLOperand* starts,
+                          MLOperand* ends,
+                          MLOperatorOptions* options,
+                          ExceptionState& exception_state);
+
+  MLOperand* dynamicPad(MLOperand* input,
+                        MLOperand* beginning_padding,
+                        MLOperand* ending_padding,
+                        MLOperatorOptions* options,
+                        ExceptionState& exception_state);
+
+  MLOperand* dynamicTile(MLOperand* input,
+                         MLOperand* repetitions,
+                         MLOperatorOptions* options,
+                         ExceptionState& exception_state);
+
+  HeapVector<Member<MLOperand>> dynamicSplit(MLOperand* input,
+                                             MLOperand* splits,
+                                             uint32_t num_outputs,
+                                             MLOperatorOptions* options,
+                                             ExceptionState& exception_state);
+
+  MLOperand* dynamicResample2d(MLOperand* input,
+                               MLOperand* sizes,
+                               MLDynamicResample2dOptions* options,
+                               ExceptionState& exception_state);
+
   ScriptPromise<MLGraph> build(ScriptState* script_state,
                                MLNamedOperands& outputs,
                                ExceptionState& exception_state);
 
   void OnConnectionError();
+
+  // Registers all DynamicDimension entries in `descriptor` into
+  // `known_dynamic_dimensions_`. Propagated input dims are already present
+  // and DCHECKed for matching constraints; newly derived dims are new entries.
+  void RegisterOutputDynamicDimensions(
+      const webnn::OperandDescriptor& descriptor);
 
  private:
   void DidCreateWebNNGraph(
@@ -566,6 +627,23 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
   // Keep the unresolved `ScriptPromiseResolver` which will be rejected when the
   // Mojo pipe is unexpectedly disconnected.
   Member<ScriptPromiseResolver<MLGraph>> pending_resolver_;
+
+  // Track all input operands to collect their dynamic dimensions for
+  // validation.
+  HeapVector<Member<MLOperand>> input_operands_;
+
+  // Store all named dynamic dimensions from created inputs for validation.
+  // Maps dimension name to its DynamicDimension.
+  HashMap<String, webnn::DynamicDimension> known_dynamic_dimensions_;
+
+  // Monotonically increasing counter used to generate globally unique dynamic
+  // dimension names for ops that synthesize symbolic shapes (range,
+  // dynamicReshape, dynamicExpand, dynamicSlice, dynamicPad, dynamicSplit,
+  // dynamicResample2d).
+  // Without per-instance uniqueness, multiple invocations of the same op would
+  // share the same symbol name (e.g. "dynamic_slice_dim_1") and downstream
+  // shape inference would incorrectly conflate unrelated runtime sizes.
+  uint64_t dynamic_dim_counter_ = 0;
 };
 
 }  // namespace blink

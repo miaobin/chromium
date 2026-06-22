@@ -21,8 +21,10 @@ bool StructTraits<webnn::mojom::OperandDescriptorDataView,
                   webnn::OperandDescriptor>::
     Read(webnn::mojom::OperandDescriptorDataView data,
          webnn::OperandDescriptor* out) {
-  mojo::ArrayDataView<uint32_t> shape;
-  data.GetShapeDataView(&shape);
+  std::vector<webnn::Dimension> shape;
+  if (!data.ReadShape(&shape)) {
+    return false;
+  }
 
   mojo::ArrayDataView<uint32_t> pending_permutation;
   data.GetPendingPermutationDataView(&pending_permutation);
@@ -33,7 +35,7 @@ bool StructTraits<webnn::mojom::OperandDescriptorDataView,
   }
   base::expected<webnn::OperandDescriptor, std::string> descriptor =
       webnn::OperandDescriptor::CreateForDeserialization(
-          data_type, base::span(shape), base::span(pending_permutation));
+          data_type, shape, base::span(pending_permutation));
 
   if (!descriptor.has_value()) {
     return false;
@@ -99,6 +101,49 @@ EnumTraits<webnn::mojom::DataType, webnn::OperandDataType>::FromMojom(
       return webnn::OperandDataType::kUint4;
   }
   NOTREACHED();
+}
+
+// static
+webnn::mojom::DimensionDataView::Tag
+UnionTraits<webnn::mojom::DimensionDataView, webnn::Dimension>::GetTag(
+    const webnn::Dimension& dimension) {
+  if (std::holds_alternative<uint32_t>(dimension)) {
+    return webnn::mojom::DimensionDataView::Tag::kSize;
+  }
+  return webnn::mojom::DimensionDataView::Tag::kDynamicName;
+}
+
+// static
+uint32_t UnionTraits<webnn::mojom::DimensionDataView, webnn::Dimension>::size(
+    const webnn::Dimension& dimension) {
+  return std::get<uint32_t>(dimension);
+}
+
+// static
+const std::optional<std::string>&
+UnionTraits<webnn::mojom::DimensionDataView, webnn::Dimension>::dynamic_name(
+    const webnn::Dimension& dimension) {
+  return std::get<webnn::DynamicDimension>(dimension).name;
+}
+
+// static
+bool UnionTraits<webnn::mojom::DimensionDataView, webnn::Dimension>::Read(
+    webnn::mojom::DimensionDataView data,
+    webnn::Dimension* out) {
+  switch (data.tag()) {
+    case webnn::mojom::DimensionDataView::Tag::kSize:
+      *out = data.size();
+      return true;
+    case webnn::mojom::DimensionDataView::Tag::kDynamicName: {
+      std::optional<std::string> name;
+      if (!data.ReadDynamicName(&name)) {
+        return false;
+      }
+      *out = webnn::DynamicDimension{.name = std::move(name)};
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace mojo

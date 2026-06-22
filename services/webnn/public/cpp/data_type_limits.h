@@ -37,6 +37,7 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
                  SupportedTensors max_input,
                  SupportedTensors min_input,
                  SupportedTensors pow_input,
+                 SupportedTensors mod_input,
                  SupportedTensors equal_input,
                  SupportedTensors greater_input,
                  SupportedTensors greater_or_equal_input,
@@ -131,7 +132,25 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
                  SupportedTensors transpose_input,
                  SupportedTensors triangular_input,
                  SupportedTensors where_condition,
-                 SupportedTensors where_value);
+                 SupportedTensors where_value,
+                 SupportedTensors range_input,
+                 SupportedTensors range_output,
+                 SupportedTensors shape_input,
+                 SupportedTensors shape_output,
+                 SupportedTensors dynamic_reshape_input,
+                 SupportedTensors dynamic_reshape_new_shape,
+                 SupportedTensors dynamic_expand_input,
+                 SupportedTensors dynamic_expand_new_shape,
+                 SupportedTensors dynamic_slice_input,
+                 SupportedTensors dynamic_slice_starts,
+                 SupportedTensors dynamic_pad_input,
+                 SupportedTensors dynamic_pad_pads,
+                 SupportedTensors dynamic_split_input,
+                 SupportedTensors dynamic_split_splits,
+                 SupportedTensors dynamic_resample_2d_input,
+                 SupportedTensors dynamic_resample_2d_sizes,
+                 SupportedTensors dynamic_tile_input,
+                 SupportedTensors dynamic_tile_repetitions);
 
   // Copyable and movable.
   DataTypeLimits(const DataTypeLimits&);
@@ -166,6 +185,7 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
   SupportedTensors max_input;
   SupportedTensors min_input;
   SupportedTensors pow_input;
+  SupportedTensors mod_input;
   SupportedTensors equal_input;
   SupportedTensors greater_input;
   SupportedTensors greater_or_equal_input;
@@ -261,6 +281,24 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
   SupportedTensors triangular_input;
   SupportedTensors where_condition;
   SupportedTensors where_value;
+  SupportedTensors range_input;
+  SupportedTensors range_output;
+  SupportedTensors shape_input;
+  SupportedTensors shape_output;
+  SupportedTensors dynamic_reshape_input;
+  SupportedTensors dynamic_reshape_new_shape;
+  SupportedTensors dynamic_expand_input;
+  SupportedTensors dynamic_expand_new_shape;
+  SupportedTensors dynamic_slice_input;
+  SupportedTensors dynamic_slice_starts;
+  SupportedTensors dynamic_pad_input;
+  SupportedTensors dynamic_pad_pads;
+  SupportedTensors dynamic_split_input;
+  SupportedTensors dynamic_split_splits;
+  SupportedTensors dynamic_resample_2d_input;
+  SupportedTensors dynamic_resample_2d_sizes;
+  SupportedTensors dynamic_tile_input;
+  SupportedTensors dynamic_tile_repetitions;
 };
 
 // clang-format off
@@ -288,6 +326,7 @@ inline bool operator==(const DataTypeLimits& lhs, const DataTypeLimits& rhs) {
          lhs.max_input == rhs.max_input &&
          lhs.min_input == rhs.min_input &&
          lhs.pow_input == rhs.pow_input &&
+         lhs.mod_input == rhs.mod_input &&
          lhs.equal_input == rhs.equal_input &&
          lhs.greater_input == rhs.greater_input &&
          lhs.greater_or_equal_input == rhs.greater_or_equal_input &&
@@ -382,7 +421,25 @@ inline bool operator==(const DataTypeLimits& lhs, const DataTypeLimits& rhs) {
          lhs.transpose_input == rhs.transpose_input &&
          lhs.triangular_input == rhs.triangular_input &&
          lhs.where_condition == rhs.where_condition &&
-         lhs.where_value == rhs.where_value;
+           lhs.where_value == rhs.where_value &&
+           lhs.range_input == rhs.range_input &&
+           lhs.range_output == rhs.range_output &&
+           lhs.shape_input == rhs.shape_input &&
+           lhs.shape_output == rhs.shape_output &&
+           lhs.dynamic_reshape_input == rhs.dynamic_reshape_input &&
+           lhs.dynamic_reshape_new_shape == rhs.dynamic_reshape_new_shape &&
+           lhs.dynamic_expand_input == rhs.dynamic_expand_input &&
+           lhs.dynamic_expand_new_shape == rhs.dynamic_expand_new_shape &&
+           lhs.dynamic_slice_input == rhs.dynamic_slice_input &&
+           lhs.dynamic_slice_starts == rhs.dynamic_slice_starts &&
+           lhs.dynamic_pad_input == rhs.dynamic_pad_input &&
+           lhs.dynamic_pad_pads == rhs.dynamic_pad_pads &&
+           lhs.dynamic_split_input == rhs.dynamic_split_input &&
+           lhs.dynamic_split_splits == rhs.dynamic_split_splits &&
+           lhs.dynamic_resample_2d_input == rhs.dynamic_resample_2d_input &&
+           lhs.dynamic_resample_2d_sizes == rhs.dynamic_resample_2d_sizes &&
+           lhs.dynamic_tile_input == rhs.dynamic_tile_input &&
+           lhs.dynamic_tile_repetitions == rhs.dynamic_tile_repetitions;
 }
 // clang-format on
 

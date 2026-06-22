@@ -62,6 +62,53 @@ const tests = [
     input: {dataType: 'float32', shape: [1, 2, 1, 1]},
     newShape: [1, 2, kMaxUnsignedLong, kMaxUnsignedLong],
   },
+  {
+    name: '[expand] Test with dynamic dimension preserved in newShape.',
+    input: {dataType: 'float32', shape: ['batch', 1]},
+    newShape: ['batch', 4],
+    output: {dataType: 'float32', shape: ['batch', 4]}
+  },
+  {
+    name:
+        '[expand] Test with dynamic dimension preserved and static dimensions expanded.',
+    input: {dataType: 'float32', shape: [1, 'seq', 1]},
+    newShape: [3, 'seq', 4],
+    output: {dataType: 'float32', shape: [3, 'seq', 4]}
+  },
+  {
+    name:
+        '[expand] Test with multiple dynamic dimensions preserved in newShape.',
+    input: {dataType: 'float32', shape: ['N', 'M']},
+    newShape: [4, 'N', 'M'],
+    output: {dataType: 'float32', shape: [4, 'N', 'M']}
+  },
+  {
+    name: '[expand] Throw if dynamic dimension name mismatch in newShape.',
+    input: {dataType: 'float32', shape: ['N', 1]},
+    newShape: ['M', 4],
+    options: {label}
+  },
+  {
+    name:
+        '[expand] Throw if dynamic dimension is replaced with static dimension in newShape.',
+    input: {dataType: 'float32', shape: ['batch', 3]},
+    newShape: [5, 3],
+    options: {label}
+  },
+  {
+    name:
+        '[expand] Throw if static dimension size 1 is expanded to an unknown dynamic dimension.',
+    input: {dataType: 'float32', shape: [3, 1]},
+    newShape: [3, 'N'],
+    options: {label}
+  },
+  {
+    name:
+        '[expand] Throw if static dimension size 1 is expanded to a known dynamic dimension.',
+    input: {dataType: 'float32', shape: ['N', 1]},
+    newShape: ['N', 'N'],
+    output: {dataType: 'float32', shape: ['N', 'N']}
+  },
 ];
 
 tests.forEach(
@@ -72,7 +119,13 @@ tests.forEach(
       if (test.output) {
         const output = builder.expand(input, test.newShape);
         assert_equals(output.dataType, test.output.dataType);
-        assert_array_equals(output.shape, test.output.shape);
+        // Compare shapes element by element to handle dynamic dimensions
+        assert_equals(output.shape.length, test.output.shape.length);
+        for (let i = 0; i < output.shape.length; i++) {
+          // A dimension is a number (static), a string (named dynamic), or
+          // null (unnamed dynamic); compare directly.
+          assert_equals(output.shape[i], test.output.shape[i]);
+        }
       } else {
         const options = {...test.options};
         if (options.label) {

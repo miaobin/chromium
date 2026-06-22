@@ -39,6 +39,20 @@ OperandId GraphInfoBuilder::BuildOperand(
   return OperandId(graph_info_->operands.size() - 1);
 }
 
+OperandId GraphInfoBuilder::BuildDynamicOperand(
+    const std::vector<Dimension>& dimensions,
+    OperandDataType type,
+    mojom::Operand::Kind kind) {
+  mojom::OperandPtr operand = mojom::Operand::New();
+
+  operand->descriptor =
+      OperandDescriptor::UnsafeCreateForTesting(type, dimensions);
+  operand->kind = kind;
+
+  graph_info_->operands.push_back(std::move(operand));
+  return OperandId(graph_info_->operands.size() - 1);
+}
+
 OperandId GraphInfoBuilder::BuildIntermediateOperand(
     const std::vector<uint32_t>& dimensions,
     OperandDataType type) {
@@ -50,6 +64,16 @@ OperandId GraphInfoBuilder::BuildInput(const std::string& name,
                                        OperandDataType type) {
   OperandId operand_id =
       BuildOperand(dimensions, type, mojom::Operand::Kind::kInput);
+  graph_info_->operands[operand_id.value()]->name = name;
+  graph_info_->input_operands.push_back(operand_id);
+  return operand_id;
+}
+
+OperandId GraphInfoBuilder::BuildDynamicInput(const std::string& name,
+                                       const std::vector<Dimension>& dimensions,
+                                       OperandDataType type) {
+  OperandId operand_id =
+      BuildDynamicOperand(dimensions, type, mojom::Operand::Kind::kInput);
   graph_info_->operands[operand_id.value()]->name = name;
   graph_info_->input_operands.push_back(operand_id);
   return operand_id;
@@ -85,6 +109,14 @@ OperandId GraphInfoBuilder::BuildOutput(const std::string& name,
                                         const std::vector<uint32_t>& dimensions,
                                         OperandDataType type) {
   OperandId operand_id = BuildOperand(dimensions, type);
+  AddOutput(name, operand_id);
+  return operand_id;
+}
+
+OperandId GraphInfoBuilder::BuildDynamicOutput(const std::string& name,
+                                        const std::vector<Dimension>& dimensions,
+                                        OperandDataType type) {
+  OperandId operand_id = BuildDynamicOperand(dimensions, type);
   AddOutput(name, operand_id);
   return operand_id;
 }
@@ -250,9 +282,22 @@ void GraphInfoBuilder::BuildElementWiseBinary(
 }
 
 void GraphInfoBuilder::BuildExpand(OperandId input_operand_id,
-                                   OperandId output_operand_id) {
-  graph_info_->operations.push_back(mojom::Operation::NewExpand(
-      mojom::Expand::New(input_operand_id, output_operand_id, "")));
+                                   OperandId output_operand_id,
+                                   std::vector<webnn::Dimension> new_shape) {
+  auto expand = mojom::Expand::New();
+  expand->input_operand_id = input_operand_id;
+  expand->output_operand_id = output_operand_id;
+  for (const auto& dim : new_shape) {
+    if (std::holds_alternative<uint32_t>(dim)) {
+      expand->new_shape.push_back(
+          mojom::Dimension::NewSize(std::get<uint32_t>(dim)));
+    } else {
+      const auto& dyn = std::get<webnn::DynamicDimension>(dim);
+      expand->new_shape.push_back(mojom::Dimension::NewDynamicName(dyn.name));
+    }
+  }
+  graph_info_->operations.push_back(
+      mojom::Operation::NewExpand(std::move(expand)));
 }
 
 void GraphInfoBuilder::BuildMatmul(OperandId a_operand_id,
@@ -410,6 +455,37 @@ void GraphInfoBuilder::BuildReverse(OperandId input_operand_id,
   reverse->axes = std::move(axes);
   graph_info_->operations.push_back(
       mojom::Operation::NewReverse(std::move(reverse)));
+}
+
+void GraphInfoBuilder::BuildShape(OperandId input_operand_id,
+                                  OperandId output_operand_id) {
+  auto shape = mojom::Shape::New();
+  shape->input_operand_id = input_operand_id;
+  shape->output_operand_id = output_operand_id;
+  graph_info_->operations.push_back(
+      mojom::Operation::NewShape(std::move(shape)));
+}
+
+void GraphInfoBuilder::BuildDynamicReshape(OperandId input_operand_id,
+                                           OperandId new_shape_operand_id,
+                                           OperandId output_operand_id) {
+  auto dynamic_reshape = mojom::DynamicReshape::New();
+  dynamic_reshape->input_operand_id = input_operand_id;
+  dynamic_reshape->new_shape_operand_id = new_shape_operand_id;
+  dynamic_reshape->output_operand_id = output_operand_id;
+  graph_info_->operations.push_back(
+      mojom::Operation::NewDynamicReshape(std::move(dynamic_reshape)));
+}
+
+void GraphInfoBuilder::BuildDynamicExpand(OperandId input_operand_id,
+                                          OperandId new_shape_operand_id,
+                                          OperandId output_operand_id) {
+  auto dynamic_expand = mojom::DynamicExpand::New();
+  dynamic_expand->input_operand_id = input_operand_id;
+  dynamic_expand->new_shape_operand_id = new_shape_operand_id;
+  dynamic_expand->output_operand_id = output_operand_id;
+  graph_info_->operations.push_back(
+      mojom::Operation::NewDynamicExpand(std::move(dynamic_expand)));
 }
 
 void GraphInfoBuilder::BuildScatterElements(OperandId input_operand_id,
@@ -606,6 +682,7 @@ ContextProperties GetContextPropertiesForTesting() {
        /*max_input=*/{SupportedDataTypes::All(), kMaxRank},
        /*min_input=*/{SupportedDataTypes::All(), kMaxRank},
        /*pow_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*mod_input=*/{SupportedDataTypes::All(), kMaxRank},
        /*equal_input=*/{SupportedDataTypes::All(), kMaxRank},
        /*greater_input=*/{SupportedDataTypes::All(), kMaxRank},
        /*greater_or_equal_input=*/{SupportedDataTypes::All(), kMaxRank},
@@ -716,7 +793,25 @@ ContextProperties GetContextPropertiesForTesting() {
        /*triangular_input=*/
        {SupportedDataTypes::All(), kMaxRank},
        /*where_condition=*/{SupportedDataTypes::All(), kMaxRank},
-       /*where_value=*/{SupportedDataTypes::All(), kMaxRank}}));
+       /*where_value=*/{SupportedDataTypes::All(), kMaxRank},
+       /*range_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*range_output=*/{SupportedDataTypes::All(), kMaxRank},
+       /*shape_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*shape_output=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_reshape_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_reshape_new_shape=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_expand_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_expand_new_shape=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_slice_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_slice_starts=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_pad_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_pad_pads=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_split_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_split_splits=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_resample_2d_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_resample_2d_sizes=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_tile_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes::All(), kMaxRank}}));
 }
 
 }  // namespace webnn

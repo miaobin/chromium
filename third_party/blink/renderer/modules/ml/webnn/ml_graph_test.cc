@@ -47,6 +47,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_dom_exception.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_string_unsignedlongenforcerange.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_clamp_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_context_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_2d_options.h"
@@ -175,10 +176,30 @@ void SetArrayBufferViewValues(MaybeShared<DOMArrayBufferView> array_buffer_view,
          values.size() * sizeof(T));
 }
 
+// Helper function to compare a Dimension vector with expected uint32_t values.
+void ExpectShapeEquals(const std::vector<webnn::Dimension>& actual_shape,
+                       const Vector<uint32_t>& expected_shape) {
+  ASSERT_EQ(actual_shape.size(), expected_shape.size());
+  for (size_t i = 0; i < expected_shape.size(); ++i) {
+    EXPECT_EQ(std::get<uint32_t>(actual_shape[i]), expected_shape[i]);
+  }
+}
+
+// Helper function to create a HeapVector of V8 union types from dimensions.
+HeapVector<Member<V8UnionStringOrUnsignedLongEnforceRange>> CreateMLShapeVector(
+    const Vector<uint32_t>& dimensions) {
+  HeapVector<Member<V8UnionStringOrUnsignedLongEnforceRange>> shape;
+  for (uint32_t dim : dimensions) {
+    shape.push_back(
+        MakeGarbageCollected<V8UnionStringOrUnsignedLongEnforceRange>(dim));
+  }
+  return shape;
+}
+
 // Helper function to create an ArrayBufferView given an operand.
 MaybeShared<DOMArrayBufferView> CreateArrayBufferViewForOperand(
     const MLOperand* operand) {
-  return CreateDOMArrayBufferView(operand->NumberOfElements(),
+  return CreateDOMArrayBufferView(operand->NumberOfElements().value(),
                                   operand->dataType().AsEnum());
 }
 
@@ -254,6 +275,8 @@ MLOperand* BuildElementWiseBinaryOperator(
       return builder->max(a, b, options, scope.GetExceptionState());
     case webnn::mojom::blink::ElementWiseBinary::Kind::kPow:
       return builder->pow(a, b, options, scope.GetExceptionState());
+    case webnn::mojom::blink::ElementWiseBinary::Kind::kMod:
+      return builder->mod(a, b, options, scope.GetExceptionState());
     case webnn::mojom::blink::ElementWiseBinary::Kind::kEqual:
       return builder->equal(a, b, options, scope.GetExceptionState());
     case webnn::mojom::blink::ElementWiseBinary::Kind::kGreater:
@@ -383,6 +406,13 @@ class FakeWebNNGraph : public blink_mojom::WebNNGraph {
   ~FakeWebNNGraph() override = default;
 
  private:
+  // Not exercised by these tests, which never query shapes on the fake graph.
+  void ComputeShapes(
+      const HashMap<String, Vector<uint32_t>>& named_input_shapes,
+      ComputeShapesCallback callback) override {
+    NOTREACHED();
+  }
+
   // TODO(crbug.com/354741414): Fix this dangling pointer.
   const raw_ref<MLGraphTest, DanglingUntriaged> helper_;
 };
@@ -634,6 +664,7 @@ class FakeWebNNContextProvider : public blink_mojom::WebNNContextProvider {
          /*max_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*min_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*pow_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*mod_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*equal_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*greater_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*greater_or_equal_input=*/
@@ -785,7 +816,30 @@ class FakeWebNNContextProvider : public blink_mojom::WebNNContextProvider {
          /*triangular_input=*/
          {webnn::SupportedDataTypes::All(), kMaxRank},
          /*where_condition=*/{webnn::SupportedDataTypes::All(), kMaxRank},
-         /*where_value=*/{webnn::SupportedDataTypes::All(), kMaxRank}});
+         /*where_value=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*range_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*range_output=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*shape_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*shape_output=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_reshape_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_reshape_new_shape=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_expand_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_expand_new_shape=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_slice_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_slice_starts=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_pad_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_pad_pads=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_split_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_split_splits=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_resample_2d_input=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_resample_2d_sizes=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_tile_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*dynamic_tile_repetitions=*/
+         {webnn::SupportedDataTypes::All(), kMaxRank}});
     auto success = blink_mojom::CreateContextSuccess::New(
         std::move(blink_remote),
         /*compiler_context_remote=*/mojo::NullRemote(),
@@ -887,7 +941,11 @@ MLTensor* CreateMLTensorForOperand(V8TestingScope& scope,
   auto array_buffer_view = CreateArrayBufferViewForOperand(operand);
   auto* desc = MLTensorDescriptor::Create();
   desc->setDataType(operand->dataType());
-  desc->setShape(operand->shape());
+  Vector<uint32_t> shape_uint32;
+  for (const webnn::Dimension& dim : operand->Shape()) {
+    shape_uint32.push_back(std::get<uint32_t>(dim));
+  }
+  desc->setShape(shape_uint32);
   desc->setReadable(true);
   desc->setWritable(true);
 
@@ -1603,16 +1661,17 @@ TEST_F(MLGraphTest, MLTransformTest) {
     auto* c = builder->relu(b, relu_options, exception_state);
     ASSERT_THAT(c, testing::NotNull());
 
-    EXPECT_EQ(c->Shape(), std::vector<uint32_t>({3, 5, 4}));
+    ExpectShapeEquals(c->Shape(), Vector<uint32_t>({3, 5, 4}));
     // Transform the graph to:
     // [a] -> relu -> [c]
     MLGraphTransformer::Disconnect(a, b->Operator(), 0);
     MLGraphTransformer::Disconnect(b, c->Operator(), 0);
     MLGraphTransformer::Connect(a, c->Operator(), 0);
     // update shape of c
+    std::vector<webnn::Dimension> new_shape = {3u, 4u, 5u};
     auto* updated_c =
-        MLGraphTransformer::ReplaceOperandWithNewShape(c, {3, 4, 5});
-    EXPECT_EQ(updated_c->Shape(), std::vector<uint32_t>({3, 4, 5}));
+        MLGraphTransformer::ReplaceOperandWithNewShape(c, new_shape);
+    ExpectShapeEquals(updated_c->Shape(), Vector<uint32_t>({3, 4, 5}));
 
     // Build the transformed graph.
     MLNamedOperands named_outputs = {{"c", updated_c}};
@@ -1652,7 +1711,7 @@ TEST_F(MLGraphTest, MLTransposeEliminationTransformerTest) {
     transpose_options2->setPermutation({0, 2, 1});
     auto* c = builder->transpose(b, transpose_options2, exception_state);
     ASSERT_THAT(c, testing::NotNull());
-    EXPECT_EQ(c->Shape(), std::vector<uint32_t>({3, 4, 5}));
+    ExpectShapeEquals(c->Shape(), Vector<uint32_t>({3, 4, 5}));
     MLNamedOperands named_outputs = {{"c", c}};
 
     auto* transpose_elimination_transformer =
@@ -1694,7 +1753,7 @@ TEST_F(MLGraphTest, MLTransposeEliminationTransformerTest) {
     transpose_options2->setPermutation({0, 2, 1});
     auto* d = builder->transpose(c, transpose_options2, exception_state);
     ASSERT_THAT(d, testing::NotNull());
-    EXPECT_EQ(d->Shape(), std::vector<uint32_t>({3, 4, 5}));
+    ExpectShapeEquals(d->Shape(), Vector<uint32_t>({3, 4, 5}));
     MLNamedOperands named_outputs = {{"d", d}};
 
     auto* transpose_elimination_transformer =
@@ -1740,7 +1799,7 @@ TEST_F(MLGraphTest, MLTransposeEliminationTransformerTest) {
     auto* relu_options = MLOperatorOptions::Create();
     auto* d = builder->relu(c, relu_options, exception_state);
     ASSERT_THAT(d, testing::NotNull());
-    EXPECT_EQ(d->Shape(), std::vector<uint32_t>({3, 4, 5}));
+    ExpectShapeEquals(d->Shape(), Vector<uint32_t>({3, 4, 5}));
     MLNamedOperands named_outputs = {{"d", d}};
 
     auto* transpose_elimination_transformer =
@@ -1787,7 +1846,7 @@ TEST_F(MLGraphTest, MLTransposeEliminationTransformerTest) {
     auto* relu_options = MLOperatorOptions::Create();
     auto* d = builder->relu(c, relu_options, exception_state);
     ASSERT_THAT(d, testing::NotNull());
-    EXPECT_EQ(d->Shape(), std::vector<uint32_t>({3, 4, 5}));
+    ExpectShapeEquals(d->Shape(), Vector<uint32_t>({3, 4, 5}));
     MLNamedOperands named_outputs = {{"b", b}, {"d", d}};
 
     auto* transpose_elimination_transformer =
@@ -1832,7 +1891,7 @@ TEST_F(MLGraphTest, MLTransposeEliminationTransformerTest) {
     auto* d = builder->transpose(c, transpose_options2, exception_state);
     ASSERT_THAT(d, testing::NotNull());
 
-    EXPECT_EQ(d->Shape(), std::vector<uint32_t>({3, 4, 5}));
+    ExpectShapeEquals(d->Shape(), Vector<uint32_t>({3, 4, 5}));
     MLNamedOperands named_outputs = {{"d", d}};
 
     auto* transpose_elimination_transformer =
@@ -1893,7 +1952,7 @@ TEST_F(MLGraphTest, MLTransposeEliminationTransformerTest) {
     auto* d = builder->transpose(c, transpose_options2, exception_state);
     ASSERT_THAT(d, testing::NotNull());
 
-    EXPECT_EQ(d->Shape(), std::vector<uint32_t>({3, 4, 5}));
+    ExpectShapeEquals(d->Shape(), Vector<uint32_t>({3, 4, 5}));
     MLNamedOperands named_outputs = {{"c", c}, {"d", d}};
 
     auto* transpose_elimination_transformer =
@@ -1938,7 +1997,7 @@ TEST_F(MLGraphTest, MLTransposeEliminationTransformerTest) {
     transpose_options2->setPermutation({1, 0, 2});
     auto* d = builder->transpose(c, transpose_options2, exception_state);
     ASSERT_THAT(d, testing::NotNull());
-    EXPECT_EQ(d->Shape(), std::vector<uint32_t>({5, 3, 4}));
+    ExpectShapeEquals(d->Shape(), Vector<uint32_t>({5, 3, 4}));
     MLNamedOperands named_outputs = {{"d", d}};
 
     auto* transpose_elimination_transformer =
@@ -2350,7 +2409,7 @@ TEST_F(MLGraphTest, MLConstantFoldingTransformerNoOpTest) {
   auto* b = builder->transpose(a, transpose_options, exception_state);
   ASSERT_THAT(b, testing::NotNull());
 
-  EXPECT_EQ(b->Shape(), std::vector<uint32_t>({3, 5, 4}));
+  ExpectShapeEquals(b->Shape(), Vector<uint32_t>({3, 5, 4}));
   MLNamedOperands named_outputs = {{"b", b}};
 
   auto* constant_folding_transformer =
@@ -2382,8 +2441,8 @@ TEST_F(MLGraphTest, MLConstantFoldingTransformerTest) {
   transpose_options->setPermutation({0, 2, 1});
   auto* b = builder->transpose(a, transpose_options, exception_state);
   ASSERT_THAT(b, testing::NotNull());
-  auto* c = builder->reshape(b, {3, 20}, MLOperatorOptions::Create(),
-                             exception_state);
+  auto* c = builder->reshape(b, CreateMLShapeVector({3, 20}),
+                             MLOperatorOptions::Create(), exception_state);
   ASSERT_THAT(c, testing::NotNull());
   auto* d =
       builder->transpose(c, MLTransposeOptions::Create(), exception_state);
@@ -2398,9 +2457,8 @@ TEST_F(MLGraphTest, MLConstantFoldingTransformerTest) {
   constant_folding_transformer->Transform(named_outputs);
   auto& relu_input = e->Operator()->Inputs()[0];
   EXPECT_EQ(relu_input->Kind(), webnn::mojom::blink::Operand::Kind::kConstant);
-  Vector<uint32_t> expected_shape{20, 3};
-  EXPECT_EQ(e->shape(), expected_shape);
-  EXPECT_EQ(e->shape(), relu_input->shape());
+  ExpectShapeEquals(e->Shape(), Vector<uint32_t>({20, 3}));
+  ExpectShapeEquals(relu_input->Shape(), Vector<uint32_t>({20, 3}));
 
   auto [graph, error_name, error_message] =
       BuildGraph(scope, builder, named_outputs);

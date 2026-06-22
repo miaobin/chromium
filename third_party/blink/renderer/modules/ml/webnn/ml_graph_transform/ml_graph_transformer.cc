@@ -201,6 +201,7 @@ void UpdateOperatorOptions(MLOperator* op,
     case blink_mojom::Operation::Tag::kReverse:
     case blink_mojom::Operation::Tag::kScatterElements:
     case blink_mojom::Operation::Tag::kScatterNd:
+    case blink_mojom::Operation::Tag::kShape:
     case blink_mojom::Operation::Tag::kSigmoid:
     case blink_mojom::Operation::Tag::kSlice:
     case blink_mojom::Operation::Tag::kSoftmax:
@@ -211,7 +212,15 @@ void UpdateOperatorOptions(MLOperator* op,
     case blink_mojom::Operation::Tag::kTile:
     case blink_mojom::Operation::Tag::kTranspose:
     case blink_mojom::Operation::Tag::kTriangular:
-    case blink_mojom::Operation::Tag::kWhere: {
+    case blink_mojom::Operation::Tag::kWhere:
+    case blink_mojom::Operation::Tag::kRange:
+    case blink_mojom::Operation::Tag::kDynamicReshape:
+    case blink_mojom::Operation::Tag::kDynamicExpand:
+    case blink_mojom::Operation::Tag::kDynamicSlice:
+    case blink_mojom::Operation::Tag::kDynamicPad:
+    case blink_mojom::Operation::Tag::kDynamicSplit:
+    case blink_mojom::Operation::Tag::kDynamicResample2d:
+    case blink_mojom::Operation::Tag::kDynamicTile: {
       break;
     }
   }
@@ -299,12 +308,19 @@ void MLGraphTransformer::RemoveUnaryOperator(MLOperator* op) {
 // static
 MLOperand* MLGraphTransformer::CloneOperandAndResetShape(
     const MLOperand* operand,
-    const Vector<uint32_t>& shape) {
+    const std::vector<webnn::Dimension>& shape) {
   auto descriptor = webnn::OperandDescriptor::Create(
       operand->Builder()->GetContext()->GetProperties(), operand->DataType(),
       shape, /*label=*/"");
   CHECK(descriptor.has_value());
-  CHECK_EQ(operand->NumberOfElements(), descriptor->NumberOfElements());
+  // `NumberOfElements()` returns nullopt for shapes with an unbounded dynamic
+  // dim; only compare element counts when both sides are knowable.
+  auto old_num_elements = operand->NumberOfElements();
+  auto new_num_elements = descriptor->NumberOfElements();
+  CHECK_EQ(old_num_elements.has_value(), new_num_elements.has_value());
+  if (old_num_elements.has_value()) {
+    CHECK_EQ(*old_num_elements, *new_num_elements);
+  }
 
   MLOperand* clone = MakeGarbageCollected<MLOperand>(
       operand->Builder(), operand->Kind(), descriptor.value());
@@ -322,7 +338,14 @@ MLOperand* MLGraphTransformer::CloneOperandAndResetDataType(
       operand->Builder()->GetContext()->GetProperties(), data_type,
       operand->Shape(), /*label=*/"");
   CHECK(descriptor.has_value());
-  CHECK_EQ(operand->NumberOfElements(), descriptor->NumberOfElements());
+  // `NumberOfElements()` returns nullopt for shapes with an unbounded dynamic
+  // dim; only compare element counts when both sides are knowable.
+  auto old_num_elements = operand->NumberOfElements();
+  auto new_num_elements = descriptor->NumberOfElements();
+  CHECK_EQ(old_num_elements.has_value(), new_num_elements.has_value());
+  if (old_num_elements.has_value()) {
+    CHECK_EQ(*old_num_elements, *new_num_elements);
+  }
 
   MLOperand* clone = MakeGarbageCollected<MLOperand>(
       operand->Builder(), operand->Kind(), descriptor.value());
@@ -358,7 +381,7 @@ void MLGraphTransformer::ReplaceOperand(const MLOperand* old_operand,
 // static
 MLOperand* MLGraphTransformer::ReplaceOperandWithNewShape(
     MLOperand* old_operand,
-    const Vector<uint32_t>& new_shape) {
+    const std::vector<webnn::Dimension>& new_shape) {
   auto* new_operand = CloneOperandAndResetShape(old_operand, new_shape);
   ReplaceOperand(old_operand, new_operand);
   return new_operand;
@@ -366,12 +389,19 @@ MLOperand* MLGraphTransformer::ReplaceOperandWithNewShape(
 
 MLConstantOperand* MLGraphTransformer::ReplaceConstantOperandWithNewShape(
     const MLConstantOperand* old_operand,
-    const Vector<uint32_t>& new_shape) {
+    const std::vector<webnn::Dimension>& new_shape) {
   auto descriptor = webnn::OperandDescriptor::Create(
       old_operand->Builder()->GetContext()->GetProperties(),
       old_operand->DataType(), new_shape, /*label=*/"");
   CHECK(descriptor.has_value());
-  CHECK_EQ(old_operand->NumberOfElements(), descriptor->NumberOfElements());
+  // `NumberOfElements()` returns nullopt for shapes with an unbounded dynamic
+  // dim; only compare element counts when both sides are knowable.
+  auto old_num_elements = old_operand->NumberOfElements();
+  auto new_num_elements = descriptor->NumberOfElements();
+  CHECK_EQ(old_num_elements.has_value(), new_num_elements.has_value());
+  if (old_num_elements.has_value()) {
+    CHECK_EQ(*old_num_elements, *new_num_elements);
+  }
 
   MLConstantOperand* new_operand = MakeGarbageCollected<MLConstantOperand>(
       old_operand->Builder(), descriptor.value(), old_operand->handle());

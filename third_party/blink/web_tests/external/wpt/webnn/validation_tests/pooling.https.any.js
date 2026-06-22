@@ -306,6 +306,69 @@ const tests = [
       layout: 'nhwc',
       label: label,
     },
+    name: 'Test pool2d with dynamic batch dimension.',
+    input: {dataType: 'float32', shape: ['N', 3, 4, 4]},
+    output: {dataType: 'float32', shape: ['N', 3, 1, 1]}
+  },
+  {
+    name:
+        'Test pool2d with dynamic height and width dimensions without windowDimensions (global pooling).',
+    input: {dataType: 'float32', shape: [1, 3, 'H', 'W']},
+    output: {dataType: 'float32', shape: [1, 3, 1, 1]}
+  },
+  {
+    name: 'Test pool2d with dynamic height dimension.',
+    input: {dataType: 'float32', shape: [1, 3, 'H', 4]},
+    options: {
+      windowDimensions: [3, 3],
+    },
+    output: {dataType: 'float32', shape: [1, 3, null, 2]}
+  },
+  {
+    name: 'Test pool2d with dynamic width dimension.',
+    input: {dataType: 'float32', shape: [1, 3, 4, 'W']},
+    options: {
+      windowDimensions: [3, 3],
+    },
+    output: {dataType: 'float32', shape: [1, 3, 2, null]}
+  },
+  {
+    name: 'Test pool2d with dynamic height and width dimensions with padding.',
+    input: {dataType: 'float32', shape: [1, 3, 'H', 'W']},
+    options: {
+      windowDimensions: [5, 5],
+      padding: [2, 2, 2, 2],
+    },
+    output: {dataType: 'float32', shape: [1, 3, 'H', 'W']}
+  },
+  {
+    name: 'Test pool2d with dynamic height and width dimensions with strides.',
+    input: {dataType: 'float32', shape: [1, 3, 'H', 'W']},
+    options: {
+      windowDimensions: [2, 2],
+      strides: [2, 2],
+    },
+    output: {dataType: 'float32', shape: [1, 3, null, null]}
+  },
+  {
+    name:
+        'Test pool2d with dynamic height and width dimensions with strides and padding.',
+    input: {dataType: 'float32', shape: [1, 3, 'H', 'W']},
+    options: {
+      windowDimensions: [3, 3],
+      padding: [1, 1, 1, 1],
+      strides: [2, 2],
+    },
+    output: {dataType: 'float32', shape: [1, 3, null, null]}
+  },
+  {
+    name: 'Test pool2d with dynamic dimensions in nhwc layout.',
+    input: {dataType: 'float32', shape: ['N', 'H', 'W', 3]},
+    options: {
+      windowDimensions: [3, 3],
+      layout: 'nhwc',
+    },
+    output: {dataType: 'float32', shape: ['N', null, null, 3]}
   },
 ];
 
@@ -317,7 +380,15 @@ tests.forEach(
         if (test.output) {
           const output = builder[operatorName](input, test.options);
           assert_equals(output.dataType, test.output.dataType);
-          assert_array_equals(output.shape, test.output.shape);
+          // Compare shapes element by element to handle dynamic dimensions
+          assert_equals(output.shape.length, test.output.shape.length);
+          for (let i = 0; i < output.shape.length; i++) {
+            // A dimension is a number (static), a string (named dynamic), or
+            // null (unnamed dynamic); compare directly.
+            assert_equals(
+                output.shape[i], test.output.shape[i],
+                `Dimension ${i} mismatch`);
+          }
         } else {
           const regrexp = new RegExp('\\[' + label + '\\]');
           assert_throws_with_label(

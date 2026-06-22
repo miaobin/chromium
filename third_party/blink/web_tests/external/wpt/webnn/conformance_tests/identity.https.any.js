@@ -522,3 +522,20 @@ const identityTests = [
 
 webnn_conformance_test(
     identityTests, buildAndExecuteGraph, getZeroULPTolerance);
+
+promise_test(async t => {
+  const context = await getContext();
+  const builder = new MLGraphBuilder(context);
+  const descriptor = {shape: ['N', 4], dataType: 'float32'};
+  const inputOperand = builder.input('input', descriptor);
+  const outputOperand = builder.identity(inputOperand);
+  const graph = await builder.build({'output': outputOperand});
+
+  // A dynamic dimension resolves to any positive concrete size at dispatch.
+  const inputTensor = await context.createTensor(
+      {dataType: 'float32', shape: [6, 4], readable: true, writable: true});
+  const outputTensor = await context.createTensor(
+      {dataType: 'float32', shape: [6, 4], readable: true, writable: true});
+
+  context.dispatch(graph, {'input': inputTensor}, {'output': outputTensor});
+}, 'identity float32 2D tensor with a dynamic dimension resolved at dispatch');

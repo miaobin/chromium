@@ -163,6 +163,15 @@ MLGraphOperatorUma in //third_party/blink/renderer/modules/ml/webnn/ml_graph_bui
   <int value="93" label="RoundEven"/>
   <int value="94" label="IsNaN"/>
   <int value="95" label="IsInfinite"/>
+  <int value="96" label="Mod"/>
+  <int value="97" label="Range"/>
+  <int value="98" label="DynamicReshape"/>
+  <int value="99" label="DynamicExpand"/>
+  <int value="100" label="DynamicSlice"/>
+  <int value="101" label="DynamicPad"/>
+  <int value="102" label="DynamicSplit"/>
+  <int value="103" label="Shape"/>
+  <int value="104" label="DynamicResample2d"/>
 </enum>
 
 <!-- LINT.IfChange(WebNNOrtDeviceUma) -->

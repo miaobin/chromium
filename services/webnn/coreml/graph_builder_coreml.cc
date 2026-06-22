@@ -1217,6 +1217,7 @@ ContextProperties GraphBuilderCoreml::GetContextProperties() {
        /*max_input=*/{kFloatsAndInt32, kMaxRank},
        /*min_input=*/{kFloatsAndInt32, kMaxRank},
        /*pow_input=*/{kFloatsAndInt32, kMaxRank},
+       /*mod_input=*/{SupportedDataTypes(), SupportedRanks()},
        /*equal_input=*/{kFloatsAndInt32, kMaxRank},
        /*greater_input=*/{kFloatsAndInt32, kMaxRank},
        /*greater_or_equal_input=*/{kFloatsAndInt32, kMaxRank},
@@ -1411,7 +1412,27 @@ ContextProperties GraphBuilderCoreml::GetContextProperties() {
        // Note that BOOL is also supported by CoreML, but WebNN does not have a
        // corresponding BOOL type. See docs here:
        // https://apple.github.io/coremltools/source/coremltools.converters.mil.mil.ops.defs.html#coremltools.converters.mil.mil.ops.defs.iOS15.tensor_operation.transpose
-       /*where_value=*/{kFloatsAndInt32, kMaxRank}});
+       /*where_value=*/{kFloatsAndInt32, kMaxRank},
+       /*range_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*range_output=*/{SupportedDataTypes(), SupportedRanks()},
+       /*shape_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*shape_output=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_reshape_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_reshape_new_shape=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_expand_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_expand_new_shape=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_slice_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_slice_starts=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_pad_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_pad_pads=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_split_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_split_splits=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_resample_2d_input=*/
+       {SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_resample_2d_sizes=*/
+       {SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_tile_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes(), SupportedRanks()}});
 
   if (__builtin_available(macOS 15, *)) {
     properties.data_type_limits.dequantize_linear_input.data_types =
@@ -1742,6 +1763,41 @@ GraphBuilderCoreml::BuildCoreMLModel() {
       case mojom::Operation::Tag::kWhere: {
         RETURN_IF_ERROR(AddOperationForWhere(*operation->get_where(), block));
         break;
+      }
+      case mojom::Operation::Tag::kRange: {
+        return NewNotSupportedError("range is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kDynamicReshape: {
+        return NewNotSupportedError(
+            "dynamicReshape is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kDynamicExpand: {
+        return NewNotSupportedError(
+            "dynamicExpand is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kDynamicSlice: {
+        return NewNotSupportedError(
+            "dynamicSlice is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kDynamicPad: {
+        return NewNotSupportedError(
+            "dynamicPad is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kDynamicSplit: {
+        return NewNotSupportedError(
+            "dynamicSplit is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kDynamicResample2d: {
+        return NewNotSupportedError(
+            "dynamicResample2d is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kDynamicTile: {
+        return NewNotSupportedError(
+            "dynamicTile is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kShape: {
+        return NewNotSupportedError(
+            "shape is not supported on CoreML backend.");
       }
     }
   }
@@ -2876,6 +2932,8 @@ GraphBuilderCoreml::AddOperationForElementwiseBinary(
       op_type_name = kOpLogicalXor;
       break;
     }
+    case mojom::ElementWiseBinary::Kind::kMod:
+      NOTREACHED();
   }
 
   if (kind == mojom::ElementWiseBinary::Kind::kLogicalAnd ||

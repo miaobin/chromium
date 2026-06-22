@@ -9,10 +9,12 @@
 #include <utility>
 
 #include "base/atomic_sequence_num.h"
+#include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/sequence_checker.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/bind_post_task.h"
@@ -37,6 +39,7 @@
 #include "services/webnn/webnn_context_provider_impl.h"
 #include "services/webnn/webnn_graph_builder_impl.h"
 #include "services/webnn/webnn_graph_impl.h"
+#include "services/webnn/webnn_switches.h"
 #include "services/webnn/webnn_tensor_impl.h"
 #include "third_party/tflite/buildflags.h"
 
@@ -53,7 +56,7 @@ namespace {
 base::AtomicSequenceNumber g_next_webnn_context_tracing_id;
 
 // Return false if the named tensors for dispatch don't match the built
-// graph's expectation.
+// graph's expectation. A dynamic dimension accepts any positive concrete size.
 bool ValidateWebNNTensors(
     const base::flat_map<std::string, scoped_refptr<webnn::WebNNTensorImpl>>&
         named_tensors,
@@ -64,10 +67,65 @@ bool ValidateWebNNTensors(
       [](const auto& named_tensor, const auto& tensor_spec) {
         const auto& [tensor_name, tensor_impl] = named_tensor;
         const auto& [tensor_spec_name, tensor_spec_descriptor] = tensor_spec;
-        return tensor_name == tensor_spec_name &&
-               tensor_impl->data_type() == tensor_spec_descriptor.data_type() &&
-               tensor_impl->shape() == tensor_spec_descriptor.shape();
+        if (tensor_name != tensor_spec_name) {
+          return false;
+        }
+        if (tensor_impl->data_type() != tensor_spec_descriptor.data_type()) {
+          return false;
+        }
+        const std::vector<uint32_t>& impl_shape = tensor_impl->shape();
+        const std::vector<webnn::Dimension>& spec_shape =
+            tensor_spec_descriptor.shape();
+        if (impl_shape.size() != spec_shape.size()) {
+          return false;
+        }
+        return std::equal(
+            impl_shape.begin(), impl_shape.end(), spec_shape.begin(),
+            [](uint32_t impl_dim, const webnn::Dimension& spec_dim) {
+              if (std::holds_alternative<uint32_t>(spec_dim)) {
+                return impl_dim == std::get<uint32_t>(spec_dim);
+              }
+              // A dynamic dimension accepts any positive concrete size.
+              return impl_dim > 0;
+            });
       });
+}
+
+// Validates that dynamic dimensions with the same symbolic name resolve to
+// the same concrete value across all input tensors of a dispatch call.
+bool ValidateDynamicDimensionConsistency(
+    const base::flat_map<std::string, scoped_refptr<webnn::WebNNTensorImpl>>&
+        named_tensors,
+    const base::flat_map<std::string, webnn::OperandDescriptor>&
+        names_to_descriptors) {
+  base::flat_map<std::string, uint32_t> dim_name_to_value;
+  for (const auto& [tensor_name, tensor_impl] : named_tensors) {
+    auto it = names_to_descriptors.find(tensor_name);
+    if (it == names_to_descriptors.end()) {
+      return false;
+    }
+    const std::vector<uint32_t>& impl_shape = tensor_impl->shape();
+    const std::vector<webnn::Dimension>& spec_shape = it->second.shape();
+    if (impl_shape.size() != spec_shape.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < spec_shape.size(); ++i) {
+      if (const auto* dynamic_dim =
+              std::get_if<webnn::DynamicDimension>(&spec_shape[i])) {
+        // Only named dynamic dims must resolve consistently. An unnamed dim is
+        // an independent unknown, so it is not tracked.
+        if (!dynamic_dim->name.has_value()) {
+          continue;
+        }
+        auto [map_it, inserted] =
+            dim_name_to_value.emplace(*dynamic_dim->name, impl_shape[i]);
+        if (!inserted && map_it->second != impl_shape[i]) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 // Return false if the same tensor was specified in inputs and outputs.
@@ -584,11 +642,51 @@ void WebNNContextImpl::Dispatch(
   }
   base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>>
       name_to_input_tensor_map(std::move(name_to_input_tensors));
-  if (!ValidateWebNNTensors(
-          name_to_input_tensor_map,
-          graph_impl->compute_resource_info().input_names_to_descriptors)) {
-    GetMojoReceiver().ReportBadMessage(kBadMessageInvalidTensor);
-    return;
+
+  // TODO(crbug.com/XXX): Remove this workaround once stateful KV-Cache mode
+  // is properly integrated. In stateful mode, OpenVINO EP manages KV-Cache
+  // internally, so input/output tensor shapes may not match the original
+  // graph declaration.
+  const bool skip_tensor_validation =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kWebNNOrtOvepEnableCausallm);
+
+  if (!skip_tensor_validation) {
+    if (!ValidateWebNNTensors(
+            name_to_input_tensor_map,
+            graph_impl->compute_resource_info().input_names_to_descriptors)) {
+      GetMojoReceiver().ReportBadMessage(kBadMessageInvalidTensor);
+      return;
+    }
+    if (!ValidateDynamicDimensionConsistency(
+            name_to_input_tensor_map,
+            graph_impl->compute_resource_info().input_names_to_descriptors)) {
+      GetMojoReceiver().ReportBadMessage(kBadMessageInvalidTensor);
+      return;
+    }
+  }
+
+  // Will hold inferred concrete output descriptors when the graph has
+  // dynamic inputs, for precise output tensor validation after inference.
+  base::flat_map<std::string, OperandDescriptor> concrete_output_descriptors;
+
+  // Phase B: if the graph has dynamic input dimensions, run forward shape
+  // inference from the concrete input shapes to obtain concrete output
+  // descriptors. The input tensors were validated against the graph's input
+  // constraints above, so any inference failure here indicates a misbehaving
+  // renderer.
+  if (!skip_tensor_validation &&
+      graph_impl->compute_resource_info().has_dynamic_inputs) {
+    base::flat_map<std::string, std::vector<uint32_t>> named_input_shapes;
+    for (const auto& [name, tensor_impl] : name_to_input_tensor_map) {
+      named_input_shapes.emplace(name, tensor_impl->shape());
+    }
+    auto inferred = graph_impl->InferConcreteOutputShapes(named_input_shapes);
+    if (!inferred.has_value()) {
+      GetMojoReceiver().ReportBadMessage(kBadMessageInvalidTensor);
+      return;
+    }
+    concrete_output_descriptors = std::move(inferred.value());
   }
 
   // Resolve the token of an output MLTensor to the corresponding `WebNNTensor`
@@ -615,9 +713,17 @@ void WebNNContextImpl::Dispatch(
 
   base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>>
       name_to_output_tensor_map(std::move(name_to_output_tensors));
-  if (!ValidateWebNNTensors(
-          name_to_output_tensor_map,
-          graph_impl->compute_resource_info().output_names_to_descriptors)) {
+
+  // For dynamic graphs, validate against the inferred concrete output
+  // descriptors for precise shape matching. For static graphs, fall back to
+  // the build-time descriptors (which may contain range-based dynamic dims).
+  const auto& output_descriptors_for_validation =
+      concrete_output_descriptors.empty()
+          ? graph_impl->compute_resource_info().output_names_to_descriptors
+          : concrete_output_descriptors;
+  if (!skip_tensor_validation &&
+      !ValidateWebNNTensors(name_to_output_tensor_map,
+                            output_descriptors_for_validation)) {
     GetMojoReceiver().ReportBadMessage(kBadMessageInvalidTensor);
     return;
   }

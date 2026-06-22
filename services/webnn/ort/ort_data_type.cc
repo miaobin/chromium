@@ -31,8 +31,18 @@ ONNXTensorElementDataType WebnnToOnnxDataType(OperandDataType data_type) {
   }
 }
 
-std::vector<int64_t> WebnnToOnnxShape(base::span<const uint32_t> shape) {
-  return std::vector<int64_t>(shape.begin(), shape.end());
+std::vector<int64_t> WebnnToOnnxShape(
+    base::span<const webnn::Dimension> shape) {
+  std::vector<int64_t> onnx_shape;
+  onnx_shape.reserve(shape.size());
+  for (const auto& dim : shape) {
+    if (std::holds_alternative<uint32_t>(dim)) {
+      onnx_shape.push_back(std::get<uint32_t>(dim));
+    } else {
+      onnx_shape.push_back(-1);
+    }
+  }
+  return onnx_shape;
 }
 
 }  // namespace webnn::ort

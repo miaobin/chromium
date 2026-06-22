@@ -51,13 +51,13 @@ class MODULES_EXPORT MLGraphTransformer
   // original operand
   static MLOperand* ReplaceOperandWithNewShape(
       MLOperand* old_operand,
-      const Vector<uint32_t>& new_shape);
+      const std::vector<webnn::Dimension>& new_shape);
 
   // Replace constant operand with a new constant operand, the constant handle
   // gets reused for the new constant.
   static MLConstantOperand* ReplaceConstantOperandWithNewShape(
       const MLConstantOperand* old_operand,
-      const Vector<uint32_t>& new_shape);
+      const std::vector<webnn::Dimension>& new_shape);
 
   static MLOperand* ReplaceOperandWithNewDataType(
       MLOperand* old_operand,
@@ -74,8 +74,9 @@ class MODULES_EXPORT MLGraphTransformer
   Member<MLGraphBuilder> graph_builder_;
 
  private:
-  static MLOperand* CloneOperandAndResetShape(const MLOperand* operand,
-                                              const Vector<uint32_t>& shape);
+  static MLOperand* CloneOperandAndResetShape(
+      const MLOperand* operand,
+      const std::vector<webnn::Dimension>& shape);
 
   static MLOperand* CloneOperandAndResetDataType(
       const MLOperand* operand,

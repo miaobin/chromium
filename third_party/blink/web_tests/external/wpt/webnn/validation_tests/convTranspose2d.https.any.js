@@ -549,6 +549,65 @@ const tests = [
       label: label,
     },
   },
+  {
+    name: '[convTranspose2d] Test with dynamic batch dimension.',
+    input: {dataType: 'float32', shape: ['N', 1, 3, 3]},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {dataType: 'float32', shape: ['N', 1, 5, 5]}
+  },
+  {
+    name: '[convTranspose2d] Test with dynamic height dimension.',
+    input: {dataType: 'float32', shape: [1, 1, 'H', 3]},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {dataType: 'float32', shape: [1, 1, null, 5]}
+  },
+  {
+    name: '[convTranspose2d] Test with dynamic width dimension.',
+    input: {dataType: 'float32', shape: [1, 1, 3, 'W']},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    output: {dataType: 'float32', shape: [1, 1, 5, null]}
+  },
+  {
+    name:
+        '[convTranspose2d] Test with dynamic height and width dimensions with strides.',
+    input: {dataType: 'float32', shape: [1, 1, 'H', 'W']},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    options: {
+      strides: [2, 2],
+    },
+    output: {dataType: 'float32', shape: [1, 1, null, null]}
+  },
+  {
+    name:
+        '[convTranspose2d] Test with dynamic height and width dimensions with padding.',
+    input: {dataType: 'float32', shape: [1, 1, 'H', 'W']},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    options: {
+      padding: [1, 1, 1, 1],
+    },
+    output: {dataType: 'float32', shape: [1, 1, 'H', 'W']}
+  },
+  {
+    name:
+        '[convTranspose2d] Test with dynamic height and width dimensions with strides and padding.',
+    input: {dataType: 'float32', shape: [1, 1, 'H', 'W']},
+    filter: {dataType: 'float32', shape: [1, 1, 3, 3]},
+    options: {
+      strides: [2, 2],
+      padding: [1, 1, 1, 1],
+    },
+    output: {dataType: 'float32', shape: [1, 1, null, null]}
+  },
+  {
+    name: '[convTranspose2d] Test with dynamic dimensions in nhwc layout.',
+    input: {dataType: 'float32', shape: ['N', 'H', 'W', 1]},
+    filter: {dataType: 'float32', shape: [3, 3, 1, 1]},
+    options: {
+      inputLayout: 'nhwc',
+      filterLayout: 'hwoi',
+    },
+    output: {dataType: 'float32', shape: ['N', null, null, 1]}
+  },
 ];
 
 tests.forEach(
@@ -566,7 +625,14 @@ tests.forEach(
               test.input.dataType)) {
         const output = builder.convTranspose2d(input, filter, test.options);
         assert_equals(output.dataType, test.output.dataType);
-        assert_array_equals(output.shape, test.output.shape);
+        // Compare shapes element by element to handle dynamic dimensions
+        assert_equals(output.shape.length, test.output.shape.length);
+        for (let i = 0; i < output.shape.length; i++) {
+          // A dimension is a number (static), a string (named dynamic), or
+          // null (unnamed dynamic); compare directly.
+          assert_equals(
+              output.shape[i], test.output.shape[i], `Dimension ${i} mismatch`);
+        }
       } else {
         const regrexp = new RegExp('\\[' + label + '\\]');
         assert_throws_with_label(

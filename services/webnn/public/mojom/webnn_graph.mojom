@@ -5,6 +5,7 @@
 module webnn.mojom;
 
 import "services/webnn/public/mojom/webnn_context_properties.mojom";
+import "services/webnn/public/mojom/webnn_error.mojom";
 import "third_party/blink/public/mojom/tokens/tokens.mojom";
 
 // Represents the `MLNumber` in the WebIDL definition.
@@ -25,13 +26,21 @@ enum DataType {
   kInt8,
   kUint8,
   kInt4,
-  kUint4
+  kUint4,
+};
+
+// A single operand dimension. `size` is a static dimension. `dynamic_name` is
+// an unbounded dynamic dimension: a non-null value is the symbolic name (mapped
+// to an ONNX symbolic dim), and null is an unnamed dynamic dim (ORT's `?`).
+union Dimension {
+  uint32 size;
+  string? dynamic_name;
 };
 
 // Represents the `MLOperandDescriptor` in the WebIDL definition.
 struct OperandDescriptor {
   DataType data_type;
-  array<uint32> shape;
+  array<Dimension> shape;
   // Permutation that needs to be performed on service side for constant
   // operands.
   array<uint32> pending_permutation;
@@ -287,6 +296,7 @@ struct ElementWiseBinary {
     kLogicalAnd,
     kLogicalOr,
     kLogicalXor,
+    kMod,
   };
 
   // The kind of binary operation.
@@ -350,6 +360,9 @@ struct Expand {
   // broadcastable to the output shape.
   OperandId input_operand_id;
   OperandId output_operand_id;
+  // The target shape to expand to. Each dimension is either a static uint32
+  // or a DynamicDimension that can be resolved at dispatch time.
+  array<Dimension> new_shape;
   // User defined label from MLOperatorOptions.
   string label;
 };
@@ -486,9 +499,10 @@ struct Pool2d {
   // `GraphInfo.operands`.
   OperandId output_operand_id;
 
-  // The dimensions of the sliding window which is supplied by user or the
+  // The dimensions of the sliding window which is supplied by user. If it is
+  // not present, assume the
   // element of input operand height and width.
-  Size2d window_dimensions;
+  Size2d? window_dimensions;
   // The padding for each spatial dimension of input.
   Padding2d padding;
   // The element stride of the sliding window for each spatial dimension of
@@ -1177,6 +1191,19 @@ struct ScatterND {
   string label;
 };
 
+// Represents the shape operation that returns the dimensions of the input
+// tensor as a 1-D tensor.
+struct Shape {
+  // The id of input operand is used to get the `Operand` description from
+  // `GraphInfo.operands`.
+  OperandId input_operand_id;
+  // The id of output operand is used to get the `Operand` description from
+  // `GraphInfo.operands`.
+  OperandId output_operand_id;
+  // User defined label from MLOperatorOptions.
+  string label;
+};
+
 // Corresponds to `MLOperand sigmoid(MLOperand x)` that compute the sigmoid
 // function of the input tensor following the expression 1 / (exp(-x) + 1).
 struct Sigmoid {
@@ -1368,6 +1395,122 @@ struct Where {
   string label;
 };
 
+// Represents a range operation that generates a 1-D tensor containing a
+// sequence of evenly spaced values. The output size is determined by
+// ceil(max(0, limit - start) / delta).
+struct RangeOp {
+  // The id of the scalar start operand.
+  OperandId start_operand_id;
+  // The id of the scalar limit operand.
+  OperandId limit_operand_id;
+  // The id of the scalar delta operand.
+  OperandId delta_operand_id;
+  // The id of output operand.
+  OperandId output_operand_id;
+  // User defined label from MLOperatorOptions.
+  string label;
+};
+
+// Represents a dynamic reshape operation where the new shape is provided
+// as an operand rather than a static attribute.
+struct DynamicReshape {
+  OperandId input_operand_id;
+  // 1-D int64 tensor specifying the new shape.
+  OperandId new_shape_operand_id;
+  OperandId output_operand_id;
+  string label;
+};
+
+// Represents a dynamic expand operation where the new shape is provided
+// as an operand rather than a static attribute.
+struct DynamicExpand {
+  OperandId input_operand_id;
+  // 1-D int64 tensor specifying the target shape.
+  OperandId new_shape_operand_id;
+  OperandId output_operand_id;
+  string label;
+};
+
+// Represents a dynamic slice operation where starts, ends, axes and strides
+// are provided as operands rather than static attributes.
+struct DynamicSlice {
+  OperandId input_operand_id;
+  // 1-D int64 tensor specifying the start indices.
+  OperandId starts_operand_id;
+  // 1-D int64 tensor specifying the end indices.
+  OperandId ends_operand_id;
+  // Optional 1-D int64 tensor specifying the axes.
+  OperandId? axes_operand_id;
+  // Optional 1-D int64 tensor specifying the strides.
+  OperandId? strides_operand_id;
+  OperandId output_operand_id;
+  string label;
+};
+
+// Represents a dynamic pad operation where padding amounts are provided as
+// operands rather than static attributes. Mirrors the static `pad` operator:
+// `beginning_padding` and `ending_padding` are separate 1-D tensors, each of
+// length equal to the input rank, where entry `i` is the padding added to the
+// beginning/ending of axis `i`.
+struct DynamicPad {
+  OperandId input_operand_id;
+  // 1-D int32 or int64 tensor of length `rank`, padding added at the beginning
+  // of each axis.
+  OperandId beginning_padding_operand_id;
+  // 1-D int32 or int64 tensor of length `rank`, padding added at the ending of
+  // each axis.
+  OperandId ending_padding_operand_id;
+  // Optional scalar constant value for padding (default 0).
+  OperandId? constant_value_operand_id;
+  PaddingMode mode;
+  OperandId output_operand_id;
+  string label;
+};
+
+// Represents a dynamic tile operation where the per-axis repetition counts are
+// provided as an operand rather than static attributes. Mirrors the static
+// `tile` operator.
+struct DynamicTile {
+  OperandId input_operand_id;
+  // 1-D int32 or int64 tensor of length `rank`, the number of tiled copies to
+  // make for each axis.
+  OperandId repetitions_operand_id;
+  OperandId output_operand_id;
+  string label;
+};
+
+// Represents a dynamic split operation where the split sizes are provided
+// as an operand rather than static attributes.
+struct DynamicSplit {
+  OperandId input_operand_id;
+  // 1-D int64 tensor specifying the size of each split along axis.
+  OperandId splits_operand_id;
+  // Axis along which to split.
+  uint32 axis;
+  // The ids of output operands.
+  array<OperandId> output_operand_ids;
+  string label;
+};
+
+// Represents a dynamic resample2d operation where the target sizes along the
+// two resample axes are provided as an operand instead of a build-time
+// constant. Input is always 4-D; output has the same rank and the same data
+// type. Dimensions not listed in `axes` keep their input sizes; dimensions
+// listed in `axes` take on the values from `sizes_operand_id` (which is a
+// 1-D int32/uint32/int64 tensor of length 2, entries > 0).
+struct DynamicResample2d {
+  OperandId input_operand_id;
+  // 1-D tensor of length 2 specifying the new sizes for the two resample
+  // axes.
+  OperandId sizes_operand_id;
+  // The two consecutive dimensions of the input tensor to which the
+  // interpolation algorithm applies.
+  array<uint32, 2> axes;
+  Resample2d.InterpolationMode mode;
+  OperandId output_operand_id;
+  string label;
+};
+
 // Holds one of operator.
 union Operation {
   // Keep the order as the same as build methods of `MLGraphBuilder`.
@@ -1402,6 +1545,7 @@ union Operation {
   Pool2d pool2d;
   Prelu prelu;
   QuantizeLinear quantize_linear;
+  RangeOp range;
   Reduce reduce;
   Relu relu;
   Resample2d resample2d;
@@ -1409,6 +1553,7 @@ union Operation {
   Reverse reverse;
   ScatterElements scatter_elements;
   ScatterND scatter_nd;
+  Shape shape;
   Sigmoid sigmoid;
   Slice slice;
   Softmax softmax;
@@ -1420,6 +1565,13 @@ union Operation {
   Transpose transpose;
   Triangular triangular;
   Where where;
+  DynamicReshape dynamic_reshape;
+  DynamicExpand dynamic_expand;
+  DynamicSlice dynamic_slice;
+  DynamicPad dynamic_pad;
+  DynamicSplit dynamic_split;
+  DynamicResample2d dynamic_resample_2d;
+  DynamicTile dynamic_tile;
 };
 
 // Describes an entire WebNN graph information.
@@ -1448,8 +1600,33 @@ struct GraphInfo {
       id_to_constant_tensor_operand_map;
 };
 
+// Pairs a graph output's name with its inferred concrete descriptor, returned
+// by WebNNGraph::ComputeShapes(). A `map<string, OperandDescriptor>` is not used
+// because `OperandDescriptor` is typemapped to a type that is not
+// default-constructible and therefore cannot be a WTF::HashMap value in Blink.
+struct NamedOutputDescriptor {
+  string name;
+  OperandDescriptor descriptor;
+};
+
+// The successful result of WebNNGraph::ComputeShapes(): the inferred concrete
+// descriptor of each graph output. After inference every dimension is concrete
+// (i.e. each `Dimension` is the `size` variant).
+struct ComputeShapesSuccess {
+  array<NamedOutputDescriptor> output_descriptors;
+};
+
 // WebNNGraph runs in the GPU process and is called by the renderer process.
 // Graph execution is performed via WebNNContext::Dispatch().
-// This interface is lifecycle-only: pipe disconnect signals graph destruction.
+// This interface is lifecycle-only (pipe disconnect signals graph destruction)
+// apart from the device-independent shape query below.
 interface WebNNGraph {
+  // Runs forward shape inference for a graph that has dynamic input
+  // dimensions. `named_input_shapes` maps each graph input name to its concrete
+  // shape. On success returns the inferred concrete descriptor of every graph
+  // output; returns an `Error` if the output shapes cannot be resolved from the
+  // input shapes alone (for example a shape that would require reading input
+  // tensor data). This does not execute the graph.
+  ComputeShapes(map<string, array<uint32>> named_input_shapes)
+      => result<ComputeShapesSuccess, Error>;
 };

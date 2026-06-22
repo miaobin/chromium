@@ -9,6 +9,18 @@
   Exposed=(Window, Worker)
 ] interface MLGraph {
   readonly attribute FrozenArray<MLDeviceType> devices;
+  record<DOMString, MLInputOperandDescriptor> inputs();
+  record<DOMString, MLInputOperandDescriptor> outputs();
+
+  // Given concrete shapes for the graph's inputs, resolves to the inferred
+  // concrete descriptor of each graph output. Lets callers (e.g. ONNX Runtime
+  // Web) determine output sizes for a graph with dynamic input dimensions
+  // before dispatching it. Does not execute the graph.
+  [
+    CallWith=ScriptState,
+    RaisesException
+  ] Promise<record<DOMString, MLOperandDescriptor>> computeShapes(
+      record<DOMString, sequence<[EnforceRange] unsigned long>> inputShapes);
 
   void destroy();
 };

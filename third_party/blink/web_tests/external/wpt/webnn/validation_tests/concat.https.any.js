@@ -83,6 +83,36 @@ const tests = [
     ],
     axis: 1,
   },
+  {
+    name:
+        '[concat] Test building concat with valid dynamic dimensions on concat axis',
+    inputs: [
+      {dataType: 'float32', shape: [2, 'N', 3]},
+      {dataType: 'float32', shape: [2, 'M', 3]}
+    ],
+    axis: 1,
+    output: {dataType: 'float32', shape: [2, null, 3]}
+  },
+  {
+    name:
+        '[concat] Test building concat with matching dynamic dimensions on non-concat axis',
+    inputs: [
+      {dataType: 'float32', shape: ['N', 2, 3]},
+      {dataType: 'float32', shape: ['N', 4, 3]}
+    ],
+    axis: 1,
+    output: {dataType: 'float32', shape: ['N', 6, 3]}
+  },
+  {
+    name:
+        '[concat] Test building concat with dynamic dimension and static dimension on concat axis',
+    inputs: [
+      {dataType: 'float32', shape: [2, 'N', 3]},
+      {dataType: 'float32', shape: [2, 4, 3]}
+    ],
+    axis: 1,
+    output: {dataType: 'float32', shape: [2, null, 3]}
+  },
 ];
 
 tests.forEach(
@@ -97,7 +127,14 @@ tests.forEach(
       if (test.output) {
         const output = builder.concat(inputs, test.axis);
         assert_equals(output.dataType, test.output.dataType);
-        assert_array_equals(output.shape, test.output.shape);
+        // Compare shapes element by element to handle dynamic dimensions
+        assert_equals(output.shape.length, test.output.shape.length);
+        for (let i = 0; i < output.shape.length; i++) {
+          // A dimension is a number (static), a string (named dynamic), or
+          // null (unnamed dynamic); compare directly.
+          assert_equals(
+              output.shape[i], test.output.shape[i], `Dimension ${i} mismatch`);
+        }
       } else {
         const options = {label};
         const regrexp = new RegExp('\\[' + label + '\\]');

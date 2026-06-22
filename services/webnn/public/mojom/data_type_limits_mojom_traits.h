@@ -106,6 +106,10 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.pow_input;
   }
+  static webnn::SupportedTensors mod_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.mod_input;
+  }
   static webnn::SupportedTensors equal_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.equal_input;
@@ -486,6 +490,78 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.where_value;
   }
+  static webnn::SupportedTensors range_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.range_input;
+  }
+  static webnn::SupportedTensors range_output(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.range_output;
+  }
+  static webnn::SupportedTensors shape_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.shape_input;
+  }
+  static webnn::SupportedTensors shape_output(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.shape_output;
+  }
+  static webnn::SupportedTensors dynamic_reshape_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_reshape_input;
+  }
+  static webnn::SupportedTensors dynamic_reshape_new_shape(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_reshape_new_shape;
+  }
+  static webnn::SupportedTensors dynamic_expand_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_expand_input;
+  }
+  static webnn::SupportedTensors dynamic_expand_new_shape(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_expand_new_shape;
+  }
+  static webnn::SupportedTensors dynamic_slice_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_slice_input;
+  }
+  static webnn::SupportedTensors dynamic_slice_starts(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_slice_starts;
+  }
+  static webnn::SupportedTensors dynamic_pad_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_pad_input;
+  }
+  static webnn::SupportedTensors dynamic_pad_pads(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_pad_pads;
+  }
+  static webnn::SupportedTensors dynamic_split_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_split_input;
+  }
+  static webnn::SupportedTensors dynamic_split_splits(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_split_splits;
+  }
+  static webnn::SupportedTensors dynamic_resample_2d_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_resample_2d_input;
+  }
+  static webnn::SupportedTensors dynamic_resample_2d_sizes(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_resample_2d_sizes;
+  }
+  static webnn::SupportedTensors dynamic_tile_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_tile_input;
+  }
+  static webnn::SupportedTensors dynamic_tile_repetitions(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.dynamic_tile_repetitions;
+  }
 
   static bool Read(webnn::mojom::DataTypeLimitsDataView data,
                    webnn::DataTypeLimits* out) {
@@ -511,6 +587,7 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadMaxInput(&out->max_input) &&
            data.ReadMinInput(&out->min_input) &&
            data.ReadPowInput(&out->pow_input) &&
+           data.ReadModInput(&out->mod_input) &&
            data.ReadEqualInput(&out->equal_input) &&
            data.ReadGreaterInput(&out->greater_input) &&
            data.ReadGreaterOrEqualInput(&out->greater_or_equal_input) &&
@@ -606,7 +683,25 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadTransposeInput(&out->transpose_input) &&
            data.ReadTriangularInput(&out->triangular_input) &&
            data.ReadWhereCondition(&out->where_condition) &&
-           data.ReadWhereValue(&out->where_value);
+           data.ReadWhereValue(&out->where_value) &&
+           data.ReadRangeInput(&out->range_input) &&
+           data.ReadRangeOutput(&out->range_output) &&
+           data.ReadShapeInput(&out->shape_input) &&
+           data.ReadShapeOutput(&out->shape_output) &&
+           data.ReadDynamicReshapeInput(&out->dynamic_reshape_input) &&
+           data.ReadDynamicReshapeNewShape(&out->dynamic_reshape_new_shape) &&
+           data.ReadDynamicExpandInput(&out->dynamic_expand_input) &&
+           data.ReadDynamicExpandNewShape(&out->dynamic_expand_new_shape) &&
+           data.ReadDynamicSliceInput(&out->dynamic_slice_input) &&
+           data.ReadDynamicSliceStarts(&out->dynamic_slice_starts) &&
+           data.ReadDynamicPadInput(&out->dynamic_pad_input) &&
+           data.ReadDynamicPadPads(&out->dynamic_pad_pads) &&
+           data.ReadDynamicSplitInput(&out->dynamic_split_input) &&
+           data.ReadDynamicSplitSplits(&out->dynamic_split_splits) &&
+           data.ReadDynamicResample2dInput(&out->dynamic_resample_2d_input) &&
+           data.ReadDynamicResample2dSizes(&out->dynamic_resample_2d_sizes) &&
+           data.ReadDynamicTileInput(&out->dynamic_tile_input) &&
+           data.ReadDynamicTileRepetitions(&out->dynamic_tile_repetitions);
   }
 };
 

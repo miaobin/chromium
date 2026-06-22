@@ -35,6 +35,12 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_context_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_2d_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_device_type.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_new_shape_support_limits.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_pad_support_limits.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_support_limits.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_slice_support_limits.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_split_support_limits.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_tile_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gather_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gemm_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gru_cell_support_limits.h"
@@ -48,8 +54,10 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_power_preference.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_prelu_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_quantize_dequantize_linear_support_limits.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_range_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_rank_range.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_scatter_support_limits.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_shape_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_single_input_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_split_support_limits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_tensor_descriptor.h"
@@ -223,7 +231,7 @@ base::expected<void, std::string> IsValidTensorSize(
       return base::unexpected("Tensor size is too large.");
     }
     if (descriptor.Rank() > 1) {
-      int height = descriptor.NumberOfElements() / width;
+      int height = descriptor.NumberOfElements().value() / width;
       if (height > max_texture_size) {
         return base::unexpected("Tensor size is too large.");
       }
@@ -245,11 +253,55 @@ void AppendVectorOfNumbers(const std::vector<T>& vector,
   builder.AppendRange(vector, ", ");
 }
 
+// Overload for std::vector<webnn::Dimension>: formats dynamic dimensions with
+// their symbolic name.
+void AppendVectorOfNumbers(const std::vector<webnn::Dimension>& vector,
+                           StringBuilder& builder) {
+  StringView delim;
+  for (const auto& dim : vector) {
+    builder.Append(delim);
+    delim = ", ";
+    if (std::holds_alternative<uint32_t>(dim)) {
+      builder.AppendNumber(std::get<uint32_t>(dim));
+    } else {
+      const auto& dyn = std::get<webnn::DynamicDimension>(dim);
+      builder.Append(dyn.name ? String::FromUtf8(*dyn.name) : String("?"));
+    }
+  }
+}
+
+// Returns true if the runtime tensor shape `tensor_shape` is compatible with
+// the graph's expected shape `spec_shape`. Static dims must match exactly;
+// a dynamic dim accepts any positive size.
+bool TensorShapeMatchesSpec(const std::vector<uint32_t>& tensor_shape,
+                            const std::vector<webnn::Dimension>& spec_shape) {
+  if (tensor_shape.size() != spec_shape.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < tensor_shape.size(); ++i) {
+    const webnn::Dimension& spec_dim = spec_shape[i];
+    if (std::holds_alternative<uint32_t>(spec_dim)) {
+      if (tensor_shape[i] != std::get<uint32_t>(spec_dim)) {
+        return false;
+      }
+    } else if (tensor_shape[i] == 0) {
+      // A dynamic dim accepts any positive concrete size.
+      return false;
+    }
+  }
+  return true;
+}
+
 base::expected<void, String> ValidateNamedMLTensors(
     const MLContext* context,
     const MLNamedTensors& named_tensors,
     const MLGraph::NamedOperandDescriptors& expected_named_descriptors) {
-  if (named_tensors.size() !=
+  // POC relaxation for OpenVINO stateful mode: the KV-cache operands are kept
+  // inside the backend and are not bound at dispatch time, so the caller may
+  // legitimately pass fewer tensors than the graph declares. We therefore only
+  // reject when MORE tensors than expected are supplied; any tensor with a name
+  // that isn't part of the graph is still rejected in the loop below.
+  if (named_tensors.size() >
       base::checked_cast<wtf_size_t>(expected_named_descriptors.size())) {
     return base::unexpected(String::Format(
         "The number (%u) of MLTensor(s) doesn't match the "
@@ -271,7 +323,7 @@ base::expected<void, String> ValidateNamedMLTensors(
                       .AsStringView(),
                   ")."}));
     }
-    if (tensor->Shape() != info->shape()) {
+    if (!TensorShapeMatchesSpec(tensor->Shape(), info->shape())) {
       StringBuilder message;
       message.Append("The shape [");
       AppendVectorOfNumbers(tensor->Shape(), message);
@@ -289,6 +341,71 @@ base::expected<void, String> ValidateNamedMLTensors(
                   name, "\"."}));
     }
   }
+  return base::ok();
+}
+
+// Validates that dynamic dimensions sharing a symbolic name resolve to the
+// same concrete value across all input AND output tensors of a dispatch call.
+// This mirrors the service-layer check in
+// `webnn::WebNNContextImpl::Dispatch` but runs earlier to produce a clearer
+// renderer-side error rather than a bad-message kill.
+base::expected<void, String> ValidateDynamicDimensionConsistency(
+    const MLNamedTensors& inputs,
+    const MLNamedTensors& outputs,
+    const MLGraph::NamedOperandDescriptors& input_constraints,
+    const MLGraph::NamedOperandDescriptors& output_constraints) {
+  // Map from symbolic dim name to (concrete value, originating tensor name).
+  HashMap<String, std::pair<uint32_t, String>> dim_name_to_value;
+
+  auto check = [&](const MLNamedTensors& named_tensors,
+                   const MLGraph::NamedOperandDescriptors& constraints)
+      -> base::expected<void, String> {
+    for (const auto& [name, tensor] : named_tensors) {
+      auto constraint_it = constraints.find(name);
+      if (constraint_it == constraints.end()) {
+        continue;  // Already rejected by ValidateNamedMLTensors.
+      }
+      const auto& descriptor_opt = constraint_it->value;
+      if (!descriptor_opt.has_value()) {
+        continue;
+      }
+      const std::vector<uint32_t>& tensor_shape = tensor->Shape();
+      const std::vector<webnn::Dimension>& spec_shape =
+          descriptor_opt->shape();
+      if (tensor_shape.size() != spec_shape.size()) {
+        continue;  // Already rejected by ValidateNamedMLTensors.
+      }
+      for (size_t i = 0; i < spec_shape.size(); ++i) {
+        const auto* dyn = std::get_if<webnn::DynamicDimension>(&spec_shape[i]);
+        // Only named dynamic dims must resolve consistently. An unnamed dim is
+        // an independent unknown, so it is not tracked.
+        if (!dyn || !dyn->name.has_value()) {
+          continue;
+        }
+        const String dim_name = String::FromUtf8(*dyn->name);
+        const uint32_t value = tensor_shape[i];
+        auto it = dim_name_to_value.find(dim_name);
+        if (it == dim_name_to_value.end()) {
+          dim_name_to_value.insert(dim_name, std::make_pair(value, name));
+          continue;
+        }
+        if (it->value.first != value) {
+          return base::unexpected(
+              StrCat({"Dynamic dimension \"", dim_name,
+                      "\" resolves to inconsistent values: ",
+                      String::Number(it->value.first), " (from tensor \"",
+                      it->value.second, "\") vs ", String::Number(value),
+                      " (from tensor \"", name, "\")."}));
+        }
+      }
+    }
+    return base::ok();
+  };
+
+  RETURN_IF_ERROR(check(inputs, input_constraints),
+                  [](const String& e) { return e; });
+  RETURN_IF_ERROR(check(outputs, output_constraints),
+                  [](const String& e) { return e; });
   return base::ok();
 }
 
@@ -592,6 +709,12 @@ const MLOpSupportLimits* MLContext::opSupportLimits(ScriptState* script_state) {
   pow->setOutput(
       SupportedTensorLimitsToTensorLimits(data_type_limits.pow_input));
   op_support_limits->setPow(pow);
+  MLBinarySupportLimits* mod = MLBinarySupportLimits::Create();
+  mod->setA(SupportedTensorLimitsToTensorLimits(data_type_limits.mod_input));
+  mod->setB(SupportedTensorLimitsToTensorLimits(data_type_limits.mod_input));
+  mod->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.mod_input));
+  op_support_limits->setMod(mod);
 
   // Element-wise logical ops.
   MLBinarySupportLimits* equal = MLBinarySupportLimits::Create();
@@ -1152,6 +1275,13 @@ const MLOpSupportLimits* MLContext::opSupportLimits(ScriptState* script_state) {
       SupportedTensorLimitsToTensorLimits(data_type_limits.scatter_nd_input));
   op_support_limits->setScatterND(scatter_nd);
 
+  MLShapeSupportLimits* shape = MLShapeSupportLimits::Create();
+  shape->setInput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.shape_input));
+  shape->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.shape_output));
+  op_support_limits->setShape(shape);
+
   MLSingleInputSupportLimits* sigmoid = MLSingleInputSupportLimits::Create();
   sigmoid->setInput(
       SupportedTensorLimitsToTensorLimits(data_type_limits.sigmoid_input));
@@ -1233,6 +1363,91 @@ const MLOpSupportLimits* MLContext::opSupportLimits(ScriptState* script_state) {
       SupportedTensorLimitsToTensorLimits(data_type_limits.where_value));
   op_support_limits->setWhere(where);
 
+  MLRangeSupportLimits* range = MLRangeSupportLimits::Create();
+  range->setStart(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.range_input));
+  range->setLimit(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.range_input));
+  range->setDelta(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.range_input));
+  range->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.range_output));
+  op_support_limits->setRange(range);
+
+  MLDynamicNewShapeSupportLimits* dynamic_reshape =
+      MLDynamicNewShapeSupportLimits::Create();
+  dynamic_reshape->setInput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_reshape_input));
+  dynamic_reshape->setNewShape(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_reshape_new_shape));
+  dynamic_reshape->setOutput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_reshape_input));
+  op_support_limits->setDynamicReshape(dynamic_reshape);
+
+  MLDynamicNewShapeSupportLimits* dynamic_expand =
+      MLDynamicNewShapeSupportLimits::Create();
+  dynamic_expand->setInput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_expand_input));
+  dynamic_expand->setNewShape(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_expand_new_shape));
+  dynamic_expand->setOutput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_expand_input));
+  op_support_limits->setDynamicExpand(dynamic_expand);
+
+  MLDynamicSliceSupportLimits* dynamic_slice =
+      MLDynamicSliceSupportLimits::Create();
+  dynamic_slice->setInput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_slice_input));
+  dynamic_slice->setStarts(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_slice_starts));
+  dynamic_slice->setEnds(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_slice_starts));
+  dynamic_slice->setOutput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_slice_input));
+  op_support_limits->setDynamicSlice(dynamic_slice);
+
+  MLDynamicPadSupportLimits* dynamic_pad =
+      MLDynamicPadSupportLimits::Create();
+  dynamic_pad->setInput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_pad_input));
+  dynamic_pad->setBeginningPadding(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_pad_pads));
+  dynamic_pad->setEndingPadding(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_pad_pads));
+  dynamic_pad->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_pad_input));
+  op_support_limits->setDynamicPad(dynamic_pad);
+
+  MLDynamicSplitSupportLimits* dynamic_split =
+      MLDynamicSplitSupportLimits::Create();
+  dynamic_split->setInput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_split_input));
+  dynamic_split->setSplits(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_split_splits));
+  dynamic_split->setOutputs(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_split_input));
+  op_support_limits->setDynamicSplit(dynamic_split);
+
+  MLDynamicResample2dSupportLimits* dynamic_resample_2d =
+      MLDynamicResample2dSupportLimits::Create();
+  dynamic_resample_2d->setInput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_resample_2d_input));
+  dynamic_resample_2d->setSizes(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_resample_2d_sizes));
+  dynamic_resample_2d->setOutput(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_resample_2d_input));
+  op_support_limits->setDynamicResample2d(dynamic_resample_2d);
+
+  MLDynamicTileSupportLimits* dynamic_tile =
+      MLDynamicTileSupportLimits::Create();
+  dynamic_tile->setInput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_tile_input));
+  dynamic_tile->setRepetitions(SupportedTensorLimitsToTensorLimits(
+      data_type_limits.dynamic_tile_repetitions));
+  dynamic_tile->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_tile_input));
+  op_support_limits->setDynamicTile(dynamic_tile);
+
   return op_support_limits;
 }
 
@@ -1278,7 +1493,7 @@ ScriptPromise<MLTensor> MLContext::createTensor(
       webnn::OperandDescriptor validated_descriptor,
       webnn::OperandDescriptor::Create(
           properties_, FromBlinkDataType(descriptor->dataType().AsEnum()),
-          descriptor->shape(), kTensorLabel),
+          webnn::ToDimensionVector(descriptor->shape()), kTensorLabel),
       [&exception_state](std::string error) {
         exception_state.ThrowTypeError(String(error));
         return ScriptPromise<MLTensor>();
@@ -1365,7 +1580,7 @@ ScriptPromise<MLTensor> MLContext::createExportableTensor(
       webnn::OperandDescriptor validated_descriptor,
       webnn::OperandDescriptor::Create(
           properties_, FromBlinkDataType(descriptor->dataType().AsEnum()),
-          descriptor->shape(), kTensorLabel),
+          webnn::ToDimensionVector(descriptor->shape()), kTensorLabel),
       [&exception_state](std::string error) {
         exception_state.ThrowTypeError(String(error));
         return ScriptPromise<MLTensor>();
@@ -1437,7 +1652,9 @@ ScriptPromise<MLTensor> MLContext::createExportableTensor(
     return EmptyPromise();
   }
 
-  auto size_result = ShapeToSharedImageSize(validated_descriptor.shape());
+  auto size_result =
+      ShapeToSharedImageSize(validated_descriptor.StaticShape().value());
+
   if (!size_result.has_value()) {
     exception_state.ThrowTypeError(size_result.error());
     return EmptyPromise();
@@ -1498,7 +1715,7 @@ ScriptPromise<MLTensor> MLContext::createConstantTensor(
       webnn::OperandDescriptor validated_descriptor,
       webnn::OperandDescriptor::Create(
           properties_, FromBlinkDataType(descriptor->dataType().AsEnum()),
-          descriptor->shape(), "constant_tensor"),
+          webnn::ToDimensionVector(descriptor->shape()), "constant_tensor"),
       [&exception_state](std::string error) {
         exception_state.ThrowTypeError(String(error));
         return ScriptPromise<MLTensor>();
@@ -1671,6 +1888,11 @@ void MLContext::dispatch(ScriptState* script_state,
       "Invalid outputs: ");
   THROW_AND_RETURN_IF_ERROR(ValidateMLTensorUsage(inputs, outputs),
                             "Invalid dispatch: ");
+  THROW_AND_RETURN_IF_ERROR(
+      ValidateDynamicDimensionConsistency(inputs, outputs,
+                                          graph->GetInputConstraints(),
+                                          graph->GetOutputConstraints()),
+      "Invalid dispatch: ");
 
   // The inputs and outputs were already verified so we can pass the tensor
   // directly with the input and output tensors.

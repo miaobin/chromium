@@ -12,6 +12,7 @@
 #include "services/webnn/public/cpp/graph_validation_utils.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/cpp/webnn_errors.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_string_unsignedlongenforcerange.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_constant_operand.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph_builder.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph_utils.h"
@@ -24,7 +25,7 @@ base::expected<MLOperand*, String> MLOperand::ValidateAndCreateInput(
     const webnn::ContextProperties& context_properties,
     MLGraphBuilder* builder,
     V8MLOperandDataType::Enum v8_data_type,
-    Vector<uint32_t> dimensions,
+    std::vector<webnn::Dimension> dimensions,
     String name) {
   if (name.empty()) {
     return base::unexpected("The name is empty.");
@@ -101,11 +102,11 @@ webnn::OperandDataType MLOperand::DataType() const {
   return descriptor_.data_type();
 }
 
-const std::vector<uint32_t>& MLOperand::Shape() const {
+const std::vector<webnn::Dimension>& MLOperand::Shape() const {
   return descriptor_.shape();
 }
 
-size_t MLOperand::NumberOfElements() const {
+std::optional<size_t> MLOperand::NumberOfElements() const {
   return descriptor_.NumberOfElements();
 }
 
@@ -118,8 +119,27 @@ wtf_size_t MLOperand::Rank() const {
   return static_cast<wtf_size_t>(descriptor_.Rank());
 }
 
-Vector<uint32_t> MLOperand::shape() const {
-  return Vector<uint32_t>(descriptor_.shape());
+MLDynamicShape MLOperand::shape() const {
+  MLDynamicShape result;
+  result.ReserveInitialCapacity(descriptor_.shape().size());
+  for (const auto& dim : descriptor_.shape()) {
+    if (std::holds_alternative<uint32_t>(dim)) {
+      result.push_back(
+          MakeGarbageCollected<MLDimension>(std::get<uint32_t>(dim)));
+    } else {
+      const auto& dynamic_dim = std::get<webnn::DynamicDimension>(dim);
+      if (dynamic_dim.name.has_value()) {
+        // Named dynamic dim -> string.
+        result.push_back(MakeGarbageCollected<MLDimension>(
+            String::FromUtf8(*dynamic_dim.name)));
+      } else {
+        // Unnamed dynamic dim -> "?" string (FrozenArray cannot hold a null
+        // GC-union element, so we use a sentinel string instead).
+        result.push_back(MakeGarbageCollected<MLDimension>(String("?")));
+      }
+    }
+  }
+  return result;
 }
 
 V8MLOperandDataType MLOperand::dataType() const {

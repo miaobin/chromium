@@ -262,6 +262,7 @@ bool IsLogicalBinaryOperator(
     case webnn::mojom::blink::ElementWiseBinary::Kind::kMax:
     case webnn::mojom::blink::ElementWiseBinary::Kind::kMin:
     case webnn::mojom::blink::ElementWiseBinary::Kind::kPow:
+    case webnn::mojom::blink::ElementWiseBinary::Kind::kMod:
       return false;
     case webnn::mojom::blink::ElementWiseBinary::Kind::kEqual:
     case webnn::mojom::blink::ElementWiseBinary::Kind::kGreater:

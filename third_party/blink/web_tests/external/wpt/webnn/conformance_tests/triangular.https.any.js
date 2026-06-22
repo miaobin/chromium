@@ -1314,6 +1314,20 @@ const triangularTests = [
         'triangularInput': {
           'data': [1, -2, 3, -4, 5, -6, 7, -8, 9],
           'descriptor': {shape: [3, 3], dataType: 'int32'}
+  // Dynamic shape tests
+  {
+    'name':
+        'triangular float32 2D tensor with dynamic shape default options (concrete shape [3, 4])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
         }
       },
       'operators': [{
@@ -1336,6 +1350,135 @@ const triangularTests = [
         'triangularInput': {
           'data': [1, -2, 3, -4, 5, -6, 7, -8, 9],
           'descriptor': {shape: [3, 3], dataType: 'int32'}
+          'data': [1.0, 2.0, 3.0, 4.0, 0, 6.0, 7.0, 8.0, 0, 0, 11.0, 12.0],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'triangular float32 2D tensor with dynamic shape default options (concrete shape [4, 3])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [4, 3],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'triangular',
+        'arguments': [{'input': 'triangularInput'}],
+        'outputs': 'triangularOutput'
+      }],
+      'expectedOutputs': {
+        'triangularOutput': {
+          'data': [1.0, 2.0, 3.0, 0, 5.0, 6.0, 0, 0, 9.0, 0, 0, 0],
+          'shape': [4, 3],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'triangular float32 3D tensor with dynamic shape default options (concrete shape [2, 3, 3])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data': [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+            14.0, 15.0, 16.0, 17.0, 18.0
+          ],
+          'shape': [2, 3, 3],
+          'descriptor': {
+            shape:
+                [2, 'M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'triangular',
+        'arguments': [{'input': 'triangularInput'}],
+        'outputs': 'triangularOutput'
+      }],
+      'expectedOutputs': {
+        'triangularOutput': {
+          'data': [
+            1.0, 2.0, 3.0, 0, 5.0, 6.0, 0, 0, 9.0, 10.0, 11.0, 12.0, 0, 14.0,
+            15.0, 0, 0, 18.0
+          ],
+          'shape': [2, 3, 3],
+          'descriptor': {
+            shape:
+                [2, 'M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'triangular float32 2D tensor with dynamic shape options.upper=false (concrete shape [3, 4])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'triangular',
+        'arguments':
+            [{'input': 'triangularInput'}, {'options': {'upper': false}}],
+        'outputs': 'triangularOutput'
+      }],
+      'expectedOutputs': {
+        'triangularOutput': {
+          'data': [1.0, 0, 0, 0, 5.0, 6.0, 0, 0, 9.0, 10.0, 11.0, 0],
+          'shape': [3, 4],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'triangular float32 2D tensor with dynamic shape options.diagonal=1 (concrete shape [4, 4])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data': [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+            14.0, 15.0, 16.0
+          ],
+          'shape': [4, 4],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
         }
       },
       'operators': [{
@@ -1343,6 +1486,7 @@ const triangularTests = [
         'arguments': [
           {'input': 'triangularInput'},
           {'options': {'upper': false}}
+          {'options': {'upper': true, 'diagonal': 1}}
         ],
         'outputs': 'triangularOutput'
       }],
@@ -1350,6 +1494,154 @@ const triangularTests = [
         'triangularOutput': {
           'data': [1, 0, 0, -4, 5, 0, 7, -8, 9],
           'descriptor': {shape: [3, 3], dataType: 'int32'}
+          'data': [0, 2.0, 3.0, 4.0, 0, 0, 7.0, 8.0, 0, 0, 0, 12.0, 0, 0, 0, 0],
+          'shape': [4, 4],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'triangular float32 2D tensor with dynamic shape options.upper=false options.diagonal=-1 (concrete shape [3, 3])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+          'shape': [3, 3],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'triangular',
+        'arguments': [
+          {'input': 'triangularInput'},
+          {'options': {'upper': false, 'diagonal': -1}}
+        ],
+        'outputs': 'triangularOutput'
+      }],
+      'expectedOutputs': {
+        'triangularOutput': {
+          'data': [0, 0, 0, 4.0, 0, 0, 7.0, 8.0, 0],
+          'shape': [3, 3],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'triangular float32 4D tensor with dynamic shape default options (concrete shape [2, 1, 3, 4])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+            9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0
+          ],
+          'shape': [2, 1, 3, 4],
+          'descriptor': {
+            shape: [
+              2, 1, 'M', 'N'
+            ],
+            dataType: 'float32'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'triangular',
+        'arguments': [{'input': 'triangularInput'}],
+        'outputs': 'triangularOutput'
+      }],
+      'expectedOutputs': {
+        'triangularOutput': {
+          'data': [
+            1.0,  2.0,  3.0,  4.0,  0, 6.0,  7.0,  8.0,  0, 0, 11.0, 12.0,
+            13.0, 14.0, 15.0, 16.0, 0, 18.0, 19.0, 20.0, 0, 0, 23.0, 24.0
+          ],
+          'shape': [2, 1, 3, 4],
+          'descriptor': {
+            shape: [
+              2, 1, 'M', 'N'
+            ],
+            dataType: 'float32'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'triangular float16 2D tensor with dynamic shape default options (concrete shape [3, 3])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+          'shape': [3, 3],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float16'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'triangular',
+        'arguments': [{'input': 'triangularInput'}],
+        'outputs': 'triangularOutput'
+      }],
+      'expectedOutputs': {
+        'triangularOutput': {
+          'data': [1.0, 2.0, 3.0, 0, 5.0, 6.0, 0, 0, 9.0],
+          'shape': [3, 3],
+          'descriptor': {
+            shape: ['M', 'N'],
+            dataType: 'float16'
+          }
+        }
+      }
+    }
+  },
+  {
+    'name':
+        'triangular float16 3D tensor with dynamic shape options.upper=false (concrete shape [2, 2, 3])',
+    'graph': {
+      'inputs': {
+        'triangularInput': {
+          'data':
+              [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, 'M', 'N'],
+            dataType: 'float16'
+          }
+        }
+      },
+      'operators': [{
+        'name': 'triangular',
+        'arguments':
+            [{'input': 'triangularInput'}, {'options': {'upper': false}}],
+        'outputs': 'triangularOutput'
+      }],
+      'expectedOutputs': {
+        'triangularOutput': {
+          'data': [1.0, 0, 0, 4.0, 5.0, 0, 7.0, 0, 0, 10.0, 11.0, 0],
+          'shape': [2, 2, 3],
+          'descriptor': {
+            shape:
+                [2, 'M', 'N'],
+            dataType: 'float16'
+          }
         }
       }
     }

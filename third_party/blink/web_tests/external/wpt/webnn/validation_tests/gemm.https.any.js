@@ -152,6 +152,65 @@ const tests = [
       label: label,
     },
   },
+  {
+    name: '[gemm] Test building gemm with dynamic dimension that matches.',
+    a: {dataType: 'float32', shape: [2, 'k']},
+    b: {dataType: 'float32', shape: ['k', 4]},
+    output: {dataType: 'float32', shape: [2, 4]}
+  },
+  {
+    name: '[gemm] Test building gemm with dynamic dimension in output.',
+    a: {dataType: 'float32', shape: ['batch', 3]},
+    b: {dataType: 'float32', shape: [3, 4]},
+    output: {dataType: 'float32', shape: ['batch', 4]}
+  },
+  {
+    name: '[gemm] Test building gemm with multiple dynamic dimensions.',
+    a: {dataType: 'float32', shape: ['batch', 'k']},
+    b: {dataType: 'float32', shape: ['k', 'n']},
+    output: {dataType: 'float32', shape: ['batch', 'n']}
+  },
+  {
+    name:
+        '[gemm] Throw if dynamic dimension in a does not match static dimension in b.',
+    a: {dataType: 'float32', shape: [2, 'k']},
+    b: {dataType: 'float32', shape: [5, 4]},
+    options: {label}
+  },
+  {
+    name:
+        '[gemm] Throw if static dimension in a does not match dynamic dimension in b.',
+    a: {dataType: 'float32', shape: [2, 3]},
+    b: {dataType: 'float32', shape: ['k', 4]},
+    options: {label}
+  },
+  {
+    name:
+        '[gemm] Throw if different dynamic dimensions are used for contracting dimension.',
+    a: {dataType: 'float32', shape: [2, 'k1']},
+    b: {dataType: 'float32', shape: ['k2', 4]},
+    options: {label}
+  },
+  {
+    name:
+        '[gemm] Test building gemm with aTranspose=true and dynamic dimensions.',
+    a: {dataType: 'float32', shape: ['k', 'batch']},
+    b: {dataType: 'float32', shape: ['k', 4]},
+    options: {
+      aTranspose: true,
+    },
+    output: {dataType: 'float32', shape: ['batch', 4]}
+  },
+  {
+    name:
+        '[gemm] Test building gemm with bTranspose=true and dynamic dimensions.',
+    a: {dataType: 'float32', shape: [2, 'k']},
+    b: {dataType: 'float32', shape: ['n', 'k']},
+    options: {
+      bTranspose: true,
+    },
+    output: {dataType: 'float32', shape: [2, 'n']}
+  },
 ];
 
 tests.forEach(
@@ -165,7 +224,12 @@ tests.forEach(
       if (test.output) {
         const output = builder.gemm(a, b, test.options);
         assert_equals(output.dataType, test.output.dataType);
-        assert_array_equals(output.shape, test.output.shape);
+        assert_equals(output.shape.length, test.output.shape.length);
+        for (let i = 0; i < output.shape.length; ++i) {
+          // A dimension is a number (static), a string (named dynamic), or
+          // null (unnamed dynamic); compare directly.
+          assert_equals(output.shape[i], test.output.shape[i]);
+        }
       } else {
         const regrexp = new RegExp('\\[' + label + '\\]');
         assert_throws_with_label(

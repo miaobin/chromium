@@ -864,6 +864,7 @@ ContextProperties GraphBuilderTflite::GetContextProperties() {
        // Limited to 4D when broadcasting is required:
        // https://source.chromium.org/chromium/chromium/src/+/main:third_party/tflite/src/tensorflow/lite/kernels/pow.cc
        /*pow_input=*/{kFloat16To32AndInt32, SupportedRanks::UpTo(4)},
+       /*mod_input=*/{SupportedDataTypes(), SupportedRanks()},
        // Comparisons are limited to 4D when broadcasting is required:
        // https://source.chromium.org/chromium/chromium/src/+/main:third_party/tflite/src/tensorflow/lite/kernels/comparisons.cc
        /*equal_input=*/{kFloat16To32AndInt32To64, SupportedRanks::UpTo(4)},
@@ -1119,7 +1120,27 @@ ContextProperties GraphBuilderTflite::GetContextProperties() {
        /*where_condition=*/
        {DataTypeConstraint::kUint8, SupportedRanks::UpTo(5)},
        /*where_value=*/
-       {kFloat16To32AndInt8To64AndUint32, SupportedRanks::UpTo(5)}});
+       {kFloat16To32AndInt8To64AndUint32, SupportedRanks::UpTo(5)},
+       /*range_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*range_output=*/{SupportedDataTypes(), SupportedRanks()},
+       /*shape_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*shape_output=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_reshape_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_reshape_new_shape=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_expand_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_expand_new_shape=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_slice_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_slice_starts=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_pad_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_pad_pads=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_split_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_split_splits=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_resample_2d_input=*/
+       {SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_resample_2d_sizes=*/
+       {SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_tile_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes(), SupportedRanks()}});
 }
 
 GraphBuilderTflite::GraphBuilderTflite(
@@ -1614,6 +1635,51 @@ base::expected<void, std::string> GraphBuilderTflite::SerializeOperation(
       ASSIGN_OR_RETURN(operator_offset, SerializeWhere(*op.get_where()));
       break;
     }
+    case mojom::Operation::Tag::kRange: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "range is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kDynamicReshape: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "dynamicReshape is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kDynamicExpand: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "dynamicExpand is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kDynamicSlice: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "dynamicSlice is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kDynamicPad: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "dynamicPad is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kDynamicSplit: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "dynamicSplit is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kDynamicResample2d: {
+      return base::unexpected(CreateError(
+          mojom::Error::Code::kNotSupportedError,
+          "dynamicResample2d is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kDynamicTile: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "dynamicTile is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kShape: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "shape is not supported on TFLite backend."));
+    }
   }
   operators_.emplace_back(operator_offset);
 
@@ -1688,6 +1754,33 @@ bool GraphBuilderTflite::RequiresFloat32Precision(const mojom::Operation& op) {
       break;
     case mojom::Operation::Tag::kWhere:
       input_operand_id = op.get_where()->true_value_operand_id;
+      break;
+    case mojom::Operation::Tag::kRange:
+      input_operand_id = op.get_range()->start_operand_id;
+      break;
+    case mojom::Operation::Tag::kDynamicReshape:
+      input_operand_id = op.get_dynamic_reshape()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kDynamicExpand:
+      input_operand_id = op.get_dynamic_expand()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kDynamicSlice:
+      input_operand_id = op.get_dynamic_slice()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kDynamicPad:
+      input_operand_id = op.get_dynamic_pad()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kDynamicSplit:
+      input_operand_id = op.get_dynamic_split()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kDynamicResample2d:
+      input_operand_id = op.get_dynamic_resample_2d()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kDynamicTile:
+      input_operand_id = op.get_dynamic_tile()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kShape:
+      input_operand_id = op.get_shape()->input_operand_id;
       break;
     case mojom::Operation::Tag::kArgMinMax:
       input_operand_id = op.get_arg_min_max()->input_operand_id;
@@ -2085,7 +2178,7 @@ GraphBuilderTflite::CanFuseQuantizeAndGetOutput(
     return std::nullopt;
   }
   CHECK_EQ(GetOperand(output_quantize.zero_point_operand_id)
-               .descriptor.NumberOfElements(),
+               .descriptor.NumberOfElements().value(),
            1u);
 
   // TODO(crbug.com/413083273): Consider the restriction in GPU delegate.
@@ -2171,7 +2264,7 @@ GraphBuilderTflite::CanFuseQuantizeAndGetOutput(const mojom::Elu& elu) {
   }
 
   if (GetOperand(input_dequantize.scale_operand_id)
-          .descriptor.NumberOfElements() != 1) {
+          .descriptor.NumberOfElements().value() != 1) {
     return std::nullopt;
   }
 
@@ -2183,7 +2276,7 @@ GraphBuilderTflite::CanFuseQuantizeAndGetOutput(const mojom::Elu& elu) {
 
   const mojom::QuantizeLinear& output_quantize = GetQuantizeOp(next_op->first);
   if (GetOperand(output_quantize.scale_operand_id)
-          .descriptor.NumberOfElements() != 1) {
+          .descriptor.NumberOfElements().value() != 1) {
     return std::nullopt;
   }
 
@@ -2275,7 +2368,7 @@ GraphBuilderTflite::CanFuseQuantizeAndGetOutput(const mojom::Gemm& gemm) {
   // Only Int8 is supported for per-channel quantization.
   // https://source.chromium.org/chromium/chromium/src/+/main:third_party/tflite/src/tensorflow/lite/kernels/fully_connected.cc;l=446;drc=997022c9de8c1e4ed9081b8789c1057d0fce0e28
   size_t number_of_b_scale =
-      GetOperand(b_dequantize.scale_operand_id).descriptor.NumberOfElements();
+      GetOperand(b_dequantize.scale_operand_id).descriptor.NumberOfElements().value();
   const bool per_channel_quantization = number_of_b_scale != 1;
   if (per_channel_quantization && quantized_type != OperandDataType::kInt8) {
     return std::nullopt;
@@ -3034,13 +3127,13 @@ bool GraphBuilderTflite::IsInts8AndScalarScale(const OpType& op) {
     }
   }
 
-  if (GetOperand(op.scale_operand_id).descriptor.NumberOfElements() != 1) {
+  if (GetOperand(op.scale_operand_id).descriptor.NumberOfElements().value() != 1) {
     return false;
   }
 
   // The shape of scale and zero point is the same that has been verified in
   // the function ValidateScaleZeroPointOperandShapeIsCompatibleWithInput.
-  CHECK_EQ(GetOperand(op.zero_point_operand_id).descriptor.NumberOfElements(),
+  CHECK_EQ(GetOperand(op.zero_point_operand_id).descriptor.NumberOfElements().value(),
            1u);
   return true;
 }
@@ -3425,7 +3518,7 @@ base::span<const DataType> GraphBuilderTflite::GetConstantValue(
       reinterpret_cast<const DataType*>(it->second->ByteSpan().data());
 
   return UNSAFE_BUFFERS(
-      base::span(typed_value, operand.descriptor.NumberOfElements()));
+      base::span(typed_value, operand.descriptor.NumberOfElements().value()));
 }
 
 auto GraphBuilderTflite::SerializeUnaryOperation(
@@ -5044,6 +5137,8 @@ auto GraphBuilderTflite::SerializeElementWiseBinary(
       // same results as logical_xor.
       code = ::tflite::BuiltinOperator_NOT_EQUAL;
       break;
+    case mojom::ElementWiseBinary::Kind::kMod:
+      NOTREACHED();
   }
 
   const bool fuse_dequantize =
@@ -8010,7 +8105,7 @@ auto GraphBuilderTflite::SerializePool2d(const mojom::Pool2d& pool2d)
 base::FixedArray<int64_t> GraphBuilderTflite::GetInt64ZeroPointFromInt4(
     OperandId zero_point_operand_id) {
   const mojom::Operand& operand = GetOperand(zero_point_operand_id);
-  const size_t size = operand.descriptor.NumberOfElements();
+  const size_t size = operand.descriptor.NumberOfElements().value();
   CHECK_EQ(operand.kind, mojom::Operand::Kind::kConstant);
   CHECK_EQ(operand.descriptor.data_type(), OperandDataType::kInt4);
 
@@ -8035,7 +8130,7 @@ base::FixedArray<int64_t> GraphBuilderTflite::GetInt64ZeroPointFromInt4(
 base::FixedArray<int64_t> GraphBuilderTflite::GetConstantInt64Value(
     OperandId operand_id) {
   const mojom::Operand& operand = GetOperand(operand_id);
-  base::FixedArray<int64_t> typed_value(operand.descriptor.NumberOfElements());
+  base::FixedArray<int64_t> typed_value(operand.descriptor.NumberOfElements().value());
   switch (operand.descriptor.data_type()) {
     case OperandDataType::kInt4: {
       return GetInt64ZeroPointFromInt4(operand_id);
@@ -8077,7 +8172,7 @@ base::FixedArray<int64_t> GraphBuilderTflite::GetConstantInt64Value(
 base::FixedArray<float> GraphBuilderTflite::GetQuantizeScaleValue(
     OperandId operand_id) {
   const mojom::Operand& operand = GetOperand(operand_id);
-  base::FixedArray<float> typed_value(operand.descriptor.NumberOfElements());
+  base::FixedArray<float> typed_value(operand.descriptor.NumberOfElements().value());
   switch (operand.descriptor.data_type()) {
     case OperandDataType::kFloat32: {
       std::ranges::copy(GetConstantValue<float>(operand_id),
@@ -9109,13 +9204,13 @@ auto GraphBuilderTflite::SerializeScatterElements(
   // https://source.chromium.org/chromium/chromium/src/+/main:third_party/tflite/src/tensorflow/lite/kernels/scatter_nd.cc;l=64?q=scatter_nd.cc&ss=chromium%2Fchromium%2Fsrc
   //
   // So reshape updates from updates.descriptor.shape() to one dimension
-  // (updates.descriptor.NumberOfElements())
+  // (updates.descriptor.NumberOfElements().value())
   ASSIGN_OR_RETURN(
       const TensorInfo& updates_tensor_info,
       SerializeInputTensorInfo(scatter_elements.updates_operand_id));
   const std::array<int32_t, 1> updates_new_shape = {base::checked_cast<int32_t>(
       GetOperand(scatter_elements.updates_operand_id)
-          .descriptor.NumberOfElements())};
+          .descriptor.NumberOfElements().value())};
   ASSIGN_OR_RETURN(const TensorIndex reshape_updates_tensor_index,
                    SerializeTemporaryTensorWithByteSizeCheck(
                        updates_new_shape, updates_tensor_info.data_type));

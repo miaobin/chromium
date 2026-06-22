@@ -116,7 +116,7 @@ MLMultiArray* CreateMultiArrayBackedByIOSurface(OperandDescriptor descriptor) {
   NSArray<NSNumber*>* shape = ShapeToNSArray(descriptor.shape());
   NSNumber* width = shape.lastObject;
   NSNumber* height =
-      @(descriptor.NumberOfElements() / static_cast<size_t>(width.intValue));
+      @(descriptor.NumberOfElements().value() / static_cast<size_t>(width.intValue));
 
   NSDictionary* iosurface_properties = @{
     (NSString*)kIOSurfaceWidth : width,
@@ -228,7 +228,7 @@ TensorImplCoreml::Create(
   if (!shape.empty()) {
     width = shape.back();
   }
-  size_t height = tensor_info->descriptor.NumberOfElements() / width;
+  size_t height = tensor_info->descriptor.NumberOfElements().value() / width;
   if (height != IOSurfaceGetHeight(io_surface) ||
       width != IOSurfaceGetWidth(io_surface)) {
     return base::unexpected(mojom::Error::New(

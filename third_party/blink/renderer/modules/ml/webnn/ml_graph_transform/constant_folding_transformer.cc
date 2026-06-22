@@ -42,6 +42,14 @@ void ConstantFoldingTransformer::TryFoldConstant(MLOperator& op) {
       output->DependentOperators().size() != 1) {
     return;
   }
+  // Cannot fold when the output shape has an unbounded dynamic dimension:
+  // `ReplaceConstantOperandWithNewShape` CHECKs that the element count of the
+  // old and new operands match, but `NumberOfElements()` is nullopt for any
+  // shape containing an unbounded dynamic dim. Folding a constant through a
+  // dynamic reshape/transpose is not meaningful anyway.
+  if (!output->Descriptor().NumberOfElements().has_value()) {
+    return;
+  }
   MLConstantOperand* constant_operand = input->AsConstantOperand();
   if (op.Kind() == blink_mojom::Operation::Tag::kTranspose) {
     // TODO(crbug.com/428232161): Support sub byte transposes.
@@ -54,7 +62,7 @@ void ConstantFoldingTransformer::TryFoldConstant(MLOperator& op) {
     }
   }
   MLConstantOperand* new_constant_operand =
-      ReplaceConstantOperandWithNewShape(constant_operand, output->shape());
+      ReplaceConstantOperandWithNewShape(constant_operand, output->Shape());
   RemoveUnaryOperator(&op);
   if (op.Kind() == blink_mojom::Operation::Tag::kReshape) {
     return;

@@ -19,7 +19,7 @@ struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
                  webnn::OperandDescriptor> {
   static webnn::OperandDataType data_type(
       const webnn::OperandDescriptor& descriptor);
-  static const std::vector<uint32_t>& shape(
+  static const std::vector<webnn::Dimension>& shape(
       const webnn::OperandDescriptor& descriptor) {
     return descriptor.shape();
   }
@@ -38,6 +38,20 @@ struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
   static webnn::mojom::DataType ToMojom(webnn::OperandDataType input);
 
   static webnn::OperandDataType FromMojom(webnn::mojom::DataType input);
+};
+
+template <>
+struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
+    UnionTraits<webnn::mojom::DimensionDataView, webnn::Dimension> {
+  static webnn::mojom::DimensionDataView::Tag GetTag(
+      const webnn::Dimension& dimension);
+
+  static uint32_t size(const webnn::Dimension& dimension);
+
+  static const std::optional<std::string>& dynamic_name(
+      const webnn::Dimension& dimension);
+
+  static bool Read(webnn::mojom::DimensionDataView data, webnn::Dimension* out);
 };
 
 }  // namespace mojo
