@@ -9,6 +9,8 @@
   Exposed=(Window, Worker)
 ] interface MLOperand {
   readonly attribute MLOperandDataType dataType;
-  // A "?" string element is an unnamed dynamic dimension (ORT's `?`).
-  readonly attribute FrozenArray<MLDimension> shape;
+  // A "?" string element is an unnamed dynamic dimension (ORT's `?`). The whole
+  // attribute is null when the operand is unranked (its rank is unknown until
+  // computeShapes/dispatch).
+  readonly attribute FrozenArray<MLDimension>? shape;
 };

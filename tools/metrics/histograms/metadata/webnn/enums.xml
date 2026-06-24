@@ -172,6 +172,10 @@ MLGraphOperatorUma in //third_party/blink/renderer/modules/ml/webnn/ml_graph_bui
   <int value="102" label="DynamicSplit"/>
   <int value="103" label="Shape"/>
   <int value="104" label="DynamicResample2d"/>
+  <int value="105" label="DynamicTile"/>
+  <int value="106" label="Squeeze"/>
+  <int value="107" label="Unsqueeze"/>
+  <int value="108" label="Flatten"/>
 </enum>
 
 <!-- LINT.IfChange(WebNNOrtDeviceUma) -->

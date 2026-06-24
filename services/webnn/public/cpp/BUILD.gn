@@ -111,7 +111,7 @@ source_set("tests") {
   deps = [
     ":cpp",
     "//base/test:test_support",
-    "//services/webnn/public/mojom:mojom",
+    "//services/webnn/public/mojom",
     "//testing/gtest",
     "//third_party/fp16",
   ]

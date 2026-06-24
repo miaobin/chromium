@@ -57,6 +57,8 @@ class MLReverseOptions;
 class MLScatterOptions;
 class MLSliceOptions;
 class MLSplitOptions;
+class MLSqueezeOptions;
+class MLFlattenOptions;
 class MLTensor;
 class MLTransposeOptions;
 class MLTriangularOptions;
@@ -517,6 +519,10 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                   MLOperatorOptions* options,
                   ExceptionState& exception_state);
 
+  MLOperand* squeeze(MLOperand* input,
+                     MLSqueezeOptions* options,
+                     ExceptionState& exception_state);
+
   MLOperand* tile(MLOperand* input,
                   const Vector<uint32_t>& repetitions,
                   MLOperatorOptions* options,
@@ -525,6 +531,15 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
   MLOperand* transpose(MLOperand* input,
                        MLTransposeOptions* options,
                        ExceptionState& exception_state);
+
+  MLOperand* unsqueeze(MLOperand* input,
+                       const Vector<uint32_t>& axes,
+                       MLOperatorOptions* options,
+                       ExceptionState& exception_state);
+
+  MLOperand* flatten(MLOperand* input,
+                     MLFlattenOptions* options,
+                     ExceptionState& exception_state);
 
   MLOperand* triangular(MLOperand* input,
                         MLTriangularOptions* options,

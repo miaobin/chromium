@@ -59,9 +59,17 @@ struct SupportedTensors {
   }
 
   bool Supports(const OperandDescriptor& operand_descriptor) const {
-    uint32_t rank = operand_descriptor.Rank();
-    return data_types.Has(operand_descriptor.data_type()) &&
-           ranks.Supports(rank);
+    if (!data_types.Has(operand_descriptor.data_type())) {
+      return false;
+    }
+    // An unranked descriptor (dynamic rank) cannot be checked against a rank
+    // constraint at build time; the concrete-rank check is deferred to
+    // dispatch, when the rank is known.
+    std::optional<uint32_t> rank = operand_descriptor.Rank();
+    if (!rank.has_value()) {
+      return true;
+    }
+    return ranks.Supports(*rank);
   }
 
   bool SupportsAll(

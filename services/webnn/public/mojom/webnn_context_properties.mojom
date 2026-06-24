@@ -250,6 +250,9 @@ struct DataTypeLimits {
   SupportedTensors dynamic_resample_2d_sizes;
   SupportedTensors dynamic_tile_input;
   SupportedTensors dynamic_tile_repetitions;
+  SupportedTensors squeeze_input;
+  SupportedTensors unsqueeze_input;
+  SupportedTensors flatten_input;
 };
 
 // Represents properties of the `WebNNContext` implementation that has been

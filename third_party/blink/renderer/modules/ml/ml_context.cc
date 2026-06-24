@@ -225,12 +225,14 @@ gpu::SharedImageUsageSet OperandUsageToSharedImageUsageSet(
 base::expected<void, std::string> IsValidTensorSize(
     const webnn::OperandDescriptor descriptor,
     int max_texture_size) {
-  if (descriptor.Rank() > 0) {
-    int width = descriptor.shape()[descriptor.Rank() - 1];
+  // Tensor descriptors are always ranked.
+  const uint32_t rank = descriptor.Rank().value();
+  if (rank > 0) {
+    int width = descriptor.shape()[rank - 1];
     if (width > max_texture_size) {
       return base::unexpected("Tensor size is too large.");
     }
-    if (descriptor.Rank() > 1) {
+    if (rank > 1) {
       int height = descriptor.NumberOfElements().value() / width;
       if (height > max_texture_size) {
         return base::unexpected("Tensor size is too large.");
@@ -1447,6 +1449,27 @@ const MLOpSupportLimits* MLContext::opSupportLimits(ScriptState* script_state) {
   dynamic_tile->setOutput(
       SupportedTensorLimitsToTensorLimits(data_type_limits.dynamic_tile_input));
   op_support_limits->setDynamicTile(dynamic_tile);
+
+  MLSingleInputSupportLimits* squeeze = MLSingleInputSupportLimits::Create();
+  squeeze->setInput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.squeeze_input));
+  squeeze->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.squeeze_input));
+  op_support_limits->setSqueeze(squeeze);
+
+  MLSingleInputSupportLimits* unsqueeze = MLSingleInputSupportLimits::Create();
+  unsqueeze->setInput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.unsqueeze_input));
+  unsqueeze->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.unsqueeze_input));
+  op_support_limits->setUnsqueeze(unsqueeze);
+
+  MLSingleInputSupportLimits* flatten = MLSingleInputSupportLimits::Create();
+  flatten->setInput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.flatten_input));
+  flatten->setOutput(
+      SupportedTensorLimitsToTensorLimits(data_type_limits.flatten_input));
+  op_support_limits->setFlatten(flatten);
 
   return op_support_limits;
 }

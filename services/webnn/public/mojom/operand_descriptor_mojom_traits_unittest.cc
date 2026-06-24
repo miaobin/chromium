@@ -38,6 +38,21 @@ TEST(OperandDescriptorMojomTraitsTest, Basic) {
   EXPECT_EQ(input, output);
 }
 
+TEST(OperandDescriptorMojomTraitsTest, Unranked) {
+  // An unranked descriptor (rank unknown) round-trips as a null shape.
+  webnn::OperandDescriptor input = webnn::OperandDescriptor::CreateUnranked(
+      webnn::OperandDataType::kFloat32);
+  ASSERT_FALSE(input.HasRank());
+
+  webnn::OperandDescriptor output = CreateInvalidOperandDescriptor();
+  EXPECT_TRUE(
+      mojo::test::SerializeAndDeserialize<webnn::mojom::OperandDescriptor>(
+          input, output));
+  EXPECT_EQ(input, output);
+  EXPECT_FALSE(output.HasRank());
+  EXPECT_EQ(output.data_type(), webnn::OperandDataType::kFloat32);
+}
+
 TEST(OperandDescriptorMojomTraitsTest, Int4) {
   auto input = webnn::OperandDescriptor::CreateForDeserialization(
       webnn::OperandDataType::kInt4, std::array<uint32_t, 2>{3, 3}, {});

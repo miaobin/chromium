@@ -258,7 +258,10 @@ TEST(ContextPropertiesMojomTraitsTest, Basic) {
        {webnn::SupportedDataTypes::All(), kMaxRank},
        /*dynamic_tile_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
        /*dynamic_tile_repetitions=*/
-       {webnn::SupportedDataTypes::All(), kMaxRank}});
+       {webnn::SupportedDataTypes::All(), kMaxRank},
+       /*squeeze_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*unsqueeze_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+       /*flatten_input=*/{webnn::SupportedDataTypes::All(), kMaxRank}});
 
   webnn::ContextProperties output(
       webnn::InputOperandLayout::kNhwc, webnn::Resample2DAxes::kChannelsFirst,
@@ -271,7 +274,7 @@ TEST(ContextPropertiesMojomTraitsTest, Basic) {
        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-       {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
+       {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
 
   EXPECT_TRUE(
       mojo::test::SerializeAndDeserialize<webnn::mojom::ContextProperties>(

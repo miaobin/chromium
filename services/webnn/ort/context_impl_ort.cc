@@ -519,7 +519,13 @@ ContextProperties ContextImplOrt::GetContextProperties(
        /*dynamic_tile_repetitions=*/
        {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
                            OperandDataType::kInt64},
-        SupportedRanks::Exactly(1)}});
+        SupportedRanks::Exactly(1)},
+       /*squeeze_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       /*unsqueeze_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       /*flatten_input=*/
+       {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank}});
 }
 
 base::WeakPtr<WebNNContextImpl> ContextImplOrt::AsWeakPtr() {

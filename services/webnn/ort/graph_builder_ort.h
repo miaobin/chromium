@@ -353,6 +353,9 @@ class GraphBuilderOrt {
   void AddSliceOperation(const mojom::Slice& slice);
   void AddSoftmaxOperation(const mojom::Softmax& softmax);
   void AddSplitOperation(const mojom::Split& split);
+  void AddSqueezeOperation(const mojom::Squeeze& squeeze);
+  void AddUnsqueezeOperation(const mojom::Unsqueeze& unsqueeze);
+  void AddFlattenOperation(const mojom::Flatten& flatten);
   void AddTileOperation(const mojom::Tile& tile);
   void AddTransposeOperation(const mojom::Transpose& transpose);
   void AddTriangularOperation(const mojom::Triangular& triangular);

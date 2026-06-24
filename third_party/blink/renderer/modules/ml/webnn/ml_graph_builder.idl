@@ -215,6 +215,14 @@ dictionary MLSliceOptions : MLOperatorOptions {
   [EnforceRange] sequence<[EnforceRange] unsigned long> strides;
 };
 
+dictionary MLSqueezeOptions : MLOperatorOptions {
+  sequence<[EnforceRange] unsigned long> axes;
+};
+
+dictionary MLFlattenOptions : MLOperatorOptions {
+  [EnforceRange] unsigned long axis = 1;
+};
+
 dictionary MLTransposeOptions : MLOperatorOptions {
   sequence<[EnforceRange] unsigned long> permutation;
 };
@@ -318,6 +326,8 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand expand(MLOperand input, sequence<MLDimension> newShape, optional MLOperatorOptions options = {});
 
+  [RaisesException] MLOperand flatten(MLOperand input, optional MLFlattenOptions options = {});
+
   [RaisesException] MLOperand gather(MLOperand input, MLOperand indices, optional MLGatherOptions options = {});
 
   [RaisesException] MLOperand gatherElements(MLOperand input, MLOperand indices, optional MLGatherOptions options = {});
@@ -415,6 +425,8 @@ dictionary MLTriangularOptions : MLOperatorOptions {
   [RaisesException] sequence<MLOperand> split(MLOperand input, [EnforceRange] unsigned long splits, optional MLSplitOptions options = {});
   [RaisesException] sequence<MLOperand> split(MLOperand input, sequence<[EnforceRange] unsigned long> splits, optional MLSplitOptions options = {});
 
+  [RaisesException] MLOperand squeeze(MLOperand input, optional MLSqueezeOptions options = {});
+
   [RaisesException] MLOperand tanh(MLOperand input, optional MLOperatorOptions options = {});
 
   [RaisesException] MLOperand tile(
@@ -422,6 +434,9 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand transpose(
       MLOperand input, optional MLTransposeOptions options = {});
+
+  [RaisesException] MLOperand unsqueeze(
+      MLOperand input, sequence<[EnforceRange] unsigned long> axes, optional MLOperatorOptions options = {});
 
   [RaisesException] MLOperand triangular(MLOperand input, optional MLTriangularOptions options = {});
 

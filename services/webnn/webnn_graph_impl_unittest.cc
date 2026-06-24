@@ -7319,6 +7319,232 @@ TEST_F(WebNNGraphImplTest, TileTest) {
   }
 }
 
+struct SqueezeTester {
+  OperandInfo input;
+  std::optional<std::vector<uint32_t>> axes;
+  OperandInfo output;
+  bool expected;
+
+  void Test(WebNNGraphImplTest& test) {
+    auto context_properties = GetContextPropertiesForTesting();
+    mojo::Remote<mojom::WebNNGraphBuilder> remote =
+        test.BindNewGraphBuilderRemote();
+
+    GraphInfoBuilder builder(remote);
+    OperandId input_operand_id =
+        builder.BuildInput("input", input.dimensions, input.type);
+    OperandId output_operand_id =
+        builder.BuildOutput("output", output.dimensions, output.type);
+    builder.BuildSqueeze(input_operand_id, output_operand_id, axes);
+    EXPECT_EQ(builder.IsValidGraphForTesting(context_properties), expected);
+  }
+};
+
+TEST_F(WebNNGraphImplTest, SqueezeTest) {
+  {
+    // Remove the listed size-1 axes.
+    SqueezeTester{
+        .input = {.type = OperandDataType::kFloat32,
+                  .dimensions = {1, 3, 1, 4}},
+        .axes = std::vector<uint32_t>{0, 2},
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {3, 4}},
+        .expected = true}
+        .Test(*this);
+  }
+  {
+    // A listed axis whose static size is not 1 is rejected.
+    SqueezeTester{
+        .input = {.type = OperandDataType::kFloat32,
+                  .dimensions = {1, 3, 1, 4}},
+        .axes = std::vector<uint32_t>{1},
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {1, 1, 4}},
+        .expected = false}
+        .Test(*this);
+  }
+  {
+    // An axis that is out of range is rejected.
+    SqueezeTester{.input = {.type = OperandDataType::kFloat32,
+                            .dimensions = {1, 3, 1, 4}},
+                  .axes = std::vector<uint32_t>{4},
+                  .output = {.type = OperandDataType::kFloat32,
+                             .dimensions = {1, 3, 1, 4}},
+                  .expected = false}
+        .Test(*this);
+  }
+  {
+    // A no-axes squeeze over a fully static input removes every size-1
+    // dimension and yields a concrete output ({1, 3, 1, 4} -> {3, 4}).
+    SqueezeTester{
+        .input = {.type = OperandDataType::kFloat32,
+                  .dimensions = {1, 3, 1, 4}},
+        .axes = std::nullopt,
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {3, 4}},
+        .expected = true}
+        .Test(*this);
+  }
+  {
+    // A no-axes squeeze over a fully static input with no size-1 dimensions
+    // yields the same shape ({3, 4} -> {3, 4}).
+    SqueezeTester{
+        .input = {.type = OperandDataType::kFloat32, .dimensions = {3, 4}},
+        .axes = std::nullopt,
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {3, 4}},
+        .expected = true}
+        .Test(*this);
+  }
+  {
+    // A no-axes squeeze whose declared output disagrees with the computed
+    // result is rejected ({1, 3, 1, 4} squeezes to {3, 4}, not {1, 3, 4}).
+    SqueezeTester{
+        .input = {.type = OperandDataType::kFloat32,
+                  .dimensions = {1, 3, 1, 4}},
+        .axes = std::nullopt,
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {1, 3, 4}},
+        .expected = false}
+        .Test(*this);
+  }
+}
+
+// A fixed-rank operator (here slice) that receives an unranked input from an
+// untrusted renderer must be rejected at build time rather than crashing the
+// service while dereferencing the absent rank.
+TEST_F(WebNNGraphImplTest, UnrankedInputRejectedByFixedRankOp) {
+  auto context_properties = GetContextPropertiesForTesting();
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+
+  // input[2, 3] -> squeeze(no axes) -> unranked -> slice -> output.
+  const OperandId input_id =
+      builder.BuildInput("input", {2, 3}, OperandDataType::kFloat32);
+  const OperandId unranked_id =
+      builder.BuildUnrankedIntermediateOperand(OperandDataType::kFloat32);
+  builder.BuildSqueeze(input_id, unranked_id, /*axes=*/std::nullopt);
+  const OperandId output_id =
+      builder.BuildOutput("output", {2, 3}, OperandDataType::kFloat32);
+  builder.BuildSlice(unranked_id, output_id,
+                     /*starts=*/std::vector<uint32_t>{0, 0},
+                     /*sizes=*/std::vector<uint32_t>{2, 3},
+                     /*strides=*/std::vector<uint32_t>{1, 1});
+
+  // The slice over an unranked input cannot be validated against a concrete
+  // rank; the graph is rejected (and the service does not crash).
+  EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
+}
+
+struct UnsqueezeTester {
+  OperandInfo input;
+  std::vector<uint32_t> axes;
+  OperandInfo output;
+  bool expected;
+
+  void Test(WebNNGraphImplTest& test) {
+    auto context_properties = GetContextPropertiesForTesting();
+    mojo::Remote<mojom::WebNNGraphBuilder> remote =
+        test.BindNewGraphBuilderRemote();
+
+    GraphInfoBuilder builder(remote);
+    OperandId input_operand_id =
+        builder.BuildInput("input", input.dimensions, input.type);
+    OperandId output_operand_id =
+        builder.BuildOutput("output", output.dimensions, output.type);
+    builder.BuildUnsqueeze(input_operand_id, output_operand_id,
+                           std::move(axes));
+    EXPECT_EQ(builder.IsValidGraphForTesting(context_properties), expected);
+  }
+};
+
+TEST_F(WebNNGraphImplTest, UnsqueezeTest) {
+  {
+    // Insert size-1 dims at the listed output axes.
+    UnsqueezeTester{
+        .input = {.type = OperandDataType::kFloat32, .dimensions = {3, 4}},
+        .axes = {0, 2},
+        .output = {.type = OperandDataType::kFloat32,
+                   .dimensions = {1, 3, 1, 4}},
+        .expected = true}
+        .Test(*this);
+  }
+  {
+    // An axis >= output rank is rejected.
+    UnsqueezeTester{
+        .input = {.type = OperandDataType::kFloat32, .dimensions = {3, 4}},
+        .axes = {4},
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {3, 4, 1}},
+        .expected = false}
+        .Test(*this);
+  }
+  {
+    // Output shape mismatch is rejected.
+    UnsqueezeTester{
+        .input = {.type = OperandDataType::kFloat32, .dimensions = {3, 4}},
+        .axes = {0},
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {3, 4, 1}},
+        .expected = false}
+        .Test(*this);
+  }
+}
+
+struct FlattenTester {
+  OperandInfo input;
+  uint32_t axis;
+  OperandInfo output;
+  bool expected;
+
+  void Test(WebNNGraphImplTest& test) {
+    auto context_properties = GetContextPropertiesForTesting();
+    mojo::Remote<mojom::WebNNGraphBuilder> remote =
+        test.BindNewGraphBuilderRemote();
+
+    GraphInfoBuilder builder(remote);
+    OperandId input_operand_id =
+        builder.BuildInput("input", input.dimensions, input.type);
+    OperandId output_operand_id =
+        builder.BuildOutput("output", output.dimensions, output.type);
+    builder.BuildFlatten(input_operand_id, output_operand_id, axis);
+    EXPECT_EQ(builder.IsValidGraphForTesting(context_properties), expected);
+  }
+};
+
+TEST_F(WebNNGraphImplTest, FlattenTest) {
+  {
+    // Collapse around axis 2: [2*3, 4*5].
+    FlattenTester{
+        .input = {.type = OperandDataType::kFloat32,
+                  .dimensions = {2, 3, 4, 5}},
+        .axis = 2,
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {6, 20}},
+        .expected = true}
+        .Test(*this);
+  }
+  {
+    // axis == 0 yields a leading 1.
+    FlattenTester{
+        .input = {.type = OperandDataType::kFloat32, .dimensions = {2, 3, 4}},
+        .axis = 0,
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {1, 24}},
+        .expected = true}
+        .Test(*this);
+  }
+  {
+    // axis == rank yields a trailing 1.
+    FlattenTester{
+        .input = {.type = OperandDataType::kFloat32, .dimensions = {2, 3, 4}},
+        .axis = 3,
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {24, 1}},
+        .expected = true}
+        .Test(*this);
+  }
+  {
+    // axis > rank is rejected.
+    FlattenTester{
+        .input = {.type = OperandDataType::kFloat32, .dimensions = {2, 3, 4}},
+        .axis = 4,
+        .output = {.type = OperandDataType::kFloat32, .dimensions = {24, 1}},
+        .expected = false}
+        .Test(*this);
+  }
+}
+
 struct TransposeTester {
   OperandInfo input;
   std::vector<uint32_t> permutation;
@@ -8283,6 +8509,48 @@ TEST_F(WebNNGraphImplTest, ComputeShapesDynamicReshapeTest) {
   ASSERT_TRUE(output.StaticShape().has_value());
   EXPECT_EQ(output.StaticShape().value(),
             std::vector<uint32_t>({3u, 28u, 28u}));
+}
+
+// ComputeShapes() resolves a dynamic-rank chain: a no-axes squeeze produces an
+// unranked intermediate (rank unknown at build time) that propagates through a
+// relu, and the concrete rank is recovered at dispatch from the resolved input.
+TEST_F(WebNNGraphImplTest, ComputeShapesDynamicRankTest) {
+  auto context_properties = GetContextPropertiesForTesting();
+  const OperandDataType kDataType = OperandDataType::kFloat32;
+
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+  const DynamicDimension batch_dim{/*name=*/"batch"};
+
+  // input[batch, 1, 4] -> squeeze(no axes) -> unranked -> relu -> unranked out.
+  const std::vector<Dimension> kInputShape = {batch_dim, Dimension(1u),
+                                              Dimension(4u)};
+  const OperandId input_id =
+      builder.BuildDynamicInput("input", kInputShape, kDataType);
+  const OperandId squeezed_id =
+      builder.BuildUnrankedIntermediateOperand(kDataType);
+  builder.BuildSqueeze(input_id, squeezed_id, /*axes=*/std::nullopt);
+  const OperandId output_id =
+      builder.BuildUnrankedIntermediateOperand(kDataType);
+  builder.BuildRelu(squeezed_id, output_id);
+  builder.AddOutput("output", output_id);
+  ASSERT_TRUE(builder.IsValidGraphForTesting(context_properties));
+
+  {
+    // batch=3: input [3, 1, 4] squeezes its size-1 dim to [3, 4], and relu
+    // preserves it. The unranked output resolves to a concrete [3, 4].
+    mojo::Remote<mojom::WebNNContext> webnn_context =
+        CreateWebNNContext(provider_remote());
+    mojo::Remote<mojom::WebNNGraph> webnn_graph =
+        CreateGraphForComputeShapes(webnn_context, builder.CloneGraphInfo());
+    ComputeShapesTestResult result =
+        RunComputeShapes(webnn_graph, {{"input", {3, 1, 4}}});
+    EXPECT_FALSE(result.bad_message);
+    ASSERT_TRUE(result.output_descriptors.contains("output"));
+    const OperandDescriptor& output = result.output_descriptors.at("output");
+    ASSERT_TRUE(output.StaticShape().has_value());
+    EXPECT_EQ(output.StaticShape().value(), std::vector<uint32_t>({3u, 4u}));
+  }
 }
 
 // ComputeShapes() returns the build-time output descriptors for a fully static

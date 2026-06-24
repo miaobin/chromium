@@ -144,7 +144,10 @@ DataTypeLimits::DataTypeLimits(SupportedTensors input,
                                SupportedTensors dynamic_resample_2d_input,
                                SupportedTensors dynamic_resample_2d_sizes,
                                SupportedTensors dynamic_tile_input,
-                               SupportedTensors dynamic_tile_repetitions)
+                               SupportedTensors dynamic_tile_repetitions,
+                               SupportedTensors squeeze_input,
+                               SupportedTensors unsqueeze_input,
+                               SupportedTensors flatten_input)
     : input(input),
       constant(constant),
       arg_min_max_input(arg_min_max_input),
@@ -281,7 +284,10 @@ DataTypeLimits::DataTypeLimits(SupportedTensors input,
       dynamic_resample_2d_input(dynamic_resample_2d_input),
       dynamic_resample_2d_sizes(dynamic_resample_2d_sizes),
       dynamic_tile_input(dynamic_tile_input),
-      dynamic_tile_repetitions(dynamic_tile_repetitions) {}
+      dynamic_tile_repetitions(dynamic_tile_repetitions),
+      squeeze_input(squeeze_input),
+      unsqueeze_input(unsqueeze_input),
+      flatten_input(flatten_input) {}
 
 DataTypeLimits::DataTypeLimits(const DataTypeLimits&) = default;
 DataTypeLimits& DataTypeLimits::operator=(const DataTypeLimits&) = default;

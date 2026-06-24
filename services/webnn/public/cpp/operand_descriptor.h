@@ -152,6 +152,11 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
                            base::span<const Dimension> shape,
                            base::span<const uint32_t> pending_permutation);
 
+  // Creates an unranked descriptor (rank unknown). Used for dynamic-rank graphs
+  // (Phase B): the rank is resolved to a concrete value at
+  // computeShapes/dispatch. Unranked operands carry only a data type.
+  static OperandDescriptor CreateUnranked(OperandDataType data_type);
+
   // Same as above, but skip validation checks. This may be used to create an
   // invalid descriptor to test that its deserialization fails.
   static OperandDescriptor UnsafeCreateForTesting(
@@ -184,12 +189,39 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
   ~OperandDescriptor();
 
   OperandDataType data_type() const { return data_type_; }
-  const std::vector<Dimension>& shape() const { return shape_; }
+  // Returns the shape's dimensions. CHECK-fails if this descriptor is unranked
+  // (rank unknown); callers that may handle unranked operands must first guard
+  // on `HasRank()`. Per Phase B, the rank is known or unknown (binary); code
+  // paths that have already established a known rank (the common case) keep
+  // using `shape()` directly.
+  const std::vector<Dimension>& shape() const {
+    CHECK(shape_.has_value()) << "shape() called on unranked descriptor";
+    return *shape_;
+  }
   const std::vector<uint32_t>& pending_permutation() const {
     return pending_permutation_;
   }
 
-  uint32_t Rank() const { return static_cast<uint32_t>(shape_.size()); }
+  // Whether this descriptor has a known rank. An unranked descriptor (rank
+  // unknown) is only produced for dynamic-rank graphs (Phase B) and is resolved
+  // to a concrete rank at computeShapes/dispatch.
+  bool HasRank() const { return shape_.has_value(); }
+
+  // Returns the shape as an optional (nullopt when unranked). Used by the Mojo
+  // traits, which serialize the shape as a nullable array.
+  const std::optional<std::vector<Dimension>>& shape_optional() const {
+    return shape_;
+  }
+
+  // Returns the rank, or nullopt if the descriptor is unranked. Callers must
+  // handle the unranked case explicitly (defer to dispatch) before relying on
+  // a concrete rank.
+  std::optional<uint32_t> Rank() const {
+    if (!shape_.has_value()) {
+      return std::nullopt;
+    }
+    return static_cast<uint32_t>(shape_->size());
+  }
   // Total byte length assuming perfect packing. Some tensors described by this
   // `OperandDescriptor` may be stored with more bytes.
   // CHECK-fails if the shape has any dynamic dimension (tensor descriptors are
@@ -220,7 +252,9 @@ class COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) OperandDescriptor {
                     std::vector<uint32_t> permutation);
 
   OperandDataType data_type_;
-  std::vector<Dimension> shape_;
+  // `nullopt` means the descriptor is unranked (rank unknown). A present-but-
+  // empty vector is a scalar (rank 0).
+  std::optional<std::vector<Dimension>> shape_;
   std::vector<uint32_t> pending_permutation_;
 };
 

@@ -589,7 +589,7 @@ MLOperand* LayoutTransformer::HandleBatchNormalization(MLOperator* batch_norm) {
   const MLOperand* input_operand = batch_norm->PositionalInputs()[0];
   uint32_t axis = options->axis();
   const std::optional<std::vector<uint32_t>> input_permutation =
-      GetBatchNormalizationPermutation(axis, input_operand->shape().size(),
+      GetBatchNormalizationPermutation(axis, input_operand->Rank(),
                                        context_properties);
   MLOperand* output_operand = batch_norm->Outputs()[0].Get();
   // Insert input transpose if needed.

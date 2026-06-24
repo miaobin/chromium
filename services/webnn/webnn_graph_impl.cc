@@ -261,15 +261,20 @@ WebNNGraphImpl::InferConcreteOutputShapes(
   concrete_operands.reserve(resource_info.graph_operands.size());
   for (const auto& operand : resource_info.graph_operands) {
     auto cloned = operand.Clone();
-    const auto& orig_shape = cloned->descriptor.shape();
+    // Unranked operands (intermediates whose rank is unknown until dispatch)
+    // carry no dimensions to substitute; the forward propagation below infers
+    // their concrete shapes from the resolved inputs.
     bool has_dynamic = false;
-    for (const auto& dim : orig_shape) {
-      if (std::holds_alternative<DynamicDimension>(dim)) {
-        has_dynamic = true;
-        break;
+    if (cloned->descriptor.HasRank()) {
+      for (const auto& dim : cloned->descriptor.shape()) {
+        if (std::holds_alternative<DynamicDimension>(dim)) {
+          has_dynamic = true;
+          break;
+        }
       }
     }
     if (has_dynamic) {
+      const auto& orig_shape = cloned->descriptor.shape();
       std::vector<uint32_t> concrete_shape;
       concrete_shape.reserve(orig_shape.size());
       bool all_resolved = true;

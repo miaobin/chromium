@@ -157,7 +157,7 @@ TensorImplCoreml::Create(
     mojom::TensorInfoPtr tensor_info) {
   // TODO(crbug.com/329482489): Move this check to the renderer and throw a
   // TypeError.
-  if (tensor_info->descriptor.Rank() > 5) {
+  if (tensor_info->descriptor.Rank().value() > 5) {
     LOG(ERROR) << "[WebNN] Tensor rank is too large.";
     return base::unexpected(mojom::Error::New(
         mojom::Error::Code::kNotSupportedError, "Tensor rank is too large."));

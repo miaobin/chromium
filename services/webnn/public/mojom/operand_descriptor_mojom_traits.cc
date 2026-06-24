@@ -21,7 +21,8 @@ bool StructTraits<webnn::mojom::OperandDescriptorDataView,
                   webnn::OperandDescriptor>::
     Read(webnn::mojom::OperandDescriptorDataView data,
          webnn::OperandDescriptor* out) {
-  std::vector<webnn::Dimension> shape;
+  // A null `shape` denotes an unranked operand (dynamic rank).
+  std::optional<std::vector<webnn::Dimension>> shape;
   if (!data.ReadShape(&shape)) {
     return false;
   }
@@ -33,9 +34,20 @@ bool StructTraits<webnn::mojom::OperandDescriptorDataView,
   if (!data.ReadDataType(&data_type)) {
     return false;
   }
+
+  if (!shape.has_value()) {
+    // Unranked operands carry no permutation (only constants do, and constants
+    // are always ranked).
+    if (pending_permutation.size() != 0) {
+      return false;
+    }
+    *out = webnn::OperandDescriptor::CreateUnranked(data_type);
+    return true;
+  }
+
   base::expected<webnn::OperandDescriptor, std::string> descriptor =
       webnn::OperandDescriptor::CreateForDeserialization(
-          data_type, shape, base::span(pending_permutation));
+          data_type, *shape, base::span(pending_permutation));
 
   if (!descriptor.has_value()) {
     return false;

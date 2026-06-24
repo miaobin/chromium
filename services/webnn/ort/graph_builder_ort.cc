@@ -78,6 +78,7 @@ constexpr base::cstring_view kOpTypeCumulativeSum = "CumSum";
 constexpr base::cstring_view kOpTypeDequantizeLinear = "DequantizeLinear";
 constexpr base::cstring_view kOpTypeElu = "Elu";
 constexpr base::cstring_view kOpTypeExpand = "Expand";
+constexpr base::cstring_view kOpTypeFlatten = "Flatten";
 constexpr base::cstring_view kOpTypeGather = "Gather";
 constexpr base::cstring_view kOpTypeGatherElements = "GatherElements";
 constexpr base::cstring_view kOpTypeGatherND = "GatherND";
@@ -959,12 +960,21 @@ void GraphBuilderOrt::AddSqueezeNode(base::cstring_view node_name,
                                      base::cstring_view input,
                                      base::cstring_view output,
                                      base::span<const int64_t> axes) {
-  // ONNX Squeeze op's `axes` is an operand of data type int64.
-  const std::string axes_operand = Create1DInitializer<int64_t>(axes);
-
-  std::array<const char*, 2> inputs = {input.c_str(), axes_operand.c_str()};
   std::array<const char*, 1> outputs = {output.c_str()};
 
+  // An empty `axes` maps to ONNX Squeeze's optional-axes form: omit the `axes`
+  // input so ORT removes every size-1 dimension. The output rank is therefore
+  // data-dependent (unknown until run time), which is why such an operand is
+  // modeled as unranked on the WebNN side.
+  if (axes.empty()) {
+    std::array<const char*, 1> inputs = {input.c_str()};
+    model_editor_.AddNode(kOpTypeSqueeze, node_name, inputs, outputs);
+    return;
+  }
+
+  // ONNX Squeeze op's `axes` is an operand of data type int64.
+  const std::string axes_operand = Create1DInitializer<int64_t>(axes);
+  std::array<const char*, 2> inputs = {input.c_str(), axes_operand.c_str()};
   model_editor_.AddNode(kOpTypeSqueeze, node_name, inputs, outputs);
 }
 
@@ -2066,7 +2076,8 @@ void GraphBuilderOrt::AddExpandOperation(const mojom::Expand& expand) {
   // here we map it to an Identity node to avoid the mishandling of some ORT
   // EPs.
   // TODO(crbug.com/500385615): Remove the workaround when the issue is fixed.
-  if (input_descriptor.Rank() == 0 && output_descriptor.Rank() == 0) {
+  if (input_descriptor.Rank().value() == 0 &&
+      output_descriptor.Rank().value() == 0) {
     EmulateWithIdentityNode(expand.label, input, output);
     return;
   }
@@ -3224,7 +3235,7 @@ base::expected<void, mojom::ErrorPtr> GraphBuilderOrt::AddMatMulOperation(
 
   if (batched_matmul_k_dimension_limit_.has_value()) {
     bool is_batched_matmul =
-        GetOperand(matmul.output_operand_id).descriptor.Rank() > 2;
+        GetOperand(matmul.output_operand_id).descriptor.Rank().value() > 2;
     webnn::Dimension k_dim =
         GetOperand(matmul.a_operand_id).descriptor.shape().back();
     if (is_batched_matmul && std::holds_alternative<uint32_t>(k_dim)) {
@@ -3463,7 +3474,7 @@ void GraphBuilderOrt::AddResample2dOperation(
   std::string sizes;
   if (resample2d.scales) {
     // Each element of scales applies to a dimension of the input.
-    CHECK_EQ(input_descriptor.Rank(), 4u);
+    CHECK_EQ(input_descriptor.Rank().value(), 4u);
     std::array<float, 4> scales_data = {1.f, 1.f, 1.f, 1.f};
     CHECK_EQ(resample2d.axes.size(), 2u);
     CHECK_EQ(resample2d.scales->size(), 2u);
@@ -3816,7 +3827,7 @@ void GraphBuilderOrt::AddPadOperation(const mojom::Pad& pad) {
 
   size_t paddings_size =
       pad.beginning_padding.size() + pad.ending_padding.size();
-  CHECK_EQ(paddings_size, input_descriptor.Rank() * 2);
+  CHECK_EQ(paddings_size, input_descriptor.Rank().value() * 2);
   std::vector<uint32_t> paddings_value;
   paddings_value.reserve(paddings_size);
   std::ranges::copy(pad.beginning_padding, std::back_inserter(paddings_value));
@@ -3948,7 +3959,7 @@ void GraphBuilderOrt::AddTileOperation(const mojom::Tile& tile) {
   // Workaround: emulate the tile operation with identity operation for
   // unsupported scalar input.
   // TODO(crbug.com/500385615): Remove the workaround when the issue is fixed.
-  if (input_descriptor.Rank() == 0) {
+  if (input_descriptor.Rank().value() == 0) {
     EmulateWithIdentityNode(tile.label, input, output);
     return;
   }
@@ -3961,6 +3972,52 @@ void GraphBuilderOrt::AddTileOperation(const mojom::Tile& tile) {
 
   const std::string node_name = GenerateNodeName(tile.label);
   model_editor_.AddNode(kOpTypeTile, node_name, inputs, outputs);
+}
+
+void GraphBuilderOrt::AddSqueezeOperation(const mojom::Squeeze& squeeze) {
+  const std::string node_name = GenerateNodeName(squeeze.label);
+  const std::string input = GetOperandNameById(squeeze.input_operand_id);
+  const std::string output = GetOperandNameById(squeeze.output_operand_id);
+
+  CHECK(context_properties_.data_type_limits.squeeze_input.Supports(
+      GetOperand(squeeze.input_operand_id).descriptor));
+
+  // A no-axes squeeze removes every size-1 dimension. It maps to ONNX Squeeze's
+  // optional-axes form (an empty `axes` here), and its output is unranked on
+  // the WebNN side because the surviving rank is data-dependent.
+  std::vector<int64_t> axes;
+  if (squeeze.axes.has_value()) {
+    axes.assign(squeeze.axes->begin(), squeeze.axes->end());
+  }
+  AddSqueezeNode(node_name, input, output, axes);
+}
+
+void GraphBuilderOrt::AddUnsqueezeOperation(const mojom::Unsqueeze& unsqueeze) {
+  const std::string node_name = GenerateNodeName(unsqueeze.label);
+  const std::string input = GetOperandNameById(unsqueeze.input_operand_id);
+  const std::string output = GetOperandNameById(unsqueeze.output_operand_id);
+
+  CHECK(context_properties_.data_type_limits.unsqueeze_input.Supports(
+      GetOperand(unsqueeze.input_operand_id).descriptor));
+
+  const std::vector<int64_t> axes(unsqueeze.axes.begin(), unsqueeze.axes.end());
+  AddUnsqueezeNode(node_name, input, output, axes);
+}
+
+void GraphBuilderOrt::AddFlattenOperation(const mojom::Flatten& flatten) {
+  const std::string node_name = GenerateNodeName(flatten.label);
+  const std::string input = GetOperandNameById(flatten.input_operand_id);
+  const std::string output = GetOperandNameById(flatten.output_operand_id);
+
+  CHECK(context_properties_.data_type_limits.flatten_input.Supports(
+      GetOperand(flatten.input_operand_id).descriptor));
+
+  std::array<const char*, 1> inputs = {input.c_str()};
+  std::array<const char*, 1> outputs = {output.c_str()};
+  std::array<ScopedOrtOpAttr, 1> attributes = {model_editor_.CreateAttribute(
+      kAttrAxis, base::checked_cast<int64_t>(flatten.axis))};
+
+  model_editor_.AddNode(kOpTypeFlatten, node_name, inputs, outputs, attributes);
 }
 
 void GraphBuilderOrt::AddTransposeOperation(const mojom::Transpose& transpose) {
@@ -4403,6 +4460,12 @@ std::vector<OperandId> GetOperationOutputOperandIds(
       return {operation.get_dynamic_resample_2d()->output_operand_id};
     case mojom::Operation::Tag::kDynamicTile:
       return {operation.get_dynamic_tile()->output_operand_id};
+    case mojom::Operation::Tag::kSqueeze:
+      return {operation.get_squeeze()->output_operand_id};
+    case mojom::Operation::Tag::kUnsqueeze:
+      return {operation.get_unsqueeze()->output_operand_id};
+    case mojom::Operation::Tag::kFlatten:
+      return {operation.get_flatten()->output_operand_id};
   }
 }
 
@@ -4791,6 +4854,18 @@ GraphBuilderOrt::BuildModel() {
       }
       case mojom::Operation::Tag::kDynamicTile: {
         AddDynamicTileOperation(*operation->get_dynamic_tile());
+        break;
+      }
+      case mojom::Operation::Tag::kSqueeze: {
+        AddSqueezeOperation(*operation->get_squeeze());
+        break;
+      }
+      case mojom::Operation::Tag::kUnsqueeze: {
+        AddUnsqueezeOperation(*operation->get_unsqueeze());
+        break;
+      }
+      case mojom::Operation::Tag::kFlatten: {
+        AddFlattenOperation(*operation->get_flatten());
         break;
       }
     }

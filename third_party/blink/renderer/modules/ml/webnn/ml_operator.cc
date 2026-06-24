@@ -320,6 +320,15 @@ String MLOperator::OperatorKindToString(
     case webnn::mojom::blink::Operation::Tag::kDynamicTile:
       CHECK(std::holds_alternative<std::monostate>(sub_kind));
       return "dynamicTile";
+    case webnn::mojom::blink::Operation::Tag::kSqueeze:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "squeeze";
+    case webnn::mojom::blink::Operation::Tag::kUnsqueeze:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "unsqueeze";
+    case webnn::mojom::blink::Operation::Tag::kFlatten:
+      CHECK(std::holds_alternative<std::monostate>(sub_kind));
+      return "flatten";
   }
 }
 
@@ -521,6 +530,9 @@ void MLOperator::AddOptionalInputs(
     case webnn::mojom::blink::Operation::Tag::kSoftsign:
     case webnn::mojom::blink::Operation::Tag::kSplit:
     case webnn::mojom::blink::Operation::Tag::kTanh:
+    case webnn::mojom::blink::Operation::Tag::kSqueeze:
+    case webnn::mojom::blink::Operation::Tag::kUnsqueeze:
+    case webnn::mojom::blink::Operation::Tag::kFlatten:
     case webnn::mojom::blink::Operation::Tag::kTile:
     case webnn::mojom::blink::Operation::Tag::kTranspose:
     case webnn::mojom::blink::Operation::Tag::kTriangular:
@@ -769,6 +781,20 @@ MLTileOperator::~MLTileOperator() = default;
 
 const Vector<uint32_t>& MLTileOperator::Repetitions() const {
   return repetitions_;
+}
+
+MLUnsqueezeOperator::MLUnsqueezeOperator(MLGraphBuilder* builder,
+                                         const Vector<uint32_t>& axes,
+                                         MLOperatorOptions* options)
+    : MLOperator(builder,
+                 webnn::mojom::blink::Operation::Tag::kUnsqueeze,
+                 options),
+      axes_(axes) {}
+
+MLUnsqueezeOperator::~MLUnsqueezeOperator() = default;
+
+const Vector<uint32_t>& MLUnsqueezeOperator::Axes() const {
+  return axes_;
 }
 
 }  // namespace blink

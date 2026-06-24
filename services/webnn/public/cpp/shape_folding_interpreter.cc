@@ -358,6 +358,20 @@ ShapeFoldingInterpreter::InterpretOperation(
     return Evaluate(reshape_op.input_operand_id);
   }
 
+  // squeeze / unsqueeze / flatten — these only change the rank (inserting or
+  // removing size-1 axes, or collapsing axes into two). They never reorder or
+  // alter the underlying elements, so on the flattened value list used for
+  // shape folding they are identity pass-throughs, like reshape.
+  if (operation.is_squeeze()) {
+    return Evaluate(operation.get_squeeze()->input_operand_id);
+  }
+  if (operation.is_unsqueeze()) {
+    return Evaluate(operation.get_unsqueeze()->input_operand_id);
+  }
+  if (operation.is_flatten()) {
+    return Evaluate(operation.get_flatten()->input_operand_id);
+  }
+
   // reverse — reverse values along an axis.
   if (operation.is_reverse()) {
     const auto& reverse_op = *operation.get_reverse();

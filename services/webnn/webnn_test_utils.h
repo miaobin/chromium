@@ -40,6 +40,11 @@ class GraphInfoBuilder final {
   OperandId BuildIntermediateOperand(const std::vector<uint32_t>& dimensions,
                                      OperandDataType type);
 
+  // Builds an unranked (rank unknown) intermediate operand. Used to test
+  // dynamic-rank propagation, where an operand's rank is only resolved at
+  // computeShapes/dispatch.
+  OperandId BuildUnrankedIntermediateOperand(OperandDataType type);
+
   OperandId BuildInput(const std::string& name,
                        const std::vector<uint32_t>& dimensions,
                        OperandDataType type);
@@ -551,6 +556,18 @@ class GraphInfoBuilder final {
   void BuildSplit(OperandId input_operand_id,
                   const std::vector<OperandId>& output_operand_ids,
                   uint32_t axis);
+
+  void BuildSqueeze(OperandId input_operand_id,
+                    OperandId output_operand_id,
+                    std::optional<std::vector<uint32_t>> axes);
+
+  void BuildUnsqueeze(OperandId input_operand_id,
+                      OperandId output_operand_id,
+                      std::vector<uint32_t> axes);
+
+  void BuildFlatten(OperandId input_operand_id,
+                    OperandId output_operand_id,
+                    uint32_t axis);
 
   void BuildTanh(OperandId input_operand_id, OperandId output_operand_id);
 

@@ -562,6 +562,18 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.dynamic_tile_repetitions;
   }
+  static webnn::SupportedTensors squeeze_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.squeeze_input;
+  }
+  static webnn::SupportedTensors unsqueeze_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.unsqueeze_input;
+  }
+  static webnn::SupportedTensors flatten_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.flatten_input;
+  }
 
   static bool Read(webnn::mojom::DataTypeLimitsDataView data,
                    webnn::DataTypeLimits* out) {
@@ -701,7 +713,10 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadDynamicResample2dInput(&out->dynamic_resample_2d_input) &&
            data.ReadDynamicResample2dSizes(&out->dynamic_resample_2d_sizes) &&
            data.ReadDynamicTileInput(&out->dynamic_tile_input) &&
-           data.ReadDynamicTileRepetitions(&out->dynamic_tile_repetitions);
+           data.ReadDynamicTileRepetitions(&out->dynamic_tile_repetitions) &&
+           data.ReadSqueezeInput(&out->squeeze_input) &&
+           data.ReadUnsqueezeInput(&out->unsqueeze_input) &&
+           data.ReadFlattenInput(&out->flatten_input);
   }
 };
 

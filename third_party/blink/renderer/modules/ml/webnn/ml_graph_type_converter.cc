@@ -25,7 +25,9 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_transpose_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_cumulative_sum_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_elu_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_flatten_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gather_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gemm_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gru_cell_options.h"
@@ -44,10 +46,10 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_recurrent_network_activation.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_reduce_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_resample_2d_options.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_scatter_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_slice_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_split_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_squeeze_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_transpose_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_triangular_options.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph_utils.h"
@@ -1240,6 +1242,58 @@ OperationPtr CreateTanhOperation(const OperandToIdMap& operand_to_id_map,
   return blink_mojom::Operation::NewTanh(std::move(tanh_mojo));
 }
 
+OperationPtr CreateSqueezeOperation(const OperandToIdMap& operand_to_id_map,
+                                    const MLOperator* squeeze) {
+  auto squeeze_mojo = blink_mojom::Squeeze::New();
+  squeeze_mojo->input_operand_id =
+      GetOperatorInputId(squeeze, operand_to_id_map);
+  squeeze_mojo->output_operand_id =
+      GetOperatorOutputId(squeeze, operand_to_id_map);
+
+  const auto* options =
+      static_cast<const MLSqueezeOptions*>(squeeze->Options());
+  // An absent `axes` means "remove all size-1 dims"; an explicit list (even
+  // empty) is passed through verbatim.
+  if (options->hasAxes()) {
+    squeeze_mojo->axes = options->axes();
+  }
+  squeeze_mojo->label = options->label();
+
+  return blink_mojom::Operation::NewSqueeze(std::move(squeeze_mojo));
+}
+
+OperationPtr CreateUnsqueezeOperation(const OperandToIdMap& operand_to_id_map,
+                                      const MLOperator* unsqueeze) {
+  auto unsqueeze_mojo = blink_mojom::Unsqueeze::New();
+  unsqueeze_mojo->input_operand_id =
+      GetOperatorInputId(unsqueeze, operand_to_id_map);
+  unsqueeze_mojo->output_operand_id =
+      GetOperatorOutputId(unsqueeze, operand_to_id_map);
+
+  const auto* unsqueeze_operator =
+      static_cast<const MLUnsqueezeOperator*>(unsqueeze);
+  unsqueeze_mojo->axes = unsqueeze_operator->Axes();
+  unsqueeze_mojo->label = unsqueeze->Options()->label();
+
+  return blink_mojom::Operation::NewUnsqueeze(std::move(unsqueeze_mojo));
+}
+
+OperationPtr CreateFlattenOperation(const OperandToIdMap& operand_to_id_map,
+                                    const MLOperator* flatten) {
+  auto flatten_mojo = blink_mojom::Flatten::New();
+  flatten_mojo->input_operand_id =
+      GetOperatorInputId(flatten, operand_to_id_map);
+  flatten_mojo->output_operand_id =
+      GetOperatorOutputId(flatten, operand_to_id_map);
+
+  const auto* options =
+      static_cast<const MLFlattenOptions*>(flatten->Options());
+  flatten_mojo->axis = options->axis();
+  flatten_mojo->label = options->label();
+
+  return blink_mojom::Operation::NewFlatten(std::move(flatten_mojo));
+}
+
 OperationPtr CreateTileOperation(const OperandToIdMap& operand_to_id_map,
                                  const MLOperator* tile) {
   auto tile_mojo = blink_mojom::Tile::New();
@@ -1702,6 +1756,18 @@ void SerializeMojoOperation(
     case blink_mojom::Operation::Tag::kDynamicTile:
       graph_info->operations.push_back(
           CreateDynamicTileOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kSqueeze:
+      graph_info->operations.push_back(
+          CreateSqueezeOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kUnsqueeze:
+      graph_info->operations.push_back(
+          CreateUnsqueezeOperation(operand_to_id_map, op));
+      break;
+    case blink_mojom::Operation::Tag::kFlatten:
+      graph_info->operations.push_back(
+          CreateFlattenOperation(operand_to_id_map, op));
       break;
   }
 }

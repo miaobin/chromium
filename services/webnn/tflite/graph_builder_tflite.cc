@@ -1140,7 +1140,10 @@ ContextProperties GraphBuilderTflite::GetContextProperties() {
        /*dynamic_resample_2d_sizes=*/
        {SupportedDataTypes(), SupportedRanks()},
        /*dynamic_tile_input=*/{SupportedDataTypes(), SupportedRanks()},
-       /*dynamic_tile_repetitions=*/{SupportedDataTypes(), SupportedRanks()}});
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes(), SupportedRanks()},
+       /*squeeze_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*unsqueeze_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*flatten_input=*/{SupportedDataTypes(), SupportedRanks()}});
 }
 
 GraphBuilderTflite::GraphBuilderTflite(
@@ -1680,6 +1683,21 @@ base::expected<void, std::string> GraphBuilderTflite::SerializeOperation(
           CreateError(mojom::Error::Code::kNotSupportedError,
                       "shape is not supported on TFLite backend."));
     }
+    case mojom::Operation::Tag::kSqueeze: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "squeeze is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kUnsqueeze: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "unsqueeze is not supported on TFLite backend."));
+    }
+    case mojom::Operation::Tag::kFlatten: {
+      return base::unexpected(
+          CreateError(mojom::Error::Code::kNotSupportedError,
+                      "flatten is not supported on TFLite backend."));
+    }
   }
   operators_.emplace_back(operator_offset);
 
@@ -1874,6 +1892,15 @@ bool GraphBuilderTflite::RequiresFloat32Precision(const mojom::Operation& op) {
       break;
     case mojom::Operation::Tag::kTanh:
       input_operand_id = op.get_tanh()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kSqueeze:
+      input_operand_id = op.get_squeeze()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kUnsqueeze:
+      input_operand_id = op.get_unsqueeze()->input_operand_id;
+      break;
+    case mojom::Operation::Tag::kFlatten:
+      input_operand_id = op.get_flatten()->input_operand_id;
       break;
   }
   return (GetOperand(input_operand_id).descriptor.data_type() ==

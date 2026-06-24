@@ -19,9 +19,9 @@ struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
                  webnn::OperandDescriptor> {
   static webnn::OperandDataType data_type(
       const webnn::OperandDescriptor& descriptor);
-  static const std::vector<webnn::Dimension>& shape(
+  static const std::optional<std::vector<webnn::Dimension>>& shape(
       const webnn::OperandDescriptor& descriptor) {
-    return descriptor.shape();
+    return descriptor.shape_optional();
   }
   static const std::vector<uint32_t>& pending_permutation(
       const webnn::OperandDescriptor& descriptor) {

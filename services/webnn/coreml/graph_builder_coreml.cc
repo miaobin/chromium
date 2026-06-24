@@ -1432,7 +1432,10 @@ ContextProperties GraphBuilderCoreml::GetContextProperties() {
        /*dynamic_resample_2d_sizes=*/
        {SupportedDataTypes(), SupportedRanks()},
        /*dynamic_tile_input=*/{SupportedDataTypes(), SupportedRanks()},
-       /*dynamic_tile_repetitions=*/{SupportedDataTypes(), SupportedRanks()}});
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes(), SupportedRanks()},
+       /*squeeze_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*unsqueeze_input=*/{SupportedDataTypes(), SupportedRanks()},
+       /*flatten_input=*/{SupportedDataTypes(), SupportedRanks()}});
 
   if (__builtin_available(macOS 15, *)) {
     properties.data_type_limits.dequantize_linear_input.data_types =
@@ -1798,6 +1801,18 @@ GraphBuilderCoreml::BuildCoreMLModel() {
       case mojom::Operation::Tag::kShape: {
         return NewNotSupportedError(
             "shape is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kSqueeze: {
+        return NewNotSupportedError(
+            "squeeze is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kUnsqueeze: {
+        return NewNotSupportedError(
+            "unsqueeze is not supported on CoreML backend.");
+      }
+      case mojom::Operation::Tag::kFlatten: {
+        return NewNotSupportedError(
+            "flatten is not supported on CoreML backend.");
       }
     }
   }
@@ -6067,7 +6082,7 @@ void GraphBuilderCoreml::PopulateNamedValueTypeForInput(
   // WebNN allows 0D scalar operands to have empty dimensions.
   // At the input nodes, these can be treated as a 1D tensor to
   // satisfy CoreML's requirement of having at least 1 dimension.
-  if (GetOperand(operand_id).descriptor.Rank() == 0) {
+  if (GetOperand(operand_id).descriptor.Rank().value() == 0) {
     auto* tensor_type = named_value_type.mutable_type()->mutable_tensortype();
     tensor_type->set_rank(1);
     tensor_type->add_dimensions()->mutable_constant()->set_size(1);

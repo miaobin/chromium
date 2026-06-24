@@ -383,6 +383,25 @@ class MODULES_EXPORT MLTileOperator : public MLOperator {
  private:
   Vector<uint32_t> repetitions_;
 };
+
+// Carries the positional `axes` of the unsqueeze operator, which (unlike
+// squeeze) are a required argument rather than an option.
+class MODULES_EXPORT MLUnsqueezeOperator : public MLOperator {
+ public:
+  MLUnsqueezeOperator(MLGraphBuilder* builder,
+                      const Vector<uint32_t>& axes,
+                      MLOperatorOptions* options);
+
+  MLUnsqueezeOperator(const MLUnsqueezeOperator&) = delete;
+  MLUnsqueezeOperator& operator=(const MLUnsqueezeOperator&) = delete;
+
+  ~MLUnsqueezeOperator() override;
+
+  const Vector<uint32_t>& Axes() const;
+
+ private:
+  Vector<uint32_t> axes_;
+};
 }  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_ML_WEBNN_ML_OPERATOR_H_

@@ -59,6 +59,15 @@ OperandId GraphInfoBuilder::BuildIntermediateOperand(
   return BuildOperand(dimensions, type, mojom::Operand::Kind::kOutput);
 }
 
+OperandId GraphInfoBuilder::BuildUnrankedIntermediateOperand(
+    OperandDataType type) {
+  mojom::OperandPtr operand = mojom::Operand::New();
+  operand->descriptor = OperandDescriptor::CreateUnranked(type);
+  operand->kind = mojom::Operand::Kind::kOutput;
+  graph_info_->operands.push_back(std::move(operand));
+  return OperandId(graph_info_->operands.size() - 1);
+}
+
 OperandId GraphInfoBuilder::BuildInput(const std::string& name,
                                        const std::vector<uint32_t>& dimensions,
                                        OperandDataType type) {
@@ -553,6 +562,39 @@ void GraphInfoBuilder::BuildTanh(OperandId input_operand_id,
   graph_info_->operations.push_back(mojom::Operation::NewTanh(std::move(tanh)));
 }
 
+void GraphInfoBuilder::BuildSqueeze(OperandId input_operand_id,
+                                    OperandId output_operand_id,
+                                    std::optional<std::vector<uint32_t>> axes) {
+  mojom::SqueezePtr squeeze = mojom::Squeeze::New();
+  squeeze->input_operand_id = input_operand_id;
+  squeeze->output_operand_id = output_operand_id;
+  squeeze->axes = std::move(axes);
+  graph_info_->operations.push_back(
+      mojom::Operation::NewSqueeze(std::move(squeeze)));
+}
+
+void GraphInfoBuilder::BuildUnsqueeze(OperandId input_operand_id,
+                                      OperandId output_operand_id,
+                                      std::vector<uint32_t> axes) {
+  mojom::UnsqueezePtr unsqueeze = mojom::Unsqueeze::New();
+  unsqueeze->input_operand_id = input_operand_id;
+  unsqueeze->output_operand_id = output_operand_id;
+  unsqueeze->axes = std::move(axes);
+  graph_info_->operations.push_back(
+      mojom::Operation::NewUnsqueeze(std::move(unsqueeze)));
+}
+
+void GraphInfoBuilder::BuildFlatten(OperandId input_operand_id,
+                                    OperandId output_operand_id,
+                                    uint32_t axis) {
+  mojom::FlattenPtr flatten = mojom::Flatten::New();
+  flatten->input_operand_id = input_operand_id;
+  flatten->output_operand_id = output_operand_id;
+  flatten->axis = axis;
+  graph_info_->operations.push_back(
+      mojom::Operation::NewFlatten(std::move(flatten)));
+}
+
 void GraphInfoBuilder::BuildTile(OperandId input_operand_id,
                                  OperandId output_operand_id,
                                  std::vector<uint32_t> repetitions) {
@@ -811,7 +853,10 @@ ContextProperties GetContextPropertiesForTesting() {
        /*dynamic_resample_2d_input=*/{SupportedDataTypes::All(), kMaxRank},
        /*dynamic_resample_2d_sizes=*/{SupportedDataTypes::All(), kMaxRank},
        /*dynamic_tile_input=*/{SupportedDataTypes::All(), kMaxRank},
-       /*dynamic_tile_repetitions=*/{SupportedDataTypes::All(), kMaxRank}}));
+       /*dynamic_tile_repetitions=*/{SupportedDataTypes::All(), kMaxRank},
+       /*squeeze_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*unsqueeze_input=*/{SupportedDataTypes::All(), kMaxRank},
+       /*flatten_input=*/{SupportedDataTypes::All(), kMaxRank}}));
 }
 
 }  // namespace webnn

@@ -201,14 +201,14 @@ webnn::Conv2dAttributes ConvertToConv2dAttributes(
       const auto* const input =
           GetMojoOperand(operands, conv2d.input_operand_id);
       CHECK(input);
-      CHECK_EQ(input->descriptor.Rank(), 4u);
+      CHECK_EQ(input->descriptor.Rank().value(), 4u);
       // TODO(ningxin): Support dynamic dimension.
       const uint32_t input_channels =
           std::get<uint32_t>(input->descriptor.shape()[3]);
       const auto* const output =
           GetMojoOperand(operands, conv2d.output_operand_id);
       CHECK(output);
-      CHECK_EQ(output->descriptor.Rank(), 4u);
+      CHECK_EQ(output->descriptor.Rank().value(), 4u);
       const uint32_t output_channels =
           std::get<uint32_t>(output->descriptor.shape()[3]);
       // Depthwise conv2d is "options.groups == input_channels ==
@@ -306,7 +306,7 @@ webnn::ConvTranspose2dAttributes ConvertToConvTranspose2dAttributes(
 
   // Convert the output sizes that fetched from dimensions of output operand.
   auto* output = GetMojoOperand(operands, conv2d.output_operand_id);
-  CHECK_EQ(output->descriptor.Rank(), 4u);
+  CHECK_EQ(output->descriptor.Rank().value(), 4u);
   Dimension height_dim, width_dim;
   switch (context_properties.input_operand_layout) {
     case webnn::InputOperandLayout::kNchw:
@@ -379,7 +379,7 @@ webnn::Pool2dAttributes ConvertToPool2dAttributes(
   component_attributes.dilations = webnn::Size2d<uint32_t>{
       .height = pool2d.dilations->height, .width = pool2d.dilations->width};
   component_attributes.layout = context_properties.input_operand_layout;
-  CHECK_EQ(output->descriptor.Rank(), 4u);
+  CHECK_EQ(output->descriptor.Rank().value(), 4u);
   switch (component_attributes.layout) {
     case webnn::InputOperandLayout::kNchw:
       if (std::holds_alternative<uint32_t>(output->descriptor.shape()[2]) &&
@@ -628,6 +628,12 @@ std::vector<OperandId> GetOperationOutputs(const mojom::Operation& operation) {
       return {operation.get_dynamic_resample_2d()->output_operand_id};
     case mojom::Operation::Tag::kDynamicTile:
       return {operation.get_dynamic_tile()->output_operand_id};
+    case mojom::Operation::Tag::kSqueeze:
+      return {operation.get_squeeze()->output_operand_id};
+    case mojom::Operation::Tag::kUnsqueeze:
+      return {operation.get_unsqueeze()->output_operand_id};
+    case mojom::Operation::Tag::kFlatten:
+      return {operation.get_flatten()->output_operand_id};
   }
 }
 
@@ -704,6 +710,10 @@ class OperationValidationContext {
     for (size_t i = 0; i < operands_.size(); ++i) {
       const mojom::Operand* operand = operands_[i].get();
       if (!operand) {
+        continue;
+      }
+      // Unranked operands carry no dimensions to collect.
+      if (!operand->descriptor.HasRank()) {
         continue;
       }
       for (const auto& dim : operand->descriptor.shape()) {
@@ -816,6 +826,10 @@ class OperationValidationContext {
   bool ValidateSoftmax(const mojom::Softmax& softmax, OperationId operation_id);
   bool ValidateSplit(const mojom::Split& split, OperationId operation_id);
   bool ValidateTile(const mojom::Tile& tile, OperationId operation_id);
+  bool ValidateSqueeze(const mojom::Squeeze& squeeze, OperationId operation_id);
+  bool ValidateUnsqueeze(const mojom::Unsqueeze& unsqueeze,
+                         OperationId operation_id);
+  bool ValidateFlatten(const mojom::Flatten& flatten, OperationId operation_id);
   bool ValidateTranspose(const mojom::Transpose& transpose,
                          OperationId operation_id);
   bool ValidateTriangular(const mojom::Triangular& triangular,
@@ -997,15 +1011,21 @@ bool OperationValidationContext::VerifyOrWriteBackOutput(
     // Before overwriting, record resolved DynamicDimension name → concrete
     // value mappings. The old descriptor has DynamicDimension names from build
     // time; the inferred descriptor has concrete uint32_t values from dispatch.
-    const auto& old_shape = operand->descriptor.shape();
-    const auto& new_shape = inferred_descriptor.shape();
-    for (size_t i = 0; i < old_shape.size() && i < new_shape.size(); ++i) {
-      if (std::holds_alternative<DynamicDimension>(old_shape[i]) &&
-          std::holds_alternative<uint32_t>(new_shape[i])) {
-        const auto& dyn = std::get<DynamicDimension>(old_shape[i]);
-        // Only named dynamic dims can be recorded for later name-based lookup.
-        if (dyn.name.has_value()) {
-          resolved_dim_values_[*dyn.name] = std::get<uint32_t>(new_shape[i]);
+    // Skip when either side is unranked: an unranked build-time descriptor (an
+    // operand whose rank is only known at dispatch) carries no names to
+    // resolve, and an unranked inferred descriptor carries no concrete values.
+    if (operand->descriptor.HasRank() && inferred_descriptor.HasRank()) {
+      const auto& old_shape = operand->descriptor.shape();
+      const auto& new_shape = inferred_descriptor.shape();
+      for (size_t i = 0; i < old_shape.size() && i < new_shape.size(); ++i) {
+        if (std::holds_alternative<DynamicDimension>(old_shape[i]) &&
+            std::holds_alternative<uint32_t>(new_shape[i])) {
+          const auto& dyn = std::get<DynamicDimension>(old_shape[i]);
+          // Only named dynamic dims can be recorded for later name-based
+          // lookup.
+          if (dyn.name.has_value()) {
+            resolved_dim_values_[*dyn.name] = std::get<uint32_t>(new_shape[i]);
+          }
         }
       }
     }
@@ -1071,6 +1091,14 @@ bool OperationValidationContext::ValidateUnaryOperation(
       // through VerifyOrWriteBackOutput (full-descriptor equality) would reject
       // graphs whose input has a pending permutation. Output inference is
       // unaffected by symbolic dimensions here.
+      // A logical unary operation preserves the input shape but forces the
+      // output to uint8. An unranked input propagates to an unranked uint8
+      // output.
+      if (!input->descriptor.HasRank()) {
+        return VerifyOrWriteBackOutput(
+            operation.output_operand_id,
+            OperandDescriptor::CreateUnranked(OperandDataType::kUint8));
+      }
       if (infer_output_shapes_) {
         auto inferred = OperandDescriptor::CreateForDeserialization(
             OperandDataType::kUint8, input->descriptor.shape(),
@@ -1291,8 +1319,9 @@ bool OperationValidationContext::ValidateConv2d(const mojom::Conv2d& conv2d,
   }
 
   // The input and output rank need to be validated before converting to
-  // `webnn::Conv2dAttributes`.
-  if (input->descriptor.Rank() != 4 || output->descriptor.Rank() != 4) {
+  // `webnn::Conv2dAttributes`. An unranked operand (rank unknown) is not a
+  // valid 4-D conv2d operand.
+  if (input->descriptor.Rank() != 4u || output->descriptor.Rank() != 4u) {
     // The element of input and output dimensions should be 4.
     return false;
   }
@@ -1508,15 +1537,24 @@ bool OperationValidationContext::ValidateElementWiseBinary(
     return false;
   }
 
+  OperandDataType output_type = IsLogicalElementWiseBinary(operation.kind)
+                                    ? OperandDataType::kUint8
+                                    : a->descriptor.data_type();
+
+  // When either input has unknown rank the broadcast output rank is unknown;
+  // defer the broadcast check to dispatch by propagating the unranked state.
+  if (!a->descriptor.HasRank() || !b->descriptor.HasRank()) {
+    return VerifyOrWriteBackOutput(
+        operation.output_operand_id,
+        OperandDescriptor::CreateUnranked(output_type));
+  }
+
   auto dims_output =
       BroadcastShapes(a->descriptor.shape(), b->descriptor.shape());
   if (!dims_output) {
     // The input shapes are not broadcastable.
     return false;
   }
-  OperandDataType output_type = IsLogicalElementWiseBinary(operation.kind)
-                                    ? OperandDataType::kUint8
-                                    : a->descriptor.data_type();
   auto inferred = OperandDescriptor::CreateForDeserialization(
       output_type, dims_output.value(),
       output->descriptor.pending_permutation());
@@ -2343,7 +2381,8 @@ bool OperationValidationContext::ValidatePool2d(const mojom::Pool2d& pool2d,
     return false;
   }
 
-  if (output->descriptor.Rank() != 4) {
+  // An unranked output (rank unknown) is not a valid 4-D pool2d output.
+  if (output->descriptor.Rank() != 4u) {
     return false;
   }
   const base::expected<OperandDescriptor, std::string> validated_output =
@@ -2508,11 +2547,19 @@ bool OperationValidationContext::ValidateReshape(const mojom::Reshape& reshape,
     return false;
   }
   if (!context_properties_->data_type_limits.reshape_input.ranks.Supports(
-          output->descriptor.Rank())) {
+          output->descriptor.Rank().value())) {
     return false;
   }
   if (output->descriptor.data_type() != input->descriptor.data_type()) {
     return false;
+  }
+
+  // The output shape is fully described by `newShape` (always ranked). When the
+  // input is unranked the element-count compatibility cannot be checked at
+  // build time; the declared output stands and the check is deferred to
+  // dispatch, where the concrete input shape is known.
+  if (!input->descriptor.HasRank()) {
+    return true;
   }
 
   // Reject only a definite element-count contradiction; any dynamic dimension
@@ -2762,8 +2809,10 @@ bool OperationValidationContext::ValidateSlice(const mojom::Slice& slice,
     // The slice operator is invalid.
     return false;
   }
-  if (input->descriptor.Rank() == 0) {
-    // Slicing a scalar is a no-op that the blink side has handled.
+  // A scalar (rank 0) slice is a no-op handled on the blink side. An unranked
+  // input has unknown rank; defer the rank-dependent validation to
+  // `ValidateSliceAndInferOutput`, which propagates the unranked state.
+  if (input->descriptor.HasRank() && input->descriptor.Rank().value() == 0) {
     return false;
   }
 
@@ -2818,7 +2867,35 @@ bool OperationValidationContext::ValidateSplit(const mojom::Split& split,
     // The split operator is invalid.
     return false;
   }
-  if (split.axis >= input->descriptor.Rank()) {
+
+  // An unranked input has unknown rank, so neither the axis nor the per-part
+  // sizes can be validated here. Defer to `ValidateSplitAndInferOutput`, which
+  // emits one unranked output per declared output and re-checks at dispatch.
+  // The outputs are unranked too, so the attribute reconstruction below (which
+  // reads each output's split-axis dimension) must be skipped.
+  if (!input->descriptor.HasRank()) {
+    for (OperandId output_id : split.output_operand_ids) {
+      auto* output = GetMojoOperand(output_id);
+      if (!output || input == output) {
+        return false;
+      }
+    }
+    SplitAttribute unranked_attributes;
+    unranked_attributes.axis = split.axis;
+    unranked_attributes.label = split.label;
+    unranked_attributes.splits =
+        base::checked_cast<uint32_t>(split.output_operand_ids.size());
+    const base::expected<std::vector<OperandDescriptor>, std::string>
+        unranked_output = ValidateSplitAndInferOutput(
+            *context_properties_, input->descriptor, unranked_attributes);
+    if (!unranked_output.has_value() ||
+        split.output_operand_ids.size() != unranked_output->size()) {
+      return false;
+    }
+    return VerifyOrWriteBackOutputs(split.output_operand_ids, *unranked_output);
+  }
+
+  if (split.axis >= input->descriptor.Rank().value()) {
     return false;
   }
   bool any_dynamic_output_axis = false;
@@ -2827,7 +2904,7 @@ bool OperationValidationContext::ValidateSplit(const mojom::Split& split,
     if (!output || input == output) {
       return false;
     }
-    if (split.axis >= output->descriptor.Rank()) {
+    if (split.axis >= output->descriptor.Rank().value()) {
       return false;
     }
     if (!std::holds_alternative<uint32_t>(
@@ -2908,6 +2985,93 @@ bool OperationValidationContext::ValidateTile(const mojom::Tile& tile,
     return false;
   }
   if (!VerifyOrWriteBackOutput(tile.output_operand_id, *validated_output)) {
+    return false;
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateSqueeze(const mojom::Squeeze& squeeze,
+                                                 OperationId operation_id) {
+  if (!IsProcessedOperand(squeeze.input_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(squeeze.input_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(squeeze.input_operand_id);
+  auto* output = GetMojoOperand(squeeze.output_operand_id);
+  if (!input || !output || output == input) {
+    // The squeeze operator is invalid.
+    return false;
+  }
+
+  std::optional<base::span<const uint32_t>> axes;
+  if (squeeze.axes.has_value()) {
+    axes = *squeeze.axes;
+  }
+  const base::expected<OperandDescriptor, std::string> validated_output =
+      ValidateSqueezeAndInferOutput(*context_properties_, input->descriptor,
+                                    axes, squeeze.label);
+  if (!validated_output.has_value()) {
+    return false;
+  }
+  if (!VerifyOrWriteBackOutput(squeeze.output_operand_id, *validated_output)) {
+    return false;
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateUnsqueeze(
+    const mojom::Unsqueeze& unsqueeze,
+    OperationId operation_id) {
+  if (!IsProcessedOperand(unsqueeze.input_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(unsqueeze.input_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(unsqueeze.input_operand_id);
+  auto* output = GetMojoOperand(unsqueeze.output_operand_id);
+  if (!input || !output || output == input) {
+    // The unsqueeze operator is invalid.
+    return false;
+  }
+
+  const base::expected<OperandDescriptor, std::string> validated_output =
+      ValidateUnsqueezeAndInferOutput(*context_properties_, input->descriptor,
+                                      unsqueeze.axes, unsqueeze.label);
+  if (!validated_output.has_value()) {
+    return false;
+  }
+  if (!VerifyOrWriteBackOutput(unsqueeze.output_operand_id,
+                               *validated_output)) {
+    return false;
+  }
+
+  return true;
+}
+
+bool OperationValidationContext::ValidateFlatten(const mojom::Flatten& flatten,
+                                                 OperationId operation_id) {
+  if (!IsProcessedOperand(flatten.input_operand_id)) {
+    return false;
+  }
+  NoteInputDependency(flatten.input_operand_id, operation_id);
+
+  auto* input = GetMojoOperand(flatten.input_operand_id);
+  auto* output = GetMojoOperand(flatten.output_operand_id);
+  if (!input || !output || output == input) {
+    // The flatten operator is invalid.
+    return false;
+  }
+
+  const base::expected<OperandDescriptor, std::string> validated_output =
+      ValidateFlattenAndInferOutput(*context_properties_, input->descriptor,
+                                    flatten.axis, flatten.label);
+  if (!validated_output.has_value()) {
+    return false;
+  }
+  if (!VerifyOrWriteBackOutput(flatten.output_operand_id, *validated_output)) {
     return false;
   }
 
@@ -3026,9 +3190,10 @@ bool OperationValidationContext::ValidateRange(const mojom::RangeOp& range,
     return false;
   }
 
-  // All inputs must be scalar.
-  if (start->descriptor.Rank() != 0 || limit->descriptor.Rank() != 0 ||
-      delta->descriptor.Rank() != 0) {
+  // All inputs must be scalar. An unranked operand (rank unknown) is not a
+  // valid scalar.
+  if (start->descriptor.Rank() != 0u || limit->descriptor.Rank() != 0u ||
+      delta->descriptor.Rank() != 0u) {
     return false;
   }
 
@@ -3039,7 +3204,7 @@ bool OperationValidationContext::ValidateRange(const mojom::RangeOp& range,
   }
 
   // Output must be 1D and have the same data type.
-  if (output->descriptor.Rank() != 1 ||
+  if (output->descriptor.Rank().value() != 1 ||
       output->descriptor.data_type() != start->descriptor.data_type()) {
     return false;
   }
@@ -3129,7 +3294,9 @@ bool OperationValidationContext::ValidateDynamicReshape(
     return false;
   }
 
-  if (new_shape->descriptor.Rank() != 1 ||
+  // The new_shape operand is a 1-D int64 shape tensor. An unranked operand
+  // (rank unknown) is not a valid 1-D shape tensor.
+  if (new_shape->descriptor.Rank() != 1u ||
       new_shape->descriptor.data_type() != OperandDataType::kInt64) {
     return false;
   }
@@ -3223,7 +3390,9 @@ bool OperationValidationContext::ValidateDynamicExpand(
     return false;
   }
 
-  if (new_shape->descriptor.Rank() != 1 ||
+  // The new_shape operand is a 1-D int64 shape tensor. An unranked operand
+  // (rank unknown) is not a valid 1-D shape tensor.
+  if (new_shape->descriptor.Rank() != 1u ||
       new_shape->descriptor.data_type() != OperandDataType::kInt64) {
     return false;
   }
@@ -3341,7 +3510,7 @@ bool OperationValidationContext::ValidateDynamicSlice(
       return false;
     }
 
-    const size_t rank = input->descriptor.Rank();
+    const size_t rank = input->descriptor.Rank().value();
 
     // Evaluate optional strides.
     std::vector<int64_t> strides_values;
@@ -3490,7 +3659,7 @@ bool OperationValidationContext::ValidateDynamicPad(
       return false;
     }
 
-    const size_t rank = input->descriptor.Rank();
+    const size_t rank = input->descriptor.Rank().value();
     if (beginning_values->size() != rank || ending_values->size() != rank) {
       return false;
     }
@@ -3546,7 +3715,7 @@ bool OperationValidationContext::ValidateDynamicTile(
       return false;
     }
 
-    const size_t rank = input->descriptor.Rank();
+    const size_t rank = input->descriptor.Rank().value();
     if (repetitions_values->size() != rank) {
       return false;
     }
@@ -3668,8 +3837,9 @@ bool OperationValidationContext::ValidateDynamicResample2d(
     return false;
   }
 
-  // Input must be 4-D and output must have the same rank and data type.
-  if (input->descriptor.Rank() != 4 ||
+  // Input must be 4-D and output must have the same rank and data type. An
+  // unranked operand (rank unknown) is not a valid 4-D resample2d operand.
+  if (input->descriptor.Rank() != 4u ||
       output->descriptor.Rank() != input->descriptor.Rank() ||
       output->descriptor.data_type() != input->descriptor.data_type()) {
     return false;
@@ -3744,6 +3914,13 @@ bool OperationValidationContext::ValidateOperation(
     const mojom::Operation& operation,
     OperationId operation_id) {
   RETURN_IF_FALSE(NoteOutputDependency(operation, operation_id));
+
+  // Unranked (dynamic-rank) operands are handled uniformly inside each
+  // `ValidateX...AndInferOutput` helper: an unranked input propagates to an
+  // unranked output and the rank-dependent checks are deferred to
+  // computeShapes/dispatch, where the concrete rank is known. This keeps the
+  // service robust against a malicious "unranked where a rank is expected"
+  // message from the untrusted renderer without an op-by-op entry gate here.
   switch (operation.which()) {
     case mojom::Operation::Tag::kArgMinMax:
       return ValidateArgMinMax(*operation.get_arg_min_max(), operation_id);
@@ -3890,6 +4067,12 @@ bool OperationValidationContext::ValidateOperation(
                                        operation_id);
     case mojom::Operation::Tag::kDynamicTile:
       return ValidateDynamicTile(*operation.get_dynamic_tile(), operation_id);
+    case mojom::Operation::Tag::kSqueeze:
+      return ValidateSqueeze(*operation.get_squeeze(), operation_id);
+    case mojom::Operation::Tag::kUnsqueeze:
+      return ValidateUnsqueeze(*operation.get_unsqueeze(), operation_id);
+    case mojom::Operation::Tag::kFlatten:
+      return ValidateFlatten(*operation.get_flatten(), operation_id);
   }
 }
 
@@ -3913,7 +4096,7 @@ TransposePendingPermutation(
     }
     base::span<const uint8_t> data = constant->ByteSpan();
     auto& descriptor = constant->descriptor();
-    uint32_t rank = descriptor.Rank();
+    uint32_t rank = descriptor.Rank().value();
     auto& permutation = descriptor.pending_permutation();
     CHECK_EQ(rank, permutation.size());
 

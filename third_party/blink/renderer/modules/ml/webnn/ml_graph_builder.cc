@@ -42,6 +42,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_cumulative_sum_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_elu_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_flatten_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gather_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gemm_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gru_cell_options.h"
@@ -65,6 +66,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_scatter_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_slice_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_split_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_squeeze_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_transpose_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_triangular_options.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
@@ -204,8 +206,11 @@ enum class MLGraphOperatorUma {
   kShape = 103,
   kDynamicResample2d = 104,
   kDynamicTile = 105,
+  kSqueeze = 106,
+  kUnsqueeze = 107,
+  kFlatten = 108,
   kMinValue = kGraphBuilt,
-  kMaxValue = kDynamicTile,
+  kMaxValue = kFlatten,
 };
 
 std::vector<webnn::Dimension> ToDimensionVector(
@@ -477,6 +482,12 @@ MLGraphOperatorUma GetUmaValueForOperation(
       return MLGraphOperatorUma::kDynamicResample2d;
     case blink_mojom::Operation::Tag::kDynamicTile:
       return MLGraphOperatorUma::kDynamicTile;
+    case blink_mojom::Operation::Tag::kSqueeze:
+      return MLGraphOperatorUma::kSqueeze;
+    case blink_mojom::Operation::Tag::kUnsqueeze:
+      return MLGraphOperatorUma::kUnsqueeze;
+    case blink_mojom::Operation::Tag::kFlatten:
+      return MLGraphOperatorUma::kFlatten;
   }
 }
 
@@ -1541,6 +1552,12 @@ Vector<webnn::OperandId> GetInputs(const blink_mojom::Operation& operation) {
     case blink_mojom::Operation::Tag::kDynamicTile:
       return {operation.get_dynamic_tile()->input_operand_id,
               operation.get_dynamic_tile()->repetitions_operand_id};
+    case blink_mojom::Operation::Tag::kSqueeze:
+      return {operation.get_squeeze()->input_operand_id};
+    case blink_mojom::Operation::Tag::kUnsqueeze:
+      return {operation.get_unsqueeze()->input_operand_id};
+    case blink_mojom::Operation::Tag::kFlatten:
+      return {operation.get_flatten()->input_operand_id};
   }
 }
 
@@ -3567,6 +3584,76 @@ MLOperand* MLGraphBuilder::tile(MLOperand* input,
   return output;
 }
 
+MLOperand* MLGraphBuilder::squeeze(MLOperand* input,
+                                   MLSqueezeOptions* options,
+                                   ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInput(input), nullptr);
+
+  // Distinguish "axes not provided" (remove all size-1 dims) from an explicit
+  // (possibly empty) axes list.
+  std::optional<base::span<const uint32_t>> axes;
+  if (options->hasAxes()) {
+    axes = options->axes();
+  }
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::ValidateSqueezeAndInferOutput(ml_context_->GetProperties(),
+                                           input->Descriptor(), axes,
+                                           options->label().Utf8()));
+
+  auto* squeeze = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kSqueeze, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), squeeze);
+
+  squeeze->Connect({input}, {output});
+  return output;
+}
+
+MLOperand* MLGraphBuilder::unsqueeze(MLOperand* input,
+                                     const Vector<uint32_t>& axes,
+                                     MLOperatorOptions* options,
+                                     ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInput(input), nullptr);
+
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::ValidateUnsqueezeAndInferOutput(ml_context_->GetProperties(),
+                                             input->Descriptor(), axes,
+                                             options->label().Utf8()));
+
+  auto* unsqueeze =
+      MakeGarbageCollected<MLUnsqueezeOperator>(this, axes, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), unsqueeze);
+
+  unsqueeze->Connect({input}, {output});
+  return output;
+}
+
+MLOperand* MLGraphBuilder::flatten(MLOperand* input,
+                                   MLFlattenOptions* options,
+                                   ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInput(input), nullptr);
+
+  ASSIGN_OR_THROW_AND_RETURN_IF_ERROR(
+      webnn::OperandDescriptor output_descriptor,
+      webnn::ValidateFlattenAndInferOutput(ml_context_->GetProperties(),
+                                           input->Descriptor(), options->axis(),
+                                           options->label().Utf8()));
+
+  auto* flatten = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kFlatten, options);
+  MLOperand* output =
+      MLOperand::CreateOutput(this, std::move(output_descriptor), flatten);
+
+  flatten->Connect({input}, {output});
+  return output;
+}
+
 MLOperand* MLGraphBuilder::transpose(MLOperand* input,
                                      MLTransposeOptions* options,
                                      ExceptionState& exception_state) {
@@ -3654,8 +3741,9 @@ MLOperand* MLGraphBuilder::range(MLOperand* start,
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
   // All inputs must be scalar and have the same data type.
-  if (start->Descriptor().Rank() != 0 || limit->Descriptor().Rank() != 0 ||
-      delta->Descriptor().Rank() != 0) {
+  if (start->Descriptor().Rank().value() != 0 ||
+      limit->Descriptor().Rank().value() != 0 ||
+      delta->Descriptor().Rank().value() != 0) {
     exception_state.ThrowTypeError(
         "All inputs of range must be scalar operands.");
     return nullptr;
@@ -3700,7 +3788,7 @@ MLOperand* MLGraphBuilder::dynamicReshape(MLOperand* input,
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
   // new_shape must be a 1-D int64 tensor.
-  if (new_shape->Descriptor().Rank() != 1 ||
+  if (new_shape->Descriptor().Rank().value() != 1 ||
       new_shape->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
     exception_state.ThrowTypeError(
         "The new_shape operand must be a 1-D int64 tensor.");
@@ -3751,7 +3839,7 @@ MLOperand* MLGraphBuilder::dynamicExpand(MLOperand* input,
   HeapVector<Member<MLOperand>> inputs = {input, new_shape};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
-  if (new_shape->Descriptor().Rank() != 1 ||
+  if (new_shape->Descriptor().Rank().value() != 1 ||
       new_shape->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
     exception_state.ThrowTypeError(
         "The new_shape operand must be a 1-D int64 tensor.");
@@ -3804,7 +3892,7 @@ MLOperand* MLGraphBuilder::dynamicSlice(MLOperand* input,
   // either; the shape-folding interpreter and the native ONNX Slice emitted at
   // dispatch both handle int32, so accept it here rather than forcing int64.
   auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
-    return operand->Descriptor().Rank() == 1 &&
+    return operand->Descriptor().Rank().value() == 1 &&
            (operand->Descriptor().data_type() ==
                 webnn::OperandDataType::kInt32 ||
             operand->Descriptor().data_type() ==
@@ -3825,7 +3913,7 @@ MLOperand* MLGraphBuilder::dynamicSlice(MLOperand* input,
   // name so each dynamicSlice() instance gets its own dynamic dim symbols
   // (otherwise multiple unrelated slices would collide on the same name and
   // downstream shape inference would incorrectly merge their sizes).
-  uint32_t output_rank = input->Descriptor().Rank();
+  uint32_t output_rank = input->Descriptor().Rank().value();
   const uint64_t inst = dynamic_dim_counter_++;
   std::vector<webnn::Dimension> output_shape;
   output_shape.reserve(output_rank);
@@ -3866,7 +3954,7 @@ MLOperand* MLGraphBuilder::dynamicPad(MLOperand* input,
   // that lack int64); the int64 cast is inserted at dispatch by the service
   // backend, so accept either here.
   auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
-    return operand->Descriptor().Rank() == 1 &&
+    return operand->Descriptor().Rank().value() == 1 &&
            (operand->Descriptor().data_type() ==
                 webnn::OperandDataType::kInt32 ||
             operand->Descriptor().data_type() ==
@@ -3885,7 +3973,7 @@ MLOperand* MLGraphBuilder::dynamicPad(MLOperand* input,
 
   // Output has same rank as input but dynamic dimensions. Per-call unique
   // name so each dynamicPad() instance gets its own dynamic dim symbols.
-  uint32_t output_rank = input->Descriptor().Rank();
+  uint32_t output_rank = input->Descriptor().Rank().value();
   const uint64_t inst = dynamic_dim_counter_++;
   std::vector<webnn::Dimension> output_shape;
   output_shape.reserve(output_rank);
@@ -3923,7 +4011,7 @@ MLOperand* MLGraphBuilder::dynamicTile(MLOperand* input,
   // backends like CoreML that lack int64); the int64 cast is inserted at
   // dispatch by the service backend, so accept either here.
   auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
-    return operand->Descriptor().Rank() == 1 &&
+    return operand->Descriptor().Rank().value() == 1 &&
            (operand->Descriptor().data_type() ==
                 webnn::OperandDataType::kInt32 ||
             operand->Descriptor().data_type() ==
@@ -3937,7 +4025,7 @@ MLOperand* MLGraphBuilder::dynamicTile(MLOperand* input,
 
   // Output has same rank as input but dynamic dimensions. Per-call unique
   // name so each dynamicTile() instance gets its own dynamic dim symbols.
-  uint32_t output_rank = input->Descriptor().Rank();
+  uint32_t output_rank = input->Descriptor().Rank().value();
   const uint64_t inst = dynamic_dim_counter_++;
   std::vector<webnn::Dimension> output_shape;
   output_shape.reserve(output_rank);
@@ -3974,7 +4062,7 @@ HeapVector<Member<MLOperand>> MLGraphBuilder::dynamicSplit(
                                  HeapVector<Member<MLOperand>>());
 
   // splits must be a 1-D int64 tensor.
-  if (splits->Descriptor().Rank() != 1 ||
+  if (splits->Descriptor().Rank().value() != 1 ||
       splits->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
     exception_state.ThrowTypeError(
         "The splits operand must be a 1-D int64 tensor.");
@@ -3995,8 +4083,8 @@ HeapVector<Member<MLOperand>> MLGraphBuilder::dynamicSplit(
   outputs.reserve(num_outputs);
   for (uint32_t i = 0; i < num_outputs; ++i) {
     std::vector<webnn::Dimension> output_shape;
-    output_shape.reserve(input->Descriptor().Rank());
-    for (uint32_t d = 0; d < input->Descriptor().Rank(); ++d) {
+    output_shape.reserve(input->Descriptor().Rank().value());
+    for (uint32_t d = 0; d < input->Descriptor().Rank().value(); ++d) {
       output_shape.push_back(webnn::DynamicDimension{
           .name = "dynamic_split_" + base::NumberToString(inst) + "_out_" +
                   base::NumberToString(i) + "_dim_" +
@@ -4030,7 +4118,7 @@ MLOperand* MLGraphBuilder::dynamicResample2d(
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
   // Input must be a 4-D tensor.
-  if (input->Descriptor().Rank() != 4) {
+  if (input->Descriptor().Rank().value() != 4) {
     exception_state.ThrowTypeError(
         "The input operand must be a 4-D tensor.");
     return nullptr;

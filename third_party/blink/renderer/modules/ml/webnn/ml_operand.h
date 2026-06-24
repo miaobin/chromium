@@ -85,7 +85,9 @@ class MODULES_EXPORT MLOperand : public ScriptWrappable {
 
   // IDL interface:
   V8MLOperandDataType dataType() const;
-  MLDynamicShape shape() const;
+  // Null when the operand is unranked (rank unknown until
+  // computeShapes/dispatch).
+  std::optional<MLDynamicShape> shape() const;
 
   MLConstantOperand* AsConstantOperand();
 

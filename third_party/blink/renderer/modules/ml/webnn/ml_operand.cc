@@ -115,11 +115,20 @@ size_t MLOperand::ByteLength() const {
 }
 
 wtf_size_t MLOperand::Rank() const {
-  static_assert(sizeof(descriptor_.Rank()) == sizeof(wtf_size_t));
-  return static_cast<wtf_size_t>(descriptor_.Rank());
+  // Blink-side operands are ranked (the unranked-input surface is resolved
+  // before reaching here); callers that handle unranked must use the
+  // descriptor's optional `Rank()` directly.
+  CHECK(descriptor_.HasRank());
+  static_assert(sizeof(descriptor_.Rank().value()) == sizeof(wtf_size_t));
+  return static_cast<wtf_size_t>(descriptor_.Rank().value());
 }
 
-MLDynamicShape MLOperand::shape() const {
+std::optional<MLDynamicShape> MLOperand::shape() const {
+  // An unranked operand reports a null shape; its rank is resolved at
+  // computeShapes/dispatch.
+  if (!descriptor_.HasRank()) {
+    return std::nullopt;
+  }
   MLDynamicShape result;
   result.ReserveInitialCapacity(descriptor_.shape().size());
   for (const auto& dim : descriptor_.shape()) {

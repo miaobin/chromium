@@ -40,7 +40,10 @@ union Dimension {
 // Represents the `MLOperandDescriptor` in the WebIDL definition.
 struct OperandDescriptor {
   DataType data_type;
-  array<Dimension> shape;
+  // A null `shape` means the operand is unranked (rank unknown); this is only
+  // valid for dynamic-rank graphs (Phase B) and is resolved to a concrete rank
+  // at computeShapes/dispatch.
+  array<Dimension>? shape;
   // Permutation that needs to be performed on service side for constant
   // operands.
   array<uint32> pending_permutation;
@@ -1511,6 +1514,41 @@ struct DynamicResample2d {
   string label;
 };
 
+// Removes size-1 dimensions from the input. With `axes` present, removes
+// exactly those axes (each of which must be size 1); without `axes`, removes
+// all size-1 dimensions, in which case the output rank is determined by the
+// concrete input shape at dispatch time (the dynamic-rank case).
+struct Squeeze {
+  OperandId input_operand_id;
+  OperandId output_operand_id;
+  // Absent => remove all size-1 dims (the dynamic-rank case). Present => the
+  // exact axes to remove. Each axis is non-negative, ascending, unique, and
+  // less than the input rank.
+  array<uint32>? axes;
+  string label;
+};
+
+// Inserts size-1 dimensions at `axes`, expressed in the OUTPUT's axis
+// numbering. The output rank is `input rank + axes.size()`; `axes` is always
+// required.
+struct Unsqueeze {
+  OperandId input_operand_id;
+  OperandId output_operand_id;
+  // Non-negative, ascending, unique, and less than the output rank.
+  array<uint32> axes;
+  string label;
+};
+
+// Collapses the input dimensions into a 2-D shape
+// `[d0*..*d(axis-1), d(axis)*..*d(n-1)]`. The output is always rank 2.
+struct Flatten {
+  OperandId input_operand_id;
+  OperandId output_operand_id;
+  // Where to split the dimensions into the two output axes, in [0, rank].
+  uint32 axis;
+  string label;
+};
+
 // Holds one of operator.
 union Operation {
   // Keep the order as the same as build methods of `MLGraphBuilder`.
@@ -1572,6 +1610,9 @@ union Operation {
   DynamicSplit dynamic_split;
   DynamicResample2d dynamic_resample_2d;
   DynamicTile dynamic_tile;
+  Squeeze squeeze;
+  Unsqueeze unsqueeze;
+  Flatten flatten;
 };
 
 // Describes an entire WebNN graph information.

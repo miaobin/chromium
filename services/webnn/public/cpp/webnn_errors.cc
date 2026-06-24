@@ -51,13 +51,13 @@ std::string NotSupportedTensorsError(std::string_view operand_kind,
          operand_str, SupportedDataTypesString(supported_tensors.data_types)});
   }
 
-  if (!supported_tensors.ranks.Supports(descriptor.Rank())) {
-    return base::StrCat({"Unsupported rank ",
-                         base::NumberToString(descriptor.Rank()), operand_str,
-                         SupportedRanksString(supported_tensors.ranks)});
-  }
-
-  NOTREACHED();
+  // Reaching here means `Supports()` returned false on a ranked descriptor (an
+  // unranked descriptor is never rejected by `Supports()` on rank grounds), so
+  // the rank is known.
+  CHECK(descriptor.Rank().has_value());
+  return base::StrCat({"Unsupported rank ",
+                       base::NumberToString(*descriptor.Rank()), operand_str,
+                       SupportedRanksString(supported_tensors.ranks)});
 }
 
 }  // namespace
@@ -102,14 +102,12 @@ std::string NotSupportedArgumentError(std::string_view argument_name,
                                          supported_tensors.data_types);
   }
 
-  if (!supported_tensors.ranks.Supports(descriptor.Rank())) {
-    return base::StrCat({"Unsupported rank ",
-                         base::NumberToString(descriptor.Rank()),
-                         " for argument ", argument_name,
-                         SupportedRanksString(supported_tensors.ranks)});
-  }
-
-  NOTREACHED();
+  // See above: a false `Supports()` on rank grounds implies a known rank.
+  CHECK(descriptor.Rank().has_value());
+  return base::StrCat({"Unsupported rank ",
+                       base::NumberToString(*descriptor.Rank()),
+                       " for argument ", argument_name,
+                       SupportedRanksString(supported_tensors.ranks)});
 }
 
 std::string NotSupportedConstantError(const OperandDescriptor& descriptor,

@@ -220,7 +220,10 @@ void UpdateOperatorOptions(MLOperator* op,
     case blink_mojom::Operation::Tag::kDynamicPad:
     case blink_mojom::Operation::Tag::kDynamicSplit:
     case blink_mojom::Operation::Tag::kDynamicResample2d:
-    case blink_mojom::Operation::Tag::kDynamicTile: {
+    case blink_mojom::Operation::Tag::kDynamicTile:
+    case blink_mojom::Operation::Tag::kSqueeze:
+    case blink_mojom::Operation::Tag::kUnsqueeze:
+    case blink_mojom::Operation::Tag::kFlatten: {
       break;
     }
   }

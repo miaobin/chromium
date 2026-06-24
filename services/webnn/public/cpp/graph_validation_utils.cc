@@ -342,6 +342,18 @@ ValidateNormalizationOperandIsCompatibleWithInput(
   return base::ok();
 }
 
+// Error returned by operators that cannot validate or infer an output from an
+// unranked (dynamic-rank) input because their semantics are defined in terms of
+// a concrete rank: fixed-rank ops (conv2d/pool2d/gemm and the recurrent
+// networks expect a specific rank) and resample2d. Operators whose output rank
+// follows the input instead propagate the unranked state and defer the
+// rank-dependent checks to computeShapes/dispatch. A renderer is untrusted, so
+// returning an error here (rather than dereferencing an absent rank) keeps the
+// service robust against a malformed "unranked where a rank is required"
+// message.
+constexpr char kUnrankedInputNotSupportedError[] =
+    "The operator does not support an input operand with unknown rank.";
+
 }  // namespace
 
 bool DimensionsAreDefinitelyUnequal(const Dimension& a, const Dimension& b) {
@@ -554,6 +566,12 @@ base::expected<OperandDescriptor, std::string> ValidateArgMinMaxAndInferOutput(
                                          .arg_min_max_output.data_types)));
   }
 
+  // An unranked input cannot have its axis validated against a rank; defer the
+  // output inference to dispatch by propagating the unranked state.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(output_data_type);
+  }
+
   ASSIGN_OR_RETURN(std::vector<Dimension> output_shape,
                    ValidateReduceAxesAndInferOutput(
                        input.shape(), std::array<uint32_t, 1>{axis},
@@ -581,7 +599,14 @@ ValidateBatchNormalizationAndInferOutput(
             context_properties.data_type_limits.batch_normalization_input)));
   }
 
-  if (attributes.axis >= input.Rank()) {
+  // An unranked input cannot have its axis validated against a rank; the output
+  // is the same shape as the input, so propagate the unranked state and defer
+  // to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  if (attributes.axis >= input.Rank().value()) {
     return base::unexpected(ErrorWithLabel(
         label,
         "The value of axis must be in the range [0, N-1] where N is the rank "
@@ -669,6 +694,12 @@ base::expected<OperandDescriptor, std::string> ValidateCastAndInferOutput(
                    context_properties.data_type_limits.cast_input.data_types)));
   }
 
+  // Cast preserves the input shape (only the data type changes); propagate an
+  // unranked input to an unranked output.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(output_data_type);
+  }
+
   return OperandDescriptor::Create(context_properties, output_data_type,
                                    input.shape(), label);
 }
@@ -690,6 +721,7 @@ base::expected<OperandDescriptor, std::string> ValidateConcatAndInferOutput(
                    kMaxValidTensorCount)));
   }
 
+  bool any_input_unranked = false;
   for (const auto& input : inputs) {
     if (!context_properties.data_type_limits.concat_inputs.Supports(input)) {
       return base::unexpected(ErrorWithLabel(
@@ -697,9 +729,17 @@ base::expected<OperandDescriptor, std::string> ValidateConcatAndInferOutput(
           NotSupportedInputArgumentError(
               input, context_properties.data_type_limits.concat_inputs)));
     }
+    any_input_unranked |= !input.HasRank();
   }
 
-  const auto first_input_rank = inputs[0].Rank();
+  // When any input has unknown rank, the axis cannot be range-checked and the
+  // per-dimension compatibility cannot be inferred; defer to dispatch by
+  // propagating the unranked state.
+  if (any_input_unranked) {
+    return OperandDescriptor::CreateUnranked(inputs[0].data_type());
+  }
+
+  const auto first_input_rank = inputs[0].Rank().value();
   // According to WebNN spec:
   // https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-concat-inputs-axis-axis,
   // the axis that the inputs concatenate along, with the value in the interval
@@ -724,7 +764,7 @@ base::expected<OperandDescriptor, std::string> ValidateConcatAndInferOutput(
     // According to WebNN spec:
     // https://www.w3.org/TR/webnn/#api-mlgraphbuilder-concat, all input tensors
     // must have the same dimension.
-    if (inputs[i].Rank() != first_input_rank) {
+    if (inputs[i].Rank().value() != first_input_rank) {
       return base::unexpected(ErrorWithLabel(
           label, "All input tensors must have the same dimension."));
     }
@@ -835,6 +875,12 @@ base::expected<OperandDescriptor, std::string> ValidateConv2dAndInferOutput(
     return base::unexpected(ErrorWithLabel(
         label, NotSupportedInputArgumentError(
                    input, context_properties.data_type_limits.conv2d_input)));
+  }
+  // conv2d is defined on a fixed 4-D input; it cannot operate on an operand of
+  // unknown rank.
+  if (!input.HasRank()) {
+    return base::unexpected(
+        ErrorWithLabel(label, kUnrankedInputNotSupportedError));
   }
   ASSIGN_OR_RETURN(Conv2dInputOutputInfo input_info,
                    GetConv2dInputInfo(label, input, attributes));
@@ -980,6 +1026,12 @@ ValidateConvTranspose2dAndInferOutput(
         NotSupportedInputArgumentError(
             input,
             context_properties.data_type_limits.conv_transpose2d_input)));
+  }
+  // convTranspose2d is defined on a fixed 4-D input; it cannot operate on an
+  // operand of unknown rank.
+  if (!input.HasRank()) {
+    return base::unexpected(
+        ErrorWithLabel(label, kUnrankedInputNotSupportedError));
   }
   ASSIGN_OR_RETURN(Conv2dInputOutputInfo input_info,
                    GetConv2dInputInfo(label, input, attributes));
@@ -1185,12 +1237,12 @@ ValidateCumulativeSumAndInferOutput(const ContextProperties& context_properties,
                                     const OperandDescriptor& input,
                                     const uint32_t axis,
                                     std::string_view label) {
-  if (input.Rank() <= axis) {
+  if (input.Rank().value() <= axis) {
     return base::unexpected(ErrorWithLabel(
         label, base::StringPrintf("The axis (%u) must be in the range [0, N-1] "
                                   "where N (%u) is the rank of input "
                                   "tensor.",
-                                  axis, input.Rank())));
+                                  axis, input.Rank().value())));
   }
 
   if (!context_properties.data_type_limits.cumulative_sum_input.Supports(
@@ -1372,6 +1424,15 @@ base::expected<OperandDescriptor, std::string> ValidateExpandAndInferOutput(
             new_rank, context_properties.data_type_limits.expand_input.ranks)));
   }
 
+  // The output shape is fully determined by `new_shape` regardless of the input
+  // rank. When the input is unranked the broadcast compatibility cannot be
+  // checked at build time; defer it to dispatch and return the (ranked) output
+  // described by `new_shape`.
+  if (!input.HasRank()) {
+    return OperandDescriptor::Create(context_properties, input.data_type(),
+                                     new_shape, label);
+  }
+
   std::optional<std::vector<Dimension>> output_shape =
       ExpandShape(input.shape(), new_shape, known_dynamic_dims);
   if (!output_shape) {
@@ -1397,11 +1458,17 @@ base::expected<OperandDescriptor, std::string> ValidateGatherAndInferOutput(
                    input, context_properties.data_type_limits.gather_input)));
   }
 
-  if (input.Rank() <= axis) {
+  // The output rank depends on the input rank (input.rank - 1 + indices.rank);
+  // an unranked input or indices makes it unknown, so defer to dispatch.
+  if (!input.HasRank() || !indices.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  if (input.Rank().value() <= axis) {
     return base::unexpected(ErrorWithLabel(
         label, base::StringPrintf("The axis (%u) must be in the range [0, N-1] "
                                   "where N=%u is the rank of input tensor.",
-                                  axis, input.Rank())));
+                                  axis, input.Rank().value())));
   }
 
   // Validate indices operand.
@@ -1413,7 +1480,8 @@ base::expected<OperandDescriptor, std::string> ValidateGatherAndInferOutput(
   }
 
   auto checked_output_rank =
-      base::CheckedNumeric<uint32_t>(input.Rank()) - 1 + indices.Rank();
+      base::CheckedNumeric<uint32_t>(input.Rank().value()) - 1 +
+      indices.Rank().value();
   if (!checked_output_rank.IsValid()) {
     return base::unexpected(
         ErrorWithLabel(label, "The output rank is too large."));
@@ -1421,7 +1489,7 @@ base::expected<OperandDescriptor, std::string> ValidateGatherAndInferOutput(
 
   std::vector<Dimension> output_shape;
   output_shape.reserve(checked_output_rank.ValueOrDie());
-  for (uint32_t i = 0; i < input.Rank(); ++i) {
+  for (uint32_t i = 0; i < input.Rank().value(); ++i) {
     if (i == axis) {
       std::ranges::copy(indices.shape(), std::back_inserter(output_shape));
     } else {
@@ -1449,12 +1517,18 @@ ValidateGatherElementsAndInferOutput(
             input, context_properties.data_type_limits.gather_elements_input)));
   }
 
-  if (input.Rank() <= axis) {
+  // The output has the same shape as indices; when either operand is unranked
+  // the rank-dependent checks cannot run, so defer to dispatch.
+  if (!input.HasRank() || !indices.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  if (input.Rank().value() <= axis) {
     return base::unexpected(ErrorWithLabel(
         label, base::StringPrintf("The axis (%u) must be in the range [0, N-1] "
                                   "where N=%u is the rank of input "
                                   "tensor.",
-                                  axis, input.Rank())));
+                                  axis, input.Rank().value())));
   }
 
   // Validate indices operand.
@@ -1467,15 +1541,15 @@ ValidateGatherElementsAndInferOutput(
             context_properties.data_type_limits.gather_elements_indices)));
   }
 
-  if (input.Rank() != indices.Rank()) {
+  if (input.Rank().value() != indices.Rank().value()) {
     return base::unexpected(ErrorWithLabel(
         label,
         base::StringPrintf(
             "The input rank (%u) must be equal to the indices rank (%u).",
-            input.Rank(), indices.Rank())));
+            input.Rank().value(), indices.Rank().value())));
   }
 
-  for (uint32_t i = 0; i < input.Rank(); ++i) {
+  for (uint32_t i = 0; i < input.Rank().value(); ++i) {
     if (i == axis) {
       continue;
     }
@@ -1514,9 +1588,16 @@ base::expected<OperandDescriptor, std::string> ValidateGatherNDAndInferOutput(
                    context_properties.data_type_limits.gather_nd_indices)));
   }
 
+  // The output rank depends on both the input rank and the indices shape; an
+  // unranked input or indices makes it unknown, so defer to dispatch.
+  if (!input.HasRank() || !indices.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
   // The last dimension of indices must be static because the output rank
   // depends on it.
-  const Dimension& indices_last_dim = indices.shape()[indices.Rank() - 1];
+  const Dimension& indices_last_dim =
+      indices.shape()[indices.Rank().value() - 1];
   if (!std::holds_alternative<uint32_t>(indices_last_dim)) {
     return base::unexpected(ErrorWithLabel(
         label,
@@ -1525,16 +1606,16 @@ base::expected<OperandDescriptor, std::string> ValidateGatherNDAndInferOutput(
   }
 
   uint32_t indices_last_dimension_size = std::get<uint32_t>(indices_last_dim);
-  if (indices_last_dimension_size > input.Rank()) {
+  if (indices_last_dimension_size > input.Rank().value()) {
     return base::unexpected(ErrorWithLabel(
         label, base::StringPrintf(
                    "The last dimension size of indices (%u) must be less than "
                    "or equal to the input rank (%u).",
-                   indices_last_dimension_size, input.Rank())));
+                   indices_last_dimension_size, input.Rank().value())));
   }
 
-  auto checked_output_rank = base::CheckedNumeric(indices.Rank()) - 1 +
-                             input.Rank() - indices_last_dimension_size;
+  auto checked_output_rank = base::CheckedNumeric(indices.Rank().value()) - 1 +
+                             input.Rank().value() - indices_last_dimension_size;
   if (!checked_output_rank.IsValid()) {
     return base::unexpected(
         ErrorWithLabel(label, "The output rank is too large."));
@@ -1579,6 +1660,13 @@ base::expected<OperandDescriptor, std::string> ValidateGemmAndInferOutput(
   if (a.data_type() != b.data_type()) {
     return base::unexpected(ErrorWithLabel(
         label, "The data types of first two inputs don't match."));
+  }
+
+  // gemm operates on fixed 2-D matrices; it cannot operate on an operand of
+  // unknown rank.
+  if (!a.HasRank() || !b.HasRank()) {
+    return base::unexpected(
+        ErrorWithLabel(label, kUnrankedInputNotSupportedError));
   }
 
   auto shape_a = a.shape();
@@ -1923,6 +2011,13 @@ ValidateInstanceNormalizationAndInferOutput(
             context_properties.data_type_limits.instance_normalization_input)));
   }
 
+  // instanceNormalization is defined on a fixed 4-D input (it normalizes over
+  // the spatial dimensions); it cannot operate on an operand of unknown rank.
+  if (!input.HasRank()) {
+    return base::unexpected(
+        ErrorWithLabel(label, kUnrankedInputNotSupportedError));
+  }
+
   uint32_t axis;
   switch (attributes.layout) {
     case InputOperandLayout::kNchw:
@@ -1982,9 +2077,15 @@ ValidateLayerNormalizationAndInferOutput(
             context_properties.data_type_limits.layer_normalization_input)));
   }
 
+  // The output has the same shape as the input; when the input is unranked the
+  // reduction axes cannot be validated, so defer to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
   // Ensure that the axes are all less than the input rank and have no
   // duplication.
-  RETURN_IF_ERROR(ValidateAxes(axes, input.Rank(), label));
+  RETURN_IF_ERROR(ValidateAxes(axes, input.Rank().value(), label));
 
   const auto input_dimensions = input.shape();
   // The dimensions for layerNormalization to reduce along.
@@ -2408,6 +2509,13 @@ base::expected<OperandDescriptor, std::string> ValidateMatmulAndInferOutput(
         label, "The data types of first two inputs don't match."));
   }
 
+  // matmul broadcasts the batch dimensions, so the output rank follows the
+  // inputs. When either input is unranked the rank is unknown; defer the
+  // shape-compatibility checks to dispatch by propagating the unranked state.
+  if (!a.HasRank() || !b.HasRank()) {
+    return OperandDescriptor::CreateUnranked(a.data_type());
+  }
+
   std::vector<webnn::Dimension> a_dimensions = a.shape();
   CHECK_GE(a_dimensions.size(), 2u);
   std::vector<webnn::Dimension> b_dimensions = b.shape();
@@ -2439,7 +2547,7 @@ base::expected<OperandDescriptor, std::string> ValidateMatmulAndInferOutput(
   std::vector<Dimension> output_dimensions;
   // Figure out the output shape by broadcasting all the dimensions except the
   // last two. The output is 2-D tensor of shape [M, N].
-  if (a.Rank() > 2 && b.Rank() > 2) {
+  if (a.Rank().value() > 2 && b.Rank().value() > 2) {
     std::vector<webnn::Dimension> sliced_a_dimensions(a_dimensions.begin(),
                                                       a_dimensions.end() - 2);
     std::vector<webnn::Dimension> sliced_b_dimensions(b_dimensions.begin(),
@@ -2454,7 +2562,7 @@ base::expected<OperandDescriptor, std::string> ValidateMatmulAndInferOutput(
                              optional_output_dimensions->end());
     output_dimensions.push_back(a_rows);
     output_dimensions.push_back(b_cols);
-  } else if (a.Rank() == 2 && b.Rank() == 2) {
+  } else if (a.Rank().value() == 2 && b.Rank().value() == 2) {
     output_dimensions.push_back(a_rows);
     output_dimensions.push_back(b_cols);
   } else {
@@ -2484,14 +2592,21 @@ base::expected<OperandDescriptor, std::string> ValidatePadAndInferOutput(
                    input, context_properties.data_type_limits.pad_input)));
   }
 
+  // The output rank equals the input rank, and the padding arrays are validated
+  // against it. With an unranked input neither can be checked at build time;
+  // defer to dispatch by propagating the unranked state.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
   // Validate the beginning_padding and ending_padding.
-  if (beginning_padding.size() != input.Rank()) {
+  if (beginning_padding.size() != input.Rank().value()) {
     return base::unexpected(
         ErrorWithLabel(label,
                        "The length of beginningPadding must be "
                        "equal to the rank of the input tensor."));
   }
-  if (ending_padding.size() != input.Rank()) {
+  if (ending_padding.size() != input.Rank().value()) {
     return base::unexpected(
         ErrorWithLabel(label,
                        "The length of endingPadding must be "
@@ -2508,7 +2623,7 @@ base::expected<OperandDescriptor, std::string> ValidatePadAndInferOutput(
       break;
     }
     case PaddingMode::kReflection: {
-      for (size_t i = 0; i < input.Rank(); ++i) {
+      for (size_t i = 0; i < input.Rank().value(); ++i) {
         const uint32_t* static_size = std::get_if<uint32_t>(&input.shape()[i]);
         if (!static_size) {
           continue;
@@ -2537,8 +2652,8 @@ base::expected<OperandDescriptor, std::string> ValidatePadAndInferOutput(
   // yields a dynamic (unnamed) output, since the size is shifted by the
   // padding.
   std::vector<Dimension> output_shape;
-  output_shape.reserve(input.Rank());
-  for (size_t i = 0; i < input.Rank(); ++i) {
+  output_shape.reserve(input.Rank().value());
+  for (size_t i = 0; i < input.Rank().value(); ++i) {
     const Dimension& input_dimension = input.shape()[i];
     base::CheckedNumeric<uint32_t> checked_total_padding =
         base::CheckedNumeric<uint32_t>(beginning_padding[i]) +
@@ -2592,6 +2707,13 @@ base::expected<OperandDescriptor, std::string> ValidatePool2dAndInferOutput(
   if (!tensor_constraint.Supports(input)) {
     return base::unexpected(ErrorWithLabel(
         label, NotSupportedInputArgumentError(input, tensor_constraint)));
+  }
+
+  // pool2d is defined on a fixed 4-D input; it cannot operate on an operand of
+  // unknown rank.
+  if (!input.HasRank()) {
+    return base::unexpected(
+        ErrorWithLabel(label, kUnrankedInputNotSupportedError));
   }
 
   CHECK_EQ(input.shape().size(), 4u);
@@ -2753,6 +2875,12 @@ base::expected<OperandDescriptor, std::string> ValidatePreluAndInferOutput(
                    context_properties.data_type_limits.prelu_input)));
   }
 
+  // The output has the same shape as the input; when the input is unranked the
+  // slope broadcast cannot be checked, so defer to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
   if (input.data_type() != slope.data_type()) {
     return base::unexpected(ErrorWithLabel(
         label, "The data type of slope doesn't match the data type of input."));
@@ -2812,6 +2940,12 @@ base::expected<OperandDescriptor, std::string> ValidateReduceAndInferOutput(
         label, NotSupportedInputArgumentError(input, tensor_constraint)));
   }
 
+  // The axes are validated against the input rank and determine the output
+  // shape; with an unranked input neither is known, so defer to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
   ASSIGN_OR_RETURN(std::vector<Dimension> output_shape,
                    ValidateReduceAxesAndInferOutput(input.shape(), axes,
                                                     keep_dimensions, label));
@@ -2858,11 +2992,18 @@ base::expected<OperandDescriptor, std::string> ValidateResample2dAndInferOutput(
             input, context_properties.data_type_limits.resample2d_input)));
   }
 
+  // resample2d resizes along two axes of a fixed-rank input; it cannot operate
+  // on an operand of unknown rank.
+  if (!input.HasRank()) {
+    return base::unexpected(
+        ErrorWithLabel(label, kUnrankedInputNotSupportedError));
+  }
+
   if (axes.size() != 2) {
     return base::unexpected(
         ErrorWithLabel(label, "The length of axes should be 2."));
   }
-  RETURN_IF_ERROR(ValidateAxes(axes, input.Rank(), label));
+  RETURN_IF_ERROR(ValidateAxes(axes, input.Rank().value(), label));
 
   // Non-resample axes pass through (preserving any dynamic-ness); the two
   // resample axes are overwritten below based on scales or sizes.
@@ -2917,7 +3058,7 @@ base::expected<OperandDescriptor, std::string> ValidateResample2dAndInferOutput(
     // always static regardless of whether the corresponding input dims are
     // dynamic. However, backends that materialize a full sizes tensor for
     // Resize require the non-resample axes to be static.
-    for (uint32_t i = 0; i < input.Rank(); ++i) {
+    for (uint32_t i = 0; i < input.Rank().value(); ++i) {
       if (i == axes[0] || i == axes[1]) {
         continue;
       }
@@ -2943,13 +3084,19 @@ base::expected<OperandDescriptor, std::string> ValidateReverseAndInferOutput(
     const OperandDescriptor& input,
     base::span<const uint32_t> axes,
     std::string_view label) {
-  RETURN_IF_ERROR(ValidateAxes(axes, input.Rank(), label));
-
   if (!context_properties.data_type_limits.reverse_input.Supports(input)) {
     return base::unexpected(ErrorWithLabel(
         label, NotSupportedInputArgumentError(
                    input, context_properties.data_type_limits.reverse_input)));
   }
+
+  // The output has the same shape as the input; when the input is unranked the
+  // axes cannot be range-checked, so defer to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  RETURN_IF_ERROR(ValidateAxes(axes, input.Rank().value(), label));
 
   return input;
 }
@@ -2973,8 +3120,19 @@ base::expected<OperandDescriptor, std::string> ValidateShapeAndInferOutput(
                        .data_types)));
   }
 
+  // Output is a 1-D tensor with size equal to the rank of the input. When the
+  // input is unranked the size is unknown, so the single output dimension is an
+  // unnamed dynamic dimension resolved at dispatch (the output rank is always
+  // 1).
+  if (!input.HasRank()) {
+    std::array<Dimension, 1> dynamic_output_shape{DynamicDimension{}};
+    return OperandDescriptor::Create(context_properties,
+                                     OperandDataType::kInt64,
+                                     dynamic_output_shape, label);
+  }
+
   // Output is a 1-D tensor with size equal to the rank of the input.
-  std::vector<uint32_t> output_shape{input.Rank()};
+  std::vector<uint32_t> output_shape{input.Rank().value()};
   return OperandDescriptor::Create(context_properties, OperandDataType::kInt64,
                                    output_shape, label);
 }
@@ -3012,19 +3170,25 @@ ValidateScatterElementsAndInferOutput(
                        "input data type."));
   }
 
-  if (input.Rank() <= axis) {
+  // The output has the same shape as the input; when any operand is unranked
+  // the rank-dependent checks cannot run, so defer to dispatch.
+  if (!input.HasRank() || !indices.HasRank() || !updates.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  if (input.Rank().value() <= axis) {
     return base::unexpected(ErrorWithLabel(
         label,
         "The axis must be in the range [0, N-1] where N is the rank of input "
         "tensor."));
   }
 
-  if (indices.Rank() != input.Rank()) {
+  if (indices.Rank().value() != input.Rank().value()) {
     return base::unexpected(ErrorWithLabel(
         label, "The indices and input tensors should have the same rank."));
   }
 
-  for (uint32_t i = 0; i < input.Rank(); ++i) {
+  for (uint32_t i = 0; i < input.Rank().value(); ++i) {
     if (i == axis) {
       continue;
     }
@@ -3092,9 +3256,16 @@ base::expected<OperandDescriptor, std::string> ValidateScatterNDAndInferOutput(
                        "input data type."));
   }
 
+  // The output has the same shape as the input; when the input or indices is
+  // unranked the rank-dependent checks cannot run, so defer to dispatch.
+  if (!input.HasRank() || !indices.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
   // The last dimension of indices must be static because the output rank
   // depends on it.
-  const Dimension& indices_last_dim = indices.shape()[indices.Rank() - 1];
+  const Dimension& indices_last_dim =
+      indices.shape()[indices.Rank().value() - 1];
   if (!std::holds_alternative<uint32_t>(indices_last_dim)) {
     return base::unexpected(ErrorWithLabel(
         label,
@@ -3103,19 +3274,20 @@ base::expected<OperandDescriptor, std::string> ValidateScatterNDAndInferOutput(
   }
 
   uint32_t indices_last_dim_size = std::get<uint32_t>(indices_last_dim);
-  if (indices_last_dim_size > input.Rank()) {
+  if (indices_last_dim_size > input.Rank().value()) {
     return base::unexpected(ErrorWithLabel(
         label, base::StringPrintf(
                    "The size of the last dimension of indices tensor (%u)"
                    "should not be greater than input rank (%u).",
-                   indices_last_dim_size, input.Rank())));
+                   indices_last_dim_size, input.Rank().value())));
   }
 
   // Validate `updates.shape` =
   // `indices.shape[:-1]` + `input.shape[indices.shape[-1]:]`, where `+` denotes
   // the concatenation of shapes.
-  auto checked_updates_rank = base::CheckedNumeric<uint32_t>(indices.Rank()) -
-                              1 + input.Rank() - indices_last_dim_size;
+  auto checked_updates_rank =
+      base::CheckedNumeric<uint32_t>(indices.Rank().value()) - 1 +
+      input.Rank().value() - indices_last_dim_size;
   if (!checked_updates_rank.IsValid()) {
     return base::unexpected(
         ErrorWithLabel(label, "The expected updates rank is too large."));
@@ -3153,13 +3325,21 @@ base::expected<OperandDescriptor, std::string> ValidateSliceAndInferOutput(
     const OperandDescriptor& input,
     const SliceAttributes& attributes) {
   const std::string& label = attributes.label;
-  const auto input_rank = input.Rank();
 
   if (!context_properties.data_type_limits.slice_input.Supports(input)) {
     return base::unexpected(ErrorWithLabel(
         label, NotSupportedInputArgumentError(
                    input, context_properties.data_type_limits.slice_input)));
   }
+
+  // The starts/sizes/strides arrays are validated against the input rank and
+  // the output rank equals the input rank; with an unranked input none of this
+  // is known, so defer to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  const auto input_rank = input.Rank().value();
 
   if (attributes.starts.size() != input_rank) {
     return base::unexpected(ErrorWithLabel(
@@ -3261,7 +3441,12 @@ base::expected<OperandDescriptor, std::string> ValidateSoftmaxAndInferOutput(
         label, NotSupportedInputArgumentError(
                    input, context_properties.data_type_limits.softmax_input)));
   }
-  if (axis >= input.Rank()) {
+  // The output has the same shape as the input; when the input is unranked the
+  // axis cannot be range-checked, so defer to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+  if (axis >= input.Rank().value()) {
     return base::unexpected(
         ErrorWithLabel(label, "Axis must be a valid dimension."));
   }
@@ -3280,7 +3465,33 @@ ValidateSplitAndInferOutput(const ContextProperties& context_properties,
                    input, context_properties.data_type_limits.split_input)));
   }
 
-  if (attributes.axis >= input.Rank()) {
+  // The split axis is validated against the input rank and each output mirrors
+  // the input shape; with an unranked input the axis cannot be range-checked
+  // and the per-part sizes cannot be inferred. The number of outputs, however,
+  // is fixed by `attributes.splits`, so emit that many unranked outputs and
+  // defer the size checks to dispatch.
+  if (!input.HasRank()) {
+    static_assert(std::variant_size<decltype(attributes.splits)>() == 2,
+                  "When adding new variants update the branches below.");
+    size_t output_count =
+        std::holds_alternative<uint32_t>(attributes.splits)
+            ? std::get<uint32_t>(attributes.splits)
+            : std::get<base::span<const uint32_t>>(attributes.splits).size();
+    if (output_count == 0 || output_count > kMaxValidTensorCount) {
+      return base::unexpected(ErrorWithLabel(
+          label, base::StringPrintf(
+                     "The number of splits must be in the range [1, %u].",
+                     kMaxValidTensorCount)));
+    }
+    std::vector<OperandDescriptor> outputs;
+    outputs.reserve(output_count);
+    for (size_t i = 0; i < output_count; ++i) {
+      outputs.push_back(OperandDescriptor::CreateUnranked(input.data_type()));
+    }
+    return outputs;
+  }
+
+  if (attributes.axis >= input.Rank().value()) {
     return base::unexpected(ErrorWithLabel(
         label,
         "The axis must be in the range [0, N-1] where N is the rank of the "
@@ -3410,7 +3621,14 @@ base::expected<OperandDescriptor, std::string> ValidateTileAndInferOutput(
                    input, context_properties.data_type_limits.tile_input)));
   }
 
-  if (repetitions.size() != input.Rank()) {
+  // The repetitions array is validated against the input rank and the output
+  // rank equals the input rank; with an unranked input neither is known, so
+  // defer to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  if (repetitions.size() != input.Rank().value()) {
     return base::unexpected(ErrorWithLabel(
         label,
         "The number of values in repetitions must be the same as the rank of "
@@ -3422,8 +3640,8 @@ base::expected<OperandDescriptor, std::string> ValidateTileAndInferOutput(
   // yields a dynamic (unnamed) output, since the size is scaled by
   // repetitions[i].
   std::vector<Dimension> output_shape;
-  output_shape.reserve(input.Rank());
-  for (size_t i = 0; i < input.Rank(); ++i) {
+  output_shape.reserve(input.Rank().value());
+  for (size_t i = 0; i < input.Rank().value(); ++i) {
     if (repetitions[i] == 0) {
       return base::unexpected(
           ErrorWithLabel(label, "Any value in repetitions must not be 0."));
@@ -3457,6 +3675,179 @@ base::expected<OperandDescriptor, std::string> ValidateTileAndInferOutput(
                                    output_shape, label);
 }
 
+base::expected<OperandDescriptor, std::string> ValidateSqueezeAndInferOutput(
+    const ContextProperties& context_properties,
+    const OperandDescriptor& input,
+    std::optional<base::span<const uint32_t>> axes,
+    std::string_view label) {
+  if (!context_properties.data_type_limits.squeeze_input.Supports(input)) {
+    return base::unexpected(ErrorWithLabel(
+        label, NotSupportedInputArgumentError(
+                   input, context_properties.data_type_limits.squeeze_input)));
+  }
+
+  // The no-axes case removes every size-1 dimension. The output rank therefore
+  // depends on which dimensions are 1, which is only knowable once every
+  // dimension is a concrete static size. When the input is fully static (the
+  // common case at computeShapes/dispatch) the result is computed directly;
+  // otherwise — an unranked input, or a ranked input with any dynamic dimension
+  // — the output rank cannot be determined and is deferred to dispatch by
+  // emitting an unranked output. This is the seam where dynamic rank
+  // originates.
+  if (!axes.has_value()) {
+    std::optional<std::vector<uint32_t>> static_shape = input.StaticShape();
+    if (!static_shape.has_value()) {
+      return OperandDescriptor::CreateUnranked(input.data_type());
+    }
+    std::vector<Dimension> output_shape;
+    for (uint32_t dimension : *static_shape) {
+      if (dimension != 1) {
+        output_shape.emplace_back(dimension);
+      }
+    }
+    return OperandDescriptor::Create(context_properties, input.data_type(),
+                                     output_shape, label);
+  }
+
+  // An unranked input cannot have its axes validated against a rank, and the
+  // output rank cannot be computed; defer to dispatch by emitting an unranked
+  // output.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  RETURN_IF_ERROR(ValidateAxes(*axes, *input.Rank(), label));
+
+  // A listed axis must be provably size 1 to be removed. A dynamic dimension at
+  // a listed axis cannot be proven to be 1 nor rejected at build time, so it is
+  // deferred to dispatch (the dimension is removed in the inferred output and
+  // re-checked once the concrete size is known).
+  std::set<uint32_t> axes_to_remove(axes->begin(), axes->end());
+  for (uint32_t axis : *axes) {
+    const Dimension& dimension = input.shape()[axis];
+    if (const uint32_t* static_size = std::get_if<uint32_t>(&dimension)) {
+      if (*static_size != 1) {
+        return base::unexpected(
+            ErrorWithLabel(label, "The dimension to be squeezed must be 1."));
+      }
+    }
+  }
+
+  // Output = input dimensions minus the removed axes, survivors keep their
+  // names (1:1 pass-through).
+  std::vector<Dimension> output_shape;
+  output_shape.reserve(*input.Rank() - axes_to_remove.size());
+  for (uint32_t i = 0; i < *input.Rank(); ++i) {
+    if (!axes_to_remove.contains(i)) {
+      output_shape.push_back(input.shape()[i]);
+    }
+  }
+
+  return OperandDescriptor::Create(context_properties, input.data_type(),
+                                   output_shape, label);
+}
+
+base::expected<OperandDescriptor, std::string> ValidateUnsqueezeAndInferOutput(
+    const ContextProperties& context_properties,
+    const OperandDescriptor& input,
+    base::span<const uint32_t> axes,
+    std::string_view label) {
+  if (!context_properties.data_type_limits.unsqueeze_input.Supports(input)) {
+    return base::unexpected(ErrorWithLabel(
+        label,
+        NotSupportedInputArgumentError(
+            input, context_properties.data_type_limits.unsqueeze_input)));
+  }
+
+  // An unranked input means the output rank (input rank + |axes|) is unknown;
+  // defer to dispatch.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  // The output rank is the input rank plus the number of inserted dimensions.
+  // `axes` are expressed in the output axis numbering.
+  base::CheckedNumeric<uint32_t> checked_output_rank =
+      base::CheckedNumeric<uint32_t>(*input.Rank()) + axes.size();
+  uint32_t output_rank;
+  if (!checked_output_rank.AssignIfValid(&output_rank)) {
+    return base::unexpected(
+        ErrorWithLabel(label, "The output rank is too large."));
+  }
+  RETURN_IF_ERROR(ValidateAxes(axes, output_rank, label));
+
+  // Insert size-1 dimensions at the listed output axes; fill the remaining
+  // positions with the input dimensions in order (names preserved).
+  std::set<uint32_t> inserted_axes(axes.begin(), axes.end());
+  std::vector<Dimension> output_shape;
+  output_shape.reserve(output_rank);
+  uint32_t input_index = 0;
+  for (uint32_t i = 0; i < output_rank; ++i) {
+    if (inserted_axes.contains(i)) {
+      output_shape.emplace_back(uint32_t{1});
+    } else {
+      output_shape.push_back(input.shape()[input_index++]);
+    }
+  }
+
+  return OperandDescriptor::Create(context_properties, input.data_type(),
+                                   output_shape, label);
+}
+
+base::expected<OperandDescriptor, std::string> ValidateFlattenAndInferOutput(
+    const ContextProperties& context_properties,
+    const OperandDescriptor& input,
+    uint32_t axis,
+    std::string_view label) {
+  if (!context_properties.data_type_limits.flatten_input.Supports(input)) {
+    return base::unexpected(ErrorWithLabel(
+        label, NotSupportedInputArgumentError(
+                   input, context_properties.data_type_limits.flatten_input)));
+  }
+
+  // An unranked input means neither product can be computed and `axis` cannot
+  // be range-checked; defer to dispatch with an unranked output.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  if (base::MakeStrictNum(axis) > *input.Rank()) {
+    return base::unexpected(ErrorWithLabel(
+        label, base::StringPrintf("The axis must be in the range [0, %u].",
+                                  *input.Rank())));
+  }
+
+  // Each output dimension is the product of one side of the split. If a side
+  // contains any dynamic dimension, the product cannot be known at build time
+  // and is emitted as an unnamed dynamic dimension (a derived dim never carries
+  // a name). An empty side has a static product of 1.
+  auto product = [&](base::span<const Dimension> dims)
+      -> base::expected<Dimension, std::string> {
+    base::CheckedNumeric<uint32_t> checked_size = 1;
+    for (const Dimension& dimension : dims) {
+      if (!std::holds_alternative<uint32_t>(dimension)) {
+        return Dimension(DynamicDimension{});
+      }
+      checked_size *= std::get<uint32_t>(dimension);
+    }
+    uint32_t size;
+    if (!checked_size.AssignIfValid(&size)) {
+      return base::unexpected(
+          ErrorWithLabel(label, "The flattened dimension size is too large."));
+    }
+    return Dimension(size);
+  };
+
+  ASSIGN_OR_RETURN(Dimension first,
+                   product(base::span(input.shape()).first(axis)));
+  ASSIGN_OR_RETURN(Dimension second,
+                   product(base::span(input.shape()).subspan(axis)));
+
+  return OperandDescriptor::Create(context_properties, input.data_type(),
+                                   std::vector<Dimension>{first, second},
+                                   label);
+}
+
 base::expected<OperandDescriptor, std::string> ValidateTransposeAndInferOutput(
     const ContextProperties& context_properties,
     const OperandDescriptor& input,
@@ -3469,16 +3860,23 @@ base::expected<OperandDescriptor, std::string> ValidateTransposeAndInferOutput(
             input, context_properties.data_type_limits.transpose_input)));
   }
 
-  if (permutation.size() != static_cast<size_t>(input.Rank())) {
+  // The permutation is validated against the input rank and selects the output
+  // dimensions from the input; with an unranked input neither can be done, so
+  // defer to dispatch by propagating the unranked state.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
+  if (permutation.size() != static_cast<size_t>(input.Rank().value())) {
     return base::unexpected(ErrorWithLabel(
         label,
         "The number of values in permutation must be the same as the rank of "
         "the input tensor."));
   }
-  RETURN_IF_ERROR(ValidateAxes(permutation, input.Rank(), label));
+  RETURN_IF_ERROR(ValidateAxes(permutation, input.Rank().value(), label));
 
-  std::vector<Dimension> output_shape(input.Rank());
-  for (uint32_t i = 0; i < input.Rank(); ++i) {
+  std::vector<Dimension> output_shape(input.Rank().value());
+  for (uint32_t i = 0; i < input.Rank().value(); ++i) {
     output_shape[i] = input.shape()[permutation[i]];
   }
   return OperandDescriptor::Create(context_properties, input.data_type(),
@@ -3497,7 +3895,11 @@ base::expected<OperandDescriptor, std::string> ValidateTriangularAndInferOutput(
   }
 
   // The output tensor of triangular is the same shape and the same type as the
-  // input tensor.
+  // input tensor, so an unranked input propagates to an unranked output.
+  if (!input.HasRank()) {
+    return OperandDescriptor::CreateUnranked(input.data_type());
+  }
+
   return input;
 }
 
@@ -3532,6 +3934,12 @@ base::expected<OperandDescriptor, std::string> ValidateWhereAndInferOutput(
   if (true_value.data_type() != false_value.data_type()) {
     return base::unexpected(ErrorWithLabel(
         label, "The data types of trueValue and falseValue don't match."));
+  }
+
+  // The output rank is the broadcast of condition/trueValue/falseValue; if any
+  // is unranked the broadcast is unknown, so defer to dispatch.
+  if (!condition.HasRank() || !true_value.HasRank() || !false_value.HasRank()) {
+    return OperandDescriptor::CreateUnranked(true_value.data_type());
   }
 
   const std::optional<std::vector<Dimension>> value_shape =

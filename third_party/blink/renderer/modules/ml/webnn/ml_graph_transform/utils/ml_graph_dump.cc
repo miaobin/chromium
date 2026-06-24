@@ -381,8 +381,10 @@ class Node : public GarbageCollected<Node> {
       case webnn::mojom::internal::Operation_Data::Operation_Tag::kDynamicSplit:
       case webnn::mojom::internal::Operation_Data::Operation_Tag::
           kDynamicResample2d:
-      case webnn::mojom::internal::Operation_Data::Operation_Tag::
-          kDynamicTile: {
+      case webnn::mojom::internal::Operation_Data::Operation_Tag::kDynamicTile:
+      case webnn::mojom::internal::Operation_Data::Operation_Tag::kSqueeze:
+      case webnn::mojom::internal::Operation_Data::Operation_Tag::kUnsqueeze:
+      case webnn::mojom::internal::Operation_Data::Operation_Tag::kFlatten: {
         // No attributes to set.
         break;
       }

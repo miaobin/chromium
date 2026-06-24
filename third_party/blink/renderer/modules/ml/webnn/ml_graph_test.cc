@@ -839,7 +839,10 @@ class FakeWebNNContextProvider : public blink_mojom::WebNNContextProvider {
          {webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_tile_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
          /*dynamic_tile_repetitions=*/
-         {webnn::SupportedDataTypes::All(), kMaxRank}});
+         {webnn::SupportedDataTypes::All(), kMaxRank},
+         /*squeeze_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*unsqueeze_input=*/{webnn::SupportedDataTypes::All(), kMaxRank},
+         /*flatten_input=*/{webnn::SupportedDataTypes::All(), kMaxRank}});
     auto success = blink_mojom::CreateContextSuccess::New(
         std::move(blink_remote),
         /*compiler_context_remote=*/mojo::NullRemote(),

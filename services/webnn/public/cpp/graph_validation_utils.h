@@ -818,6 +818,40 @@ base::expected<OperandDescriptor, std::string> COMPONENT_EXPORT(
                                base::span<const uint32_t> repetitions,
                                std::string_view label);
 
+// Validate and infer output information of the squeeze operator. `axes`, when
+// present, lists the dimensions to remove; each must be a provably size-1
+// dimension (a dynamic dimension at a listed axis is deferred, since it cannot
+// be proven 1 nor rejected at build time). When `axes` is absent, all size-1
+// dimensions are removed, in which case the output rank is determined by the
+// concrete input shape at dispatch and the inferred output is unranked.
+base::expected<OperandDescriptor, std::string> COMPONENT_EXPORT(
+    WEBNN_PUBLIC_CPP)
+    ValidateSqueezeAndInferOutput(
+        const ContextProperties& context_properties,
+        const OperandDescriptor& input,
+        std::optional<base::span<const uint32_t>> axes,
+        std::string_view label);
+
+// Validate and infer output information of the unsqueeze operator. `axes` lists
+// the positions, in the OUTPUT axis numbering, at which to insert size-1
+// dimensions. The output rank is `input rank + axes.size()`.
+base::expected<OperandDescriptor, std::string> COMPONENT_EXPORT(
+    WEBNN_PUBLIC_CPP)
+    ValidateUnsqueezeAndInferOutput(const ContextProperties& context_properties,
+                                    const OperandDescriptor& input,
+                                    base::span<const uint32_t> axes,
+                                    std::string_view label);
+
+// Validate and infer output information of the flatten operator. The output is
+// always rank 2: `[prod(dims[0:axis]), prod(dims[axis:])]`. If either side
+// contains a dynamic dimension, that product is an unnamed dynamic dimension.
+base::expected<OperandDescriptor, std::string> COMPONENT_EXPORT(
+    WEBNN_PUBLIC_CPP)
+    ValidateFlattenAndInferOutput(const ContextProperties& context_properties,
+                                  const OperandDescriptor& input,
+                                  uint32_t axis,
+                                  std::string_view label);
+
 // Validate transpose operator defined in WebIDL here
 // https://www.w3.org/TR/webnn/#api-mlgraphbuilder-transpose
 base::expected<OperandDescriptor, std::string> COMPONENT_EXPORT(

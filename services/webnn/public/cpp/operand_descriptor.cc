@@ -155,6 +155,14 @@ OperandDescriptor::CreateForDeserialization(
 }
 
 // static
+OperandDescriptor OperandDescriptor::CreateUnranked(OperandDataType data_type) {
+  OperandDescriptor descriptor;
+  descriptor.data_type_ = data_type;
+  // `shape_` is default-initialized to nullopt (unranked).
+  return descriptor;
+}
+
+// static
 OperandDescriptor OperandDescriptor::UnsafeCreateForTesting(
     OperandDataType data_type,
     base::span<const uint32_t> shape,
@@ -238,8 +246,12 @@ size_t OperandDescriptor::PackedByteLength() const {
 }
 
 std::optional<size_t> OperandDescriptor::NumberOfElements() const {
+  // An unranked descriptor has no known element count.
+  if (!shape_.has_value()) {
+    return std::nullopt;
+  }
   size_t result = 1;
-  for (const auto& dim : shape_) {
+  for (const auto& dim : *shape_) {
     const uint32_t* size = std::get_if<uint32_t>(&dim);
     if (!size) {
       return std::nullopt;
@@ -255,11 +267,16 @@ std::optional<size_t> OperandDescriptor::NumberOfElements() const {
 
 void OperandDescriptor::SetPendingPermutation(
     base::span<const uint32_t> permutation) {
-  CHECK(IsValidPermutation(permutation, data_type_, shape_).has_value());
+  CHECK(shape_.has_value());
+  CHECK(IsValidPermutation(permutation, data_type_, *shape_).has_value());
   pending_permutation_.assign(permutation.begin(), permutation.end());
 }
 
 std::optional<std::vector<uint32_t>> OperandDescriptor::StaticShape() const {
-  return ToStaticShapeVector(shape_);
+  // An unranked descriptor is not a static shape.
+  if (!shape_.has_value()) {
+    return std::nullopt;
+  }
+  return ToStaticShapeVector(*shape_);
 }
 }  // namespace webnn

@@ -150,7 +150,10 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
                  SupportedTensors dynamic_resample_2d_input,
                  SupportedTensors dynamic_resample_2d_sizes,
                  SupportedTensors dynamic_tile_input,
-                 SupportedTensors dynamic_tile_repetitions);
+                 SupportedTensors dynamic_tile_repetitions,
+                 SupportedTensors squeeze_input,
+                 SupportedTensors unsqueeze_input,
+                 SupportedTensors flatten_input);
 
   // Copyable and movable.
   DataTypeLimits(const DataTypeLimits&);
@@ -299,6 +302,9 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
   SupportedTensors dynamic_resample_2d_sizes;
   SupportedTensors dynamic_tile_input;
   SupportedTensors dynamic_tile_repetitions;
+  SupportedTensors squeeze_input;
+  SupportedTensors unsqueeze_input;
+  SupportedTensors flatten_input;
 };
 
 // clang-format off
@@ -439,7 +445,10 @@ inline bool operator==(const DataTypeLimits& lhs, const DataTypeLimits& rhs) {
            lhs.dynamic_resample_2d_input == rhs.dynamic_resample_2d_input &&
            lhs.dynamic_resample_2d_sizes == rhs.dynamic_resample_2d_sizes &&
            lhs.dynamic_tile_input == rhs.dynamic_tile_input &&
-           lhs.dynamic_tile_repetitions == rhs.dynamic_tile_repetitions;
+           lhs.dynamic_tile_repetitions == rhs.dynamic_tile_repetitions &&
+           lhs.squeeze_input == rhs.squeeze_input &&
+           lhs.unsqueeze_input == rhs.unsqueeze_input &&
+           lhs.flatten_input == rhs.flatten_input;
 }
 // clang-format on
 

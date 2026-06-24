@@ -337,6 +337,9 @@ dictionary MLOpSupportLimits {
   MLDynamicSplitSupportLimits dynamicSplit;
   MLDynamicResample2dSupportLimits dynamicResample2d;
   MLDynamicTileSupportLimits dynamicTile;
+  MLSingleInputSupportLimits squeeze;
+  MLSingleInputSupportLimits unsqueeze;
+  MLSingleInputSupportLimits flatten;
 };
 
 typedef record<USVString, MLTensor> MLNamedTensors;

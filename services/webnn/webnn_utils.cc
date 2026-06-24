@@ -183,6 +183,12 @@ std::string OpTagToString(mojom::Operation::Tag tag) {
       return ops::kDynamicResample2d;
     case mojom::Operation::Tag::kDynamicTile:
       return ops::kDynamicTile;
+    case mojom::Operation::Tag::kSqueeze:
+      return ops::kSqueeze;
+    case mojom::Operation::Tag::kUnsqueeze:
+      return ops::kUnsqueeze;
+    case mojom::Operation::Tag::kFlatten:
+      return ops::kFlatten;
   }
 }
 
