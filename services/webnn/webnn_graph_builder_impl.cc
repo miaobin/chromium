@@ -3294,10 +3294,12 @@ bool OperationValidationContext::ValidateDynamicReshape(
     return false;
   }
 
-  // The new_shape operand is a 1-D int64 shape tensor. An unranked operand
-  // (rank unknown) is not a valid 1-D shape tensor.
+  // The new_shape operand is a 1-D uint32 shape tensor (WebNN dimensions are
+  // uint32). An unranked operand (rank unknown) is not a valid 1-D shape
+  // tensor.
   if (new_shape->descriptor.Rank() != 1u ||
-      new_shape->descriptor.data_type() != OperandDataType::kInt64) {
+      !context_properties_->data_type_limits.dynamic_reshape_new_shape
+           .data_types.Has(new_shape->descriptor.data_type())) {
     return false;
   }
 
@@ -3308,28 +3310,19 @@ bool OperationValidationContext::ValidateDynamicReshape(
       return false;
     }
 
-    // Convert int64 values to uint32 dimensions, handling -1 (infer one dim).
+    // new_shape is a uint32 tensor, so its values are concrete non-negative
+    // dimensions. ONNX placeholders like -1 (infer this dim) or 0 (copy the
+    // input dim) are resolved to concrete dimensions by the ORT-Web WebNN EP
+    // before dynamicReshape is built; they never reach here.
     std::vector<uint32_t> new_dims;
     new_dims.reserve(shape_values->size());
-    std::optional<size_t> infer_dim_index;
     base::CheckedNumeric<size_t> new_element_count = 1;
-    for (size_t i = 0; i < shape_values->size(); ++i) {
-      int64_t val = (*shape_values)[i];
-      if (val == -1) {
-        if (infer_dim_index.has_value()) {
-          return false;  // Only one -1 is allowed.
-        }
-        infer_dim_index = i;
-        new_dims.push_back(0);  // Placeholder.
-      } else if (val <= 0) {
+    for (int64_t val : *shape_values) {
+      if (val <= 0 || !base::IsValueInRangeForNumericType<uint32_t>(val)) {
         return false;  // Invalid dimension.
-      } else {
-        if (!base::IsValueInRangeForNumericType<uint32_t>(val)) {
-          return false;
-        }
-        new_dims.push_back(base::checked_cast<uint32_t>(val));
-        new_element_count *= new_dims.back();
       }
+      new_dims.push_back(base::checked_cast<uint32_t>(val));
+      new_element_count *= new_dims.back();
     }
 
     auto input_elements = input->descriptor.NumberOfElements();
@@ -3337,24 +3330,10 @@ bool OperationValidationContext::ValidateDynamicReshape(
       return false;  // Input shape must be concrete at dispatch time.
     }
 
-    if (infer_dim_index.has_value()) {
-      if (!new_element_count.IsValid() || new_element_count.ValueOrDie() == 0) {
-        return false;
-      }
-      size_t known_product = new_element_count.ValueOrDie();
-      if (*input_elements % known_product != 0) {
-        return false;
-      }
-      size_t inferred = *input_elements / known_product;
-      if (!base::IsValueInRangeForNumericType<uint32_t>(inferred)) {
-        return false;
-      }
-      new_dims[*infer_dim_index] = base::checked_cast<uint32_t>(inferred);
-    } else {
-      if (!new_element_count.IsValid() ||
-          new_element_count.ValueOrDie() != *input_elements) {
-        return false;
-      }
+    // Reshape must preserve the total element count.
+    if (!new_element_count.IsValid() ||
+        new_element_count.ValueOrDie() != *input_elements) {
+      return false;
     }
 
     std::vector<Dimension> dimensions(new_dims.begin(), new_dims.end());
@@ -3390,10 +3369,12 @@ bool OperationValidationContext::ValidateDynamicExpand(
     return false;
   }
 
-  // The new_shape operand is a 1-D int64 shape tensor. An unranked operand
-  // (rank unknown) is not a valid 1-D shape tensor.
+  // The new_shape operand is a 1-D uint32 shape tensor (WebNN dimensions are
+  // uint32). An unranked operand (rank unknown) is not a valid 1-D shape
+  // tensor.
   if (new_shape->descriptor.Rank() != 1u ||
-      new_shape->descriptor.data_type() != OperandDataType::kInt64) {
+      !context_properties_->data_type_limits.dynamic_expand_new_shape.data_types
+           .Has(new_shape->descriptor.data_type())) {
     return false;
   }
 
@@ -3475,12 +3456,12 @@ bool OperationValidationContext::ValidateDynamicSlice(
     OperationId operation_id) {
   if (!IsProcessedOperand(op.input_operand_id) ||
       !IsProcessedOperand(op.starts_operand_id) ||
-      !IsProcessedOperand(op.ends_operand_id)) {
+      !IsProcessedOperand(op.sizes_operand_id)) {
     return false;
   }
   NoteInputDependency(op.input_operand_id, operation_id);
   NoteInputDependency(op.starts_operand_id, operation_id);
-  NoteInputDependency(op.ends_operand_id, operation_id);
+  NoteInputDependency(op.sizes_operand_id, operation_id);
 
   if (op.axes_operand_id.has_value()) {
     if (!IsProcessedOperand(*op.axes_operand_id)) {
@@ -3488,42 +3469,44 @@ bool OperationValidationContext::ValidateDynamicSlice(
     }
     NoteInputDependency(*op.axes_operand_id, operation_id);
   }
-  if (op.strides_operand_id.has_value()) {
-    if (!IsProcessedOperand(*op.strides_operand_id)) {
-      return false;
-    }
-    NoteInputDependency(*op.strides_operand_id, operation_id);
-  }
 
   auto* input = GetMojoOperand(op.input_operand_id);
+  auto* starts = GetMojoOperand(op.starts_operand_id);
+  auto* sizes = GetMojoOperand(op.sizes_operand_id);
   auto* output = GetMojoOperand(op.output_operand_id);
-  if (!input || !output || output == input) {
+  if (!input || !starts || !sizes || !output || output == input) {
+    return false;
+  }
+
+  // starts and sizes are 1-D uint32 index tensors (WebNN dimensions are
+  // uint32). The renderer is untrusted, so validate dtype here rather than
+  // relying on the Blink-side check. The backend casts to int64 when lowering
+  // to ONNX.
+  const SupportedTensors& starts_limits =
+      context_properties_->data_type_limits.dynamic_slice_starts;
+  if (!starts_limits.Supports(starts->descriptor) ||
+      !starts_limits.Supports(sizes->descriptor)) {
     return false;
   }
 
   if (infer_output_shapes_) {
     auto starts_values = EvaluateShapeOperand(
         op.starts_operand_id, "dynamicSlice", "starts");
-    auto ends_values = EvaluateShapeOperand(
-        op.ends_operand_id, "dynamicSlice", "ends");
-    if (!starts_values || !ends_values) {
+    auto sizes_values =
+        EvaluateShapeOperand(op.sizes_operand_id, "dynamicSlice", "sizes");
+    if (!starts_values || !sizes_values) {
       return false;
     }
 
     const size_t rank = input->descriptor.Rank().value();
 
-    // Evaluate optional strides.
+    // Like the static slice operator, strides is a build-time constant
+    // attribute. An empty array means the default of all 1s.
     std::vector<int64_t> strides_values;
-    if (op.strides_operand_id.has_value()) {
-      auto evaluated = EvaluateShapeOperand(
-          *op.strides_operand_id, "dynamicSlice", "strides");
-      if (!evaluated) {
-        return false;
-      }
-      strides_values = std::move(*evaluated);
-    } else {
-      // Default strides: all 1s, length matches starts.
+    if (op.strides.empty()) {
       strides_values.assign(starts_values->size(), 1);
+    } else {
+      strides_values.assign(op.strides.begin(), op.strides.end());
     }
 
     // Evaluate optional axes.
@@ -3553,7 +3536,7 @@ bool OperationValidationContext::ValidateDynamicSlice(
     }
 
     const size_t num_slice_dims = starts_values->size();
-    if (ends_values->size() != num_slice_dims ||
+    if (sizes_values->size() != num_slice_dims ||
         strides_values.size() != num_slice_dims) {
       return false;
     }
@@ -3577,31 +3560,16 @@ bool OperationValidationContext::ValidateDynamicSlice(
         }
       }
 
-      int64_t dim_size = static_cast<int64_t>(attributes.sizes[axis]);
+      // starts and sizes are uint32 (non-negative); strides come from the
+      // build-time attribute. `size` is the window span per axis, mirroring the
+      // static slice operator: the sliced range is [start, start + size).
+      // ValidateSliceAndInferOutput performs the bounds and stride checks.
       int64_t start = (*starts_values)[i];
-      int64_t end = (*ends_values)[i];
+      int64_t size = (*sizes_values)[i];
       int64_t stride = strides_values[i];
       if (stride <= 0) {
         return false;
       }
-
-      // Normalize negative indices (ONNX convention: -1 means last element).
-      if (start < 0) {
-        start = std::max(start + dim_size, int64_t{0});
-      }
-      if (end < 0) {
-        end = std::max(end + dim_size, int64_t{0});
-      }
-
-      // Clamp to dimension bounds.
-      start = std::clamp(start, int64_t{0}, dim_size);
-      end = std::clamp(end, int64_t{0}, dim_size);
-
-      if (end <= start) {
-        return false;
-      }
-
-      int64_t size = end - start;
       if (!base::IsValueInRangeForNumericType<uint32_t>(start) ||
           !base::IsValueInRangeForNumericType<uint32_t>(size) ||
           !base::IsValueInRangeForNumericType<uint32_t>(stride)) {
@@ -3645,8 +3613,21 @@ bool OperationValidationContext::ValidateDynamicPad(
   }
 
   auto* input = GetMojoOperand(op.input_operand_id);
+  auto* beginning_operand = GetMojoOperand(op.beginning_padding_operand_id);
+  auto* ending_operand = GetMojoOperand(op.ending_padding_operand_id);
   auto* output = GetMojoOperand(op.output_operand_id);
-  if (!input || !output || output == input) {
+  if (!input || !beginning_operand || !ending_operand || !output ||
+      output == input) {
+    return false;
+  }
+
+  // beginningPadding and endingPadding are 1-D uint32 tensors (WebNN dimensions
+  // are uint32). The renderer is untrusted, so validate dtype here rather than
+  // relying on the Blink-side check. The backend casts to int64 for ONNX Pad.
+  const SupportedTensors& pads_limits =
+      context_properties_->data_type_limits.dynamic_pad_pads;
+  if (!pads_limits.Supports(beginning_operand->descriptor) ||
+      !pads_limits.Supports(ending_operand->descriptor)) {
     return false;
   }
 
@@ -3703,8 +3684,17 @@ bool OperationValidationContext::ValidateDynamicTile(
   NoteInputDependency(op.repetitions_operand_id, operation_id);
 
   auto* input = GetMojoOperand(op.input_operand_id);
+  auto* repetitions = GetMojoOperand(op.repetitions_operand_id);
   auto* output = GetMojoOperand(op.output_operand_id);
-  if (!input || !output || output == input) {
+  if (!input || !repetitions || !output || output == input) {
+    return false;
+  }
+
+  // repetitions is a 1-D uint32 tensor (WebNN dimensions are uint32). The
+  // renderer is untrusted, so validate dtype here rather than relying on the
+  // Blink-side check. The backend casts to int64 for ONNX Tile.
+  if (!context_properties_->data_type_limits.dynamic_tile_repetitions.Supports(
+          repetitions->descriptor)) {
     return false;
   }
 
@@ -3771,7 +3761,16 @@ bool OperationValidationContext::ValidateDynamicSplit(
   NoteInputDependency(op.splits_operand_id, operation_id);
 
   auto* input = GetMojoOperand(op.input_operand_id);
-  if (!input) {
+  auto* splits = GetMojoOperand(op.splits_operand_id);
+  if (!input || !splits) {
+    return false;
+  }
+
+  // splits is a 1-D uint32 tensor (WebNN dimensions are uint32). The renderer
+  // is untrusted, so validate dtype here rather than relying on the Blink-side
+  // check.
+  if (!context_properties_->data_type_limits.dynamic_split_splits.Supports(
+          splits->descriptor)) {
     return false;
   }
 
@@ -3824,17 +3823,48 @@ bool OperationValidationContext::ValidateDynamicSplit(
 bool OperationValidationContext::ValidateDynamicResample2d(
     const mojom::DynamicResample2d& op,
     OperationId operation_id) {
-  if (!IsProcessedOperand(op.input_operand_id) ||
-      !IsProcessedOperand(op.sizes_operand_id)) {
+  if (!IsProcessedOperand(op.input_operand_id)) {
     return false;
   }
   NoteInputDependency(op.input_operand_id, operation_id);
-  NoteInputDependency(op.sizes_operand_id, operation_id);
+
+  // Like the static resample2d operator, exactly one of `sizes_operand_id` or
+  // `scales` is provided. The renderer is untrusted, so reject a message that
+  // provides both or neither.
+  const bool has_sizes = op.sizes_operand_id.has_value();
+  const bool has_scales = !op.scales.empty();
+  if (has_sizes == has_scales) {
+    return false;
+  }
 
   auto* input = GetMojoOperand(op.input_operand_id);
   auto* output = GetMojoOperand(op.output_operand_id);
   if (!input || !output || output == input) {
     return false;
+  }
+
+  const mojom::Operand* sizes_operand = nullptr;
+  if (has_sizes) {
+    if (!IsProcessedOperand(*op.sizes_operand_id)) {
+      return false;
+    }
+    NoteInputDependency(*op.sizes_operand_id, operation_id);
+    sizes_operand = GetMojoOperand(*op.sizes_operand_id);
+    if (!sizes_operand) {
+      return false;
+    }
+    // sizes is a 1-D uint32 tensor (WebNN dimensions are uint32). The renderer
+    // is untrusted, so validate dtype here rather than relying on the
+    // Blink-side check. The backend casts to int64 for ONNX Resize.
+    if (!context_properties_->data_type_limits.dynamic_resample_2d_sizes
+             .Supports(sizes_operand->descriptor)) {
+      return false;
+    }
+  } else {
+    // scales must have exactly two positive entries (one per resample axis).
+    if (op.scales.size() != 2 || op.scales[0] <= 0 || op.scales[1] <= 0) {
+      return false;
+    }
   }
 
   // Input must be 4-D and output must have the same rank and data type. An
@@ -3851,26 +3881,32 @@ bool OperationValidationContext::ValidateDynamicResample2d(
   }
 
   if (infer_output_shapes_) {
-    auto sizes_values = EvaluateShapeOperand(
-        op.sizes_operand_id, "dynamicResample2d", "sizes");
-    if (!sizes_values || sizes_values->size() != 2) {
-      return false;
-    }
-
-    // Convert int64 sizes to uint32.
-    std::vector<uint32_t> sizes(2);
-    for (size_t i = 0; i < 2; ++i) {
-      int64_t val = (*sizes_values)[i];
-      if (val <= 0 || !base::IsValueInRangeForNumericType<uint32_t>(val)) {
+    std::array<uint32_t, 2> axes = {op.axes[0], op.axes[1]};
+    base::expected<OperandDescriptor, std::string> validated_output;
+    if (has_sizes) {
+      auto sizes_values = EvaluateShapeOperand(*op.sizes_operand_id,
+                                               "dynamicResample2d", "sizes");
+      if (!sizes_values || sizes_values->size() != 2) {
         return false;
       }
-      sizes[i] = base::checked_cast<uint32_t>(val);
-    }
 
-    std::array<uint32_t, 2> axes = {op.axes[0], op.axes[1]};
-    auto validated_output = ValidateResample2dAndInferOutput(
-        *context_properties_, input->descriptor,
-        base::span<const uint32_t>(sizes), axes, op.label);
+      // Convert int64 sizes to uint32.
+      std::vector<uint32_t> sizes(2);
+      for (size_t i = 0; i < 2; ++i) {
+        int64_t val = (*sizes_values)[i];
+        if (val <= 0 || !base::IsValueInRangeForNumericType<uint32_t>(val)) {
+          return false;
+        }
+        sizes[i] = base::checked_cast<uint32_t>(val);
+      }
+      validated_output = ValidateResample2dAndInferOutput(
+          *context_properties_, input->descriptor,
+          base::span<const uint32_t>(sizes), axes, op.label);
+    } else {
+      validated_output = ValidateResample2dAndInferOutput(
+          *context_properties_, input->descriptor,
+          base::span<const float>(op.scales), axes, op.label);
+    }
     if (!validated_output.has_value()) {
       return false;
     }

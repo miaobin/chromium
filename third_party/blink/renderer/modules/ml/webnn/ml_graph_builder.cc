@@ -41,6 +41,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_transpose_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_cumulative_sum_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_slice_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_elu_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_flatten_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gather_options.h"
@@ -1523,13 +1524,11 @@ Vector<webnn::OperandId> GetInputs(const blink_mojom::Operation& operation) {
       Vector<webnn::OperandId> ids = {
           operation.get_dynamic_slice()->input_operand_id,
           operation.get_dynamic_slice()->starts_operand_id,
-          operation.get_dynamic_slice()->ends_operand_id};
+          operation.get_dynamic_slice()->sizes_operand_id};
       if (operation.get_dynamic_slice()->axes_operand_id) {
         ids.push_back(*operation.get_dynamic_slice()->axes_operand_id);
       }
-      if (operation.get_dynamic_slice()->strides_operand_id) {
-        ids.push_back(*operation.get_dynamic_slice()->strides_operand_id);
-      }
+      // strides is a build-time constant attribute, not an operand.
       return ids;
     }
     case blink_mojom::Operation::Tag::kDynamicPad: {
@@ -1546,9 +1545,15 @@ Vector<webnn::OperandId> GetInputs(const blink_mojom::Operation& operation) {
     case blink_mojom::Operation::Tag::kDynamicSplit:
       return {operation.get_dynamic_split()->input_operand_id,
               operation.get_dynamic_split()->splits_operand_id};
-    case blink_mojom::Operation::Tag::kDynamicResample2d:
-      return {operation.get_dynamic_resample_2d()->input_operand_id,
-              operation.get_dynamic_resample_2d()->sizes_operand_id};
+    case blink_mojom::Operation::Tag::kDynamicResample2d: {
+      Vector<webnn::OperandId> ids = {
+          operation.get_dynamic_resample_2d()->input_operand_id};
+      // sizes is an optional operand (absent when scales is used instead).
+      if (operation.get_dynamic_resample_2d()->sizes_operand_id) {
+        ids.push_back(*operation.get_dynamic_resample_2d()->sizes_operand_id);
+      }
+      return ids;
+    }
     case blink_mojom::Operation::Tag::kDynamicTile:
       return {operation.get_dynamic_tile()->input_operand_id,
               operation.get_dynamic_tile()->repetitions_operand_id};
@@ -3787,11 +3792,12 @@ MLOperand* MLGraphBuilder::dynamicReshape(MLOperand* input,
   HeapVector<Member<MLOperand>> inputs = {input, new_shape};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
-  // new_shape must be a 1-D int64 tensor.
+  // new_shape must be a 1-D uint32 tensor. WebNN dimensions are uint32; the
+  // backend casts to int64 when lowering to ONNX Reshape.
   if (new_shape->Descriptor().Rank().value() != 1 ||
-      new_shape->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+      new_shape->Descriptor().data_type() != webnn::OperandDataType::kUint32) {
     exception_state.ThrowTypeError(
-        "The new_shape operand must be a 1-D int64 tensor.");
+        "The new_shape operand must be a 1-D uint32 tensor.");
     return nullptr;
   }
 
@@ -3839,10 +3845,12 @@ MLOperand* MLGraphBuilder::dynamicExpand(MLOperand* input,
   HeapVector<Member<MLOperand>> inputs = {input, new_shape};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
+  // new_shape must be a 1-D uint32 tensor. WebNN dimensions are uint32; the
+  // backend casts to int64 when lowering to ONNX Expand.
   if (new_shape->Descriptor().Rank().value() != 1 ||
-      new_shape->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+      new_shape->Descriptor().data_type() != webnn::OperandDataType::kUint32) {
     exception_state.ThrowTypeError(
-        "The new_shape operand must be a 1-D int64 tensor.");
+        "The new_shape operand must be a 1-D uint32 tensor.");
     return nullptr;
   }
 
@@ -3880,32 +3888,30 @@ MLOperand* MLGraphBuilder::dynamicExpand(MLOperand* input,
 
 MLOperand* MLGraphBuilder::dynamicSlice(MLOperand* input,
                                         MLOperand* starts,
-                                        MLOperand* ends,
-                                        MLOperatorOptions* options,
+                                        MLOperand* sizes,
+                                        MLDynamicSliceOptions* options,
                                         ExceptionState& exception_state) {
   THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
 
-  HeapVector<Member<MLOperand>> inputs = {input, starts, ends};
+  HeapVector<Member<MLOperand>> inputs = {input, starts, sizes};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
-  // starts and ends must be 1-D int32 or int64 tensors. ONNX Slice allows
-  // either; the shape-folding interpreter and the native ONNX Slice emitted at
-  // dispatch both handle int32, so accept it here rather than forcing int64.
-  auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
+  // starts and sizes must be 1-D uint32 tensors. Like the static slice
+  // operator, `sizes` is the window span per axis (the sliced range is
+  // [start, start + size)), not an end index. WebNN dimensions and indices are
+  // uint32; the backend casts to int64 when lowering to ONNX Slice.
+  auto is_1d_uint32 = [](const MLOperand* operand) {
     return operand->Descriptor().Rank().value() == 1 &&
-           (operand->Descriptor().data_type() ==
-                webnn::OperandDataType::kInt32 ||
-            operand->Descriptor().data_type() ==
-                webnn::OperandDataType::kInt64);
+           operand->Descriptor().data_type() == webnn::OperandDataType::kUint32;
   };
-  if (!is_1d_int32_or_int64(starts)) {
+  if (!is_1d_uint32(starts)) {
     exception_state.ThrowTypeError(
-        "The starts operand must be a 1-D int32 or int64 tensor.");
+        "The starts operand must be a 1-D uint32 tensor.");
     return nullptr;
   }
-  if (!is_1d_int32_or_int64(ends)) {
+  if (!is_1d_uint32(sizes)) {
     exception_state.ThrowTypeError(
-        "The ends operand must be a 1-D int32 or int64 tensor.");
+        "The sizes operand must be a 1-D uint32 tensor.");
     return nullptr;
   }
 
@@ -3948,26 +3954,21 @@ MLOperand* MLGraphBuilder::dynamicPad(MLOperand* input,
                                           ending_padding};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
-  // beginningPadding and endingPadding must each be a 1-D int32 or int64
-  // tensor of length input_rank. ONNX Pad requires int64, but tf2onnx models
-  // often produce int32 pads (and int32 is preferred for backends like CoreML
-  // that lack int64); the int64 cast is inserted at dispatch by the service
-  // backend, so accept either here.
-  auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
+  // beginningPadding and endingPadding must each be a 1-D uint32 tensor of
+  // length input_rank. WebNN dimensions are uint32; the backend casts to int64
+  // when lowering to ONNX Pad.
+  auto is_1d_uint32 = [](const MLOperand* operand) {
     return operand->Descriptor().Rank().value() == 1 &&
-           (operand->Descriptor().data_type() ==
-                webnn::OperandDataType::kInt32 ||
-            operand->Descriptor().data_type() ==
-                webnn::OperandDataType::kInt64);
+           operand->Descriptor().data_type() == webnn::OperandDataType::kUint32;
   };
-  if (!is_1d_int32_or_int64(beginning_padding)) {
+  if (!is_1d_uint32(beginning_padding)) {
     exception_state.ThrowTypeError(
-        "The beginningPadding operand must be a 1-D int32 or int64 tensor.");
+        "The beginningPadding operand must be a 1-D uint32 tensor.");
     return nullptr;
   }
-  if (!is_1d_int32_or_int64(ending_padding)) {
+  if (!is_1d_uint32(ending_padding)) {
     exception_state.ThrowTypeError(
-        "The endingPadding operand must be a 1-D int32 or int64 tensor.");
+        "The endingPadding operand must be a 1-D uint32 tensor.");
     return nullptr;
   }
 
@@ -4006,20 +4007,16 @@ MLOperand* MLGraphBuilder::dynamicTile(MLOperand* input,
   HeapVector<Member<MLOperand>> inputs = {input, repetitions};
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
-  // repetitions must be a 1-D int32 or int64 tensor of length input_rank. ONNX
-  // Tile requires int64, but models may emit int32 (and int32 is preferred for
-  // backends like CoreML that lack int64); the int64 cast is inserted at
-  // dispatch by the service backend, so accept either here.
-  auto is_1d_int32_or_int64 = [](const MLOperand* operand) {
+  // repetitions must be a 1-D uint32 tensor of length input_rank. WebNN
+  // dimensions are uint32; the backend casts to int64 when lowering to ONNX
+  // Tile.
+  auto is_1d_uint32 = [](const MLOperand* operand) {
     return operand->Descriptor().Rank().value() == 1 &&
-           (operand->Descriptor().data_type() ==
-                webnn::OperandDataType::kInt32 ||
-            operand->Descriptor().data_type() ==
-                webnn::OperandDataType::kInt64);
+           operand->Descriptor().data_type() == webnn::OperandDataType::kUint32;
   };
-  if (!is_1d_int32_or_int64(repetitions)) {
+  if (!is_1d_uint32(repetitions)) {
     exception_state.ThrowTypeError(
-        "The repetitions operand must be a 1-D int32 or int64 tensor.");
+        "The repetitions operand must be a 1-D uint32 tensor.");
     return nullptr;
   }
 
@@ -4061,11 +4058,12 @@ HeapVector<Member<MLOperand>> MLGraphBuilder::dynamicSplit(
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs),
                                  HeapVector<Member<MLOperand>>());
 
-  // splits must be a 1-D int64 tensor.
+  // splits must be a 1-D uint32 tensor. WebNN dimensions are uint32; the
+  // backend casts to int64 when lowering to ONNX Split.
   if (splits->Descriptor().Rank().value() != 1 ||
-      splits->Descriptor().data_type() != webnn::OperandDataType::kInt64) {
+      splits->Descriptor().data_type() != webnn::OperandDataType::kUint32) {
     exception_state.ThrowTypeError(
-        "The splits operand must be a 1-D int64 tensor.");
+        "The splits operand must be a 1-D uint32 tensor.");
     return {};
   }
   if (num_outputs == 0) {
@@ -4109,12 +4107,15 @@ HeapVector<Member<MLOperand>> MLGraphBuilder::dynamicSplit(
 
 MLOperand* MLGraphBuilder::dynamicResample2d(
     MLOperand* input,
-    MLOperand* sizes,
     MLDynamicResample2dOptions* options,
     ExceptionState& exception_state) {
   THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(), nullptr);
 
-  HeapVector<Member<MLOperand>> inputs = {input, sizes};
+  HeapVector<Member<MLOperand>> inputs = {input};
+  // sizes is an optional operand carried in the options (like conv2d's bias).
+  if (options->hasSizes()) {
+    THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInput(options->sizes()), nullptr);
+  }
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs), nullptr);
 
   // Input must be a 4-D tensor.
@@ -4124,19 +4125,41 @@ MLOperand* MLGraphBuilder::dynamicResample2d(
     return nullptr;
   }
 
-  // Sizes must be a 1-D int32/uint32/int64 tensor of length 2.
-  const auto sizes_dt = sizes->Descriptor().data_type();
-  const auto sizes_shape = sizes->Descriptor().shape();
-  const auto* sizes_static_len =
-      sizes_shape.size() == 1 ? std::get_if<uint32_t>(&sizes_shape[0]) : nullptr;
-  if (sizes_shape.size() != 1 || !sizes_static_len || *sizes_static_len != 2 ||
-      (sizes_dt != webnn::OperandDataType::kInt32 &&
-       sizes_dt != webnn::OperandDataType::kUint32 &&
-       sizes_dt != webnn::OperandDataType::kInt64)) {
+  // Like the static resample2d operator, exactly one of sizes or scales is
+  // provided. sizes is the dynamic (runtime operand) path; scales is a
+  // build-time constant.
+  if (options->hasSizes() == options->hasScales()) {
     exception_state.ThrowTypeError(
-        "The sizes operand must be a 1-D int32/uint32/int64 tensor of length "
-        "2.");
+        "Exactly one of sizes or scales must be specified.");
     return nullptr;
+  }
+
+  if (options->hasSizes()) {
+    // sizes must be a 1-D uint32 tensor of length 2. WebNN dimensions are
+    // uint32; the backend casts to int64 when lowering to ONNX Resize.
+    const MLOperand* sizes = options->sizes();
+    const auto sizes_dt = sizes->Descriptor().data_type();
+    const auto sizes_shape = sizes->Descriptor().shape();
+    const auto* sizes_static_len = sizes_shape.size() == 1
+                                       ? std::get_if<uint32_t>(&sizes_shape[0])
+                                       : nullptr;
+    if (sizes_shape.size() != 1 || !sizes_static_len ||
+        *sizes_static_len != 2 || sizes_dt != webnn::OperandDataType::kUint32) {
+      exception_state.ThrowTypeError(
+          "The sizes operand must be a 1-D uint32 tensor of length 2.");
+      return nullptr;
+    }
+  } else {
+    // scales must be a sequence of length 2 of positive values.
+    if (options->scales().size() != 2) {
+      exception_state.ThrowTypeError(
+          "The scales must contain exactly 2 values.");
+      return nullptr;
+    }
+    if (options->scales()[0] <= 0 || options->scales()[1] <= 0) {
+      exception_state.ThrowTypeError("The scales must be greater than 0.");
+      return nullptr;
+    }
   }
 
   // Resolve axes (default is [2, 3]).

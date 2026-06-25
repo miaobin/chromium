@@ -1434,18 +1434,21 @@ struct DynamicExpand {
   string label;
 };
 
-// Represents a dynamic slice operation where starts, ends, axes and strides
-// are provided as operands rather than static attributes.
+// Represents a dynamic slice operation where starts and sizes are provided as
+// operands rather than static attributes. This mirrors the static slice
+// operator: `sizes` is the window span per axis (not an end index), so the
+// sliced range is [start, start + size) subsampled by stride.
 struct DynamicSlice {
   OperandId input_operand_id;
-  // 1-D int64 tensor specifying the start indices.
+  // 1-D uint32 tensor specifying the start indices.
   OperandId starts_operand_id;
-  // 1-D int64 tensor specifying the end indices.
-  OperandId ends_operand_id;
-  // Optional 1-D int64 tensor specifying the axes.
+  // 1-D uint32 tensor specifying the window size (span) for each axis.
+  OperandId sizes_operand_id;
+  // Optional 1-D uint32 tensor specifying the axes.
   OperandId? axes_operand_id;
-  // Optional 1-D int64 tensor specifying the strides.
-  OperandId? strides_operand_id;
+  // Per-axis strides. Like the static slice operator, strides are a build-time
+  // constant attribute (not an operand). Empty means the default of all 1s.
+  array<uint32> strides;
   OperandId output_operand_id;
   string label;
 };
@@ -1495,17 +1498,22 @@ struct DynamicSplit {
   string label;
 };
 
-// Represents a dynamic resample2d operation where the target sizes along the
-// two resample axes are provided as an operand instead of a build-time
-// constant. Input is always 4-D; output has the same rank and the same data
-// type. Dimensions not listed in `axes` keep their input sizes; dimensions
-// listed in `axes` take on the values from `sizes_operand_id` (which is a
-// 1-D int32/uint32/int64 tensor of length 2, entries > 0).
+// Represents a dynamic resample2d operation. Input is always 4-D; output has
+// the same rank and the same data type. Like the static resample2d operator,
+// exactly one of `sizes_operand_id` or `scales` is provided:
+//   - `sizes_operand_id`: a 1-D uint32 tensor of length 2 giving the new sizes
+//     for the two resample axes at runtime (this is the "dynamic" part).
+//   - `scales`: a build-time constant of length 2 giving the scaling factor
+//     for the two resample axes.
+// Dimensions not listed in `axes` keep their input sizes.
 struct DynamicResample2d {
   OperandId input_operand_id;
-  // 1-D tensor of length 2 specifying the new sizes for the two resample
-  // axes.
-  OperandId sizes_operand_id;
+  // 1-D uint32 tensor of length 2 specifying the new sizes for the two resample
+  // axes. Null when `scales` is used instead.
+  OperandId? sizes_operand_id;
+  // The scaling factor for the two resample axes. Empty when `sizes_operand_id`
+  // is used instead.
+  array<float> scales;
   // The two consecutive dimensions of the input tensor to which the
   // interpolation algorithm applies.
   array<uint32, 2> axes;

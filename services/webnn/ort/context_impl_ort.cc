@@ -475,50 +475,46 @@ ContextProperties ContextImplOrt::GetContextProperties(
        {kFloat16To32Int32To64, SupportedRanks::Exactly(1)},
        /*shape_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
+       // WebNN dimensions are uint32, so shape-vector operands (and the shape
+       // output) are uint32-only. The ORT backend casts to/from int64 as ONNX
+       // requires.
        /*shape_output=*/
-       {SupportedDataTypes{OperandDataType::kInt64, OperandDataType::kInt32,
-                           OperandDataType::kUint32},
+       {SupportedDataTypes{OperandDataType::kUint32},
         SupportedRanks::Exactly(1)},
        /*dynamic_reshape_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
        /*dynamic_reshape_new_shape=*/
-       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
-                           OperandDataType::kInt64},
+       {SupportedDataTypes{OperandDataType::kUint32},
         SupportedRanks::Exactly(1)},
        /*dynamic_expand_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
        /*dynamic_expand_new_shape=*/
-       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
-                           OperandDataType::kInt64},
+       {SupportedDataTypes{OperandDataType::kUint32},
         SupportedRanks::Exactly(1)},
        /*dynamic_slice_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
        /*dynamic_slice_starts=*/
-       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kInt64},
+       {SupportedDataTypes{OperandDataType::kUint32},
         SupportedRanks::Exactly(1)},
        /*dynamic_pad_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
        /*dynamic_pad_pads=*/
-       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
-                           OperandDataType::kInt64},
+       {SupportedDataTypes{OperandDataType::kUint32},
         SupportedRanks::Exactly(1)},
        /*dynamic_split_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxNonScalarRank},
        /*dynamic_split_splits=*/
-       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
-                           OperandDataType::kInt64},
+       {SupportedDataTypes{OperandDataType::kUint32},
         SupportedRanks::Exactly(1)},
        /*dynamic_resample_2d_input=*/
        {kFloat16To32Uint8Int8To32, SupportedRanks::Exactly(4)},
        /*dynamic_resample_2d_sizes=*/
-       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
-                           OperandDataType::kInt64},
+       {SupportedDataTypes{OperandDataType::kUint32},
         SupportedRanks::Exactly(1)},
        /*dynamic_tile_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},
        /*dynamic_tile_repetitions=*/
-       {SupportedDataTypes{OperandDataType::kInt32, OperandDataType::kUint32,
-                           OperandDataType::kInt64},
+       {SupportedDataTypes{OperandDataType::kUint32},
         SupportedRanks::Exactly(1)},
        /*squeeze_input=*/
        {DataTypeConstraint::kAllDataTypesAtLeast8bits, kMaxRank},

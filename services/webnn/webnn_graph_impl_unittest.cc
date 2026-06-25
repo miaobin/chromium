@@ -8308,9 +8308,9 @@ TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicReshapeTest) {
   const OperandId input_id =
       builder.BuildDynamicInput("input", kInputShape, kDataType);
 
-  // shape(input) → shape_out [2] int64
+  // shape(input) → shape_out [2] uint32 (WebNN dimensions are uint32)
   const OperandId shape_out_id =
-      builder.BuildIntermediateOperand({2}, OperandDataType::kInt64);
+      builder.BuildIntermediateOperand({2}, OperandDataType::kUint32);
   builder.BuildShape(input_id, shape_out_id);
 
   // constant indices [1] int32 = {0}
@@ -8318,19 +8318,19 @@ TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicReshapeTest) {
   const OperandId indices_id = builder.BuildConstant(
       {1}, OperandDataType::kInt32, base::as_bytes(base::span(gather_indices)));
 
-  // gather(shape_out, indices) → batch_val [1] int64
+  // gather(shape_out, indices) → batch_val [1] uint32
   const OperandId batch_val_id =
-      builder.BuildIntermediateOperand({1}, OperandDataType::kInt64);
+      builder.BuildIntermediateOperand({1}, OperandDataType::kUint32);
   builder.BuildGather(shape_out_id, indices_id, batch_val_id, /*axis=*/0);
 
-  // constant [2] int64 = {28, 28}
-  const std::vector<int64_t> spatial_dims = {28, 28};
+  // constant [2] uint32 = {28, 28}
+  const std::vector<uint32_t> spatial_dims = {28, 28};
   const OperandId spatial_const_id = builder.BuildConstant(
-      {2}, OperandDataType::kInt64, base::as_bytes(base::span(spatial_dims)));
+      {2}, OperandDataType::kUint32, base::as_bytes(base::span(spatial_dims)));
 
-  // concat([batch_val, spatial_const]) → new_shape [3] int64
+  // concat([batch_val, spatial_const]) → new_shape [3] uint32
   const OperandId new_shape_id =
-      builder.BuildIntermediateOperand({3}, OperandDataType::kInt64);
+      builder.BuildIntermediateOperand({3}, OperandDataType::kUint32);
   builder.BuildConcat({batch_val_id, spatial_const_id}, new_shape_id,
                       /*axis=*/0);
 
@@ -8468,19 +8468,19 @@ TEST_F(WebNNGraphImplTest, ComputeShapesDynamicReshapeTest) {
   const OperandId input_id =
       builder.BuildDynamicInput("input", kInputShape, kDataType);
   const OperandId shape_out_id =
-      builder.BuildIntermediateOperand({2}, OperandDataType::kInt64);
+      builder.BuildIntermediateOperand({2}, OperandDataType::kUint32);
   builder.BuildShape(input_id, shape_out_id);
   const std::vector<int32_t> gather_indices = {0};
   const OperandId indices_id = builder.BuildConstant(
       {1}, OperandDataType::kInt32, base::as_bytes(base::span(gather_indices)));
   const OperandId batch_val_id =
-      builder.BuildIntermediateOperand({1}, OperandDataType::kInt64);
+      builder.BuildIntermediateOperand({1}, OperandDataType::kUint32);
   builder.BuildGather(shape_out_id, indices_id, batch_val_id, /*axis=*/0);
-  const std::vector<int64_t> spatial_dims = {28, 28};
+  const std::vector<uint32_t> spatial_dims = {28, 28};
   const OperandId spatial_const_id = builder.BuildConstant(
-      {2}, OperandDataType::kInt64, base::as_bytes(base::span(spatial_dims)));
+      {2}, OperandDataType::kUint32, base::as_bytes(base::span(spatial_dims)));
   const OperandId new_shape_id =
-      builder.BuildIntermediateOperand({3}, OperandDataType::kInt64);
+      builder.BuildIntermediateOperand({3}, OperandDataType::kUint32);
   builder.BuildConcat({batch_val_id, spatial_const_id}, new_shape_id,
                       /*axis=*/0);
   const std::vector<Dimension> kOutputShape = {batch_dim, Dimension(28u),
@@ -8588,89 +8588,6 @@ TEST_F(WebNNGraphImplTest, ComputeShapesStaticGraphTest) {
   }
 }
 
-// Test dispatch-time re-validation with DynamicReshape using -1 (infer dim).
-// Graph: input[batch, 3, 224, 224] → dynamicReshape(input, [batch, -1])
-// The -1 dimension is inferred from the total element count.
-TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicReshapeInferDimTest) {
-  auto context_properties = GetContextPropertiesForTesting();
-  const OperandDataType kDataType = OperandDataType::kFloat32;
-
-  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
-  GraphInfoBuilder builder(remote);
-
-  const DynamicDimension batch_dim{/*name=*/"batch"};
-
-  const std::vector<Dimension> kInputShape = {batch_dim, Dimension(3u),
-                                              Dimension(224u), Dimension(224u)};
-  const OperandId input_id =
-      builder.BuildDynamicInput("input", kInputShape, kDataType);
-
-  const OperandId shape_out_id =
-      builder.BuildIntermediateOperand({4}, OperandDataType::kInt64);
-  builder.BuildShape(input_id, shape_out_id);
-
-  const std::vector<int32_t> gather_indices = {0};
-  const OperandId indices_id = builder.BuildConstant(
-      {1}, OperandDataType::kInt32, base::as_bytes(base::span(gather_indices)));
-
-  const OperandId batch_val_id =
-      builder.BuildIntermediateOperand({1}, OperandDataType::kInt64);
-  builder.BuildGather(shape_out_id, indices_id, batch_val_id, /*axis=*/0);
-
-  const std::vector<int64_t> neg_one = {-1};
-  const OperandId neg_one_id = builder.BuildConstant(
-      {1}, OperandDataType::kInt64, base::as_bytes(base::span(neg_one)));
-
-  const OperandId new_shape_id =
-      builder.BuildIntermediateOperand({2}, OperandDataType::kInt64);
-  builder.BuildConcat({batch_val_id, neg_one_id}, new_shape_id, /*axis=*/0);
-
-  const std::vector<Dimension> kOutputShape = {batch_dim,
-                                               Dimension(3u * 224u * 224u)};
-  const OperandId output_id =
-      builder.BuildDynamicOutput("output", kOutputShape, kDataType);
-  builder.BuildDynamicReshape(input_id, new_shape_id, output_id);
-
-  ASSERT_TRUE(builder.IsValidGraphForTesting(context_properties));
-
-  base::test::TestFuture<
-      base::expected<mojom::CreateGraphSuccessPtr, mojom::ErrorPtr>>
-      create_graph_future;
-  remote->CreateGraph(builder.TakeGraphInfo(),
-                      create_graph_future.GetCallback());
-  auto create_graph_result = create_graph_future.Take();
-  ASSERT_TRUE(create_graph_result.has_value());
-  mojo::Remote<mojom::WebNNGraph> webnn_graph;
-  webnn_graph.Bind(std::move(create_graph_result.value()->graph_remote));
-  blink::WebNNGraphToken graph_token = create_graph_result.value()->graph_token;
-
-  auto dispatch_and_validate =
-      [&](const std::vector<uint32_t>& input_shape,
-          const std::vector<uint32_t>& output_shape) -> bool {
-    auto input_tensor =
-        CreateWebNNTensor(webnn_context(), kDataType, input_shape);
-    auto output_tensor =
-        CreateWebNNTensor(webnn_context(), kDataType, output_shape);
-
-    bool valid = true;
-    mojo::SetDefaultProcessErrorHandler(base::BindLambdaForTesting(
-        [&](const std::string& error_message) { valid = false; }));
-
-    webnn_context().FlushForTesting();
-    webnn_context()->Dispatch(graph_token,
-                              {{"input", input_tensor.webnn_handle}},
-                              {{"output", output_tensor.webnn_handle}});
-    webnn_context().FlushForTesting();
-    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
-    return valid;
-  };
-
-  // Valid: batch=2, input [2,3,224,224] → output [2, 150528].
-  EXPECT_TRUE(dispatch_and_validate({2, 3, 224, 224}, {2, 150528}));
-  // Invalid: wrong output shape — user provides [2, 3, 50176].
-  EXPECT_FALSE(dispatch_and_validate({2, 3, 224, 224}, {2, 3, 50176}));
-}
-
 // Test dispatch with DynamicExpand: broadcast a scalar across a dynamic shape.
 // Graph: input[batch, 1] → shape(input) → dynamicExpand(scalar, shape_out)
 TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicExpandTest) {
@@ -8690,9 +8607,9 @@ TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicExpandTest) {
   const OperandId scalar_input_id =
       builder.BuildInput("scalar_input", {1, 1}, kDataType);
 
-  // shape(target_input) → shape_out [2] int64
+  // shape(target_input) → shape_out [2] uint32 (WebNN dimensions are uint32)
   const OperandId shape_out_id =
-      builder.BuildIntermediateOperand({2}, OperandDataType::kInt64);
+      builder.BuildIntermediateOperand({2}, OperandDataType::kUint32);
   builder.BuildShape(target_input_id, shape_out_id);
 
   // dynamicExpand(scalar_input, shape_out) → output [batch, 10]

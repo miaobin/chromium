@@ -56,6 +56,7 @@ class MLDynamicResample2dOptions;
 class MLReverseOptions;
 class MLScatterOptions;
 class MLSliceOptions;
+class MLDynamicSliceOptions;
 class MLSplitOptions;
 class MLSqueezeOptions;
 class MLFlattenOptions;
@@ -569,8 +570,8 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
 
   MLOperand* dynamicSlice(MLOperand* input,
                           MLOperand* starts,
-                          MLOperand* ends,
-                          MLOperatorOptions* options,
+                          MLOperand* sizes,
+                          MLDynamicSliceOptions* options,
                           ExceptionState& exception_state);
 
   MLOperand* dynamicPad(MLOperand* input,
@@ -591,7 +592,6 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                                              ExceptionState& exception_state);
 
   MLOperand* dynamicResample2d(MLOperand* input,
-                               MLOperand* sizes,
                                MLDynamicResample2dOptions* options,
                                ExceptionState& exception_state);
 

@@ -3678,7 +3678,21 @@ void GraphBuilderOrt::AddShapeOperation(const mojom::Shape& shape) {
   CHECK(context_properties_.data_type_limits.shape_input.Supports(
       GetOperand(shape.input_operand_id).descriptor));
 
-  AddUnaryOperation(shape, "Shape");
+  // ONNX Shape always emits an int64 tensor, but the WebNN shape output is
+  // uint32 (WebNN dimensions are uint32). Emit Shape into an int64 intermediate
+  // and cast it to the uint32 output. Dimensions always fit in uint32, so the
+  // narrowing cast is lossless.
+  const OperandDataType output_data_type =
+      GetOperand(shape.output_operand_id).descriptor.data_type();
+  CHECK_EQ(output_data_type, OperandDataType::kUint32);
+
+  const std::string node_name = GenerateNodeName(shape.label);
+  const std::string int64_output = GenerateOperandName();
+  std::array<const char*, 1> inputs = {input.c_str()};
+  std::array<const char*, 1> outputs = {int64_output.c_str()};
+  model_editor_.AddNode(kOpTypeShape, node_name, inputs, outputs);
+
+  InsertCastNode(int64_output, output, WebnnToOnnxDataType(output_data_type));
 }
 
 void GraphBuilderOrt::AddScatterElementsOperation(
@@ -4105,7 +4119,16 @@ void GraphBuilderOrt::AddDynamicReshapeOperation(
   const std::string new_shape = GetOperandNameById(op.new_shape_operand_id);
   const std::string output = GetOperandNameById(op.output_operand_id);
 
-  std::array<const char*, 2> inputs = {input.c_str(), new_shape.c_str()};
+  // ONNX Reshape's `shape` input must be int64, but the WebNN new_shape operand
+  // is uint32 (WebNN dimensions are uint32). Cast if needed.
+  std::string new_shape_int64 = new_shape;
+  if (GetOperand(op.new_shape_operand_id).descriptor.data_type() !=
+      OperandDataType::kInt64) {
+    new_shape_int64 =
+        CreateCastNode(new_shape, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+  }
+
+  std::array<const char*, 2> inputs = {input.c_str(), new_shape_int64.c_str()};
   std::array<const char*, 1> outputs_arr = {output.c_str()};
 
   model_editor_.AddNode(kOpTypeReshape, node_name, inputs, outputs_arr);
@@ -4118,7 +4141,16 @@ void GraphBuilderOrt::AddDynamicExpandOperation(
   const std::string new_shape = GetOperandNameById(op.new_shape_operand_id);
   const std::string output = GetOperandNameById(op.output_operand_id);
 
-  std::array<const char*, 2> inputs = {input.c_str(), new_shape.c_str()};
+  // ONNX Expand's `shape` input must be int64, but the WebNN new_shape operand
+  // is uint32 (WebNN dimensions are uint32). Cast if needed.
+  std::string new_shape_int64 = new_shape;
+  if (GetOperand(op.new_shape_operand_id).descriptor.data_type() !=
+      OperandDataType::kInt64) {
+    new_shape_int64 =
+        CreateCastNode(new_shape, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+  }
+
+  std::array<const char*, 2> inputs = {input.c_str(), new_shape_int64.c_str()};
   std::array<const char*, 1> outputs_arr = {output.c_str()};
 
   model_editor_.AddNode(kOpTypeExpand, node_name, inputs, outputs_arr);
@@ -4128,25 +4160,56 @@ void GraphBuilderOrt::AddDynamicSliceOperation(
     const mojom::DynamicSlice& op) {
   const std::string node_name = GenerateNodeName(op.label);
   const std::string input = GetOperandNameById(op.input_operand_id);
-  const std::string starts = GetOperandNameById(op.starts_operand_id);
-  const std::string ends = GetOperandNameById(op.ends_operand_id);
+
+  // ONNX Slice's index inputs (starts, ends, axes, steps) must all share one
+  // integer type, but the WebNN starts/sizes operands are uint32 (WebNN
+  // dimensions are uint32). Cast each index operand to int64 if needed. The
+  // cast-result strings must outlive the AddNode call below, so hold them in
+  // locals.
+  auto to_int64 = [&](OperandId operand_id) -> std::string {
+    const std::string name = GetOperandNameById(operand_id);
+    if (GetOperand(operand_id).descriptor.data_type() !=
+        OperandDataType::kInt64) {
+      return CreateCastNode(name, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+    }
+    return name;
+  };
+
+  const std::string starts = to_int64(op.starts_operand_id);
+  const std::string sizes = to_int64(op.sizes_operand_id);
+
+  // WebNN's `sizes` is the window span per axis (mirroring the static slice
+  // operator), but ONNX Slice takes end indices. Emit `ends = starts + sizes`
+  // with an Add node. Out-of-bounds ends are guaranteed against by the service
+  // validation (ValidateSliceAndInferOutput checks start + size <= dim), and
+  // ONNX Slice additionally clamps ends to the dimension size.
+  const std::string ends = GenerateOperandName();
+  {
+    const std::string add_node_name = GenerateNodeName(base::JoinString(
+        {kInserted, kOpTypeAdd, kToEmulate, node_name}, kUnderscore));
+    std::array<const char*, 2> add_inputs = {starts.c_str(), sizes.c_str()};
+    std::array<const char*, 1> add_outputs = {ends.c_str()};
+    model_editor_.AddNode(kOpTypeAdd, add_node_name, add_inputs, add_outputs);
+  }
 
   // ONNX Slice: inputs are data, starts, ends, [axes], [steps]
   std::vector<const char*> slice_inputs = {input.c_str(), starts.c_str(),
                                            ends.c_str()};
 
-  std::string axes, strides;
+  std::string axes, steps;
   if (op.axes_operand_id.has_value()) {
-    axes = GetOperandNameById(*op.axes_operand_id);
+    axes = to_int64(*op.axes_operand_id);
     slice_inputs.push_back(axes.c_str());
   }
-  if (op.strides_operand_id.has_value()) {
+  // Like the static slice operator, strides is a build-time constant attribute.
+  // An empty array means the default of all 1s (omit the optional `steps`).
+  if (!op.strides.empty()) {
     if (!op.axes_operand_id.has_value()) {
-      // Need an empty string for axes if strides are provided but axes are not.
+      // Need an empty string for axes if steps are provided but axes are not.
       slice_inputs.push_back("");
     }
-    strides = GetOperandNameById(*op.strides_operand_id);
-    slice_inputs.push_back(strides.c_str());
+    steps = CreateInt64InitializerForUint32Array(op.strides);
+    slice_inputs.push_back(steps.c_str());
   }
 
   const std::string output = GetOperandNameById(op.output_operand_id);
@@ -4163,10 +4226,10 @@ void GraphBuilderOrt::AddDynamicPadOperation(const mojom::DynamicPad& op) {
   const std::string ending_padding =
       GetOperandNameById(op.ending_padding_operand_id);
 
-  // ONNX Pad's `pads` input must be int64, but the WebNN operands may be int32
-  // (preferred for backends like CoreML that lack int64). Cast each operand to
-  // int64 if needed before concatenating, since ONNX Concat requires its
-  // inputs to share a data type and the two operands may differ.
+  // ONNX Pad's `pads` input must be int64, but the WebNN padding operands are
+  // uint32 (WebNN dimensions are uint32). Cast each operand to int64 if needed
+  // before concatenating, since ONNX Concat requires its inputs to share a data
+  // type.
   std::string beginning_int64 = beginning_padding;
   if (GetOperand(op.beginning_padding_operand_id).descriptor.data_type() !=
       OperandDataType::kInt64) {
@@ -4218,7 +4281,15 @@ void GraphBuilderOrt::AddDynamicSplitOperation(
   const std::string input = GetOperandNameById(op.input_operand_id);
   const std::string splits = GetOperandNameById(op.splits_operand_id);
 
-  std::array<const char*, 2> inputs = {input.c_str(), splits.c_str()};
+  // ONNX Split's `split` input must be int64, but the WebNN splits operand is
+  // uint32 (WebNN dimensions are uint32). Cast if needed.
+  std::string splits_int64 = splits;
+  if (GetOperand(op.splits_operand_id).descriptor.data_type() !=
+      OperandDataType::kInt64) {
+    splits_int64 = CreateCastNode(splits, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+  }
+
+  std::array<const char*, 2> inputs = {input.c_str(), splits_int64.c_str()};
 
   std::vector<std::string> output_names;
   output_names.reserve(op.output_operand_ids.size());
@@ -4242,8 +4313,35 @@ void GraphBuilderOrt::AddDynamicResample2dOperation(
     const mojom::DynamicResample2d& op) {
   const std::string node_name = GenerateNodeName(op.label);
   const std::string input = GetOperandNameById(op.input_operand_id);
-  const std::string user_sizes = GetOperandNameById(op.sizes_operand_id);
   const std::string output = GetOperandNameById(op.output_operand_id);
+
+  std::string mode;
+  switch (op.mode) {
+    case mojom::Resample2d::InterpolationMode::kLinear:
+      mode = "linear";
+      break;
+    case mojom::Resample2d::InterpolationMode::kNearestNeighbor:
+      mode = "nearest";
+      break;
+  }
+
+  // The scales path: build a 4-element float `scales` initializer (1.0 for the
+  // non-resampled axes) and feed it directly to ONNX Resize. This mirrors the
+  // static resample2d operator.
+  if (!op.scales.empty()) {
+    CHECK_EQ(op.scales.size(), 2u);
+    std::array<float, 4> scales_data = {1.f, 1.f, 1.f, 1.f};
+    scales_data.at(op.axes[0]) = op.scales[0];
+    scales_data.at(op.axes[1]) = op.scales[1];
+    const std::string scales = Create1DInitializer<float>(scales_data);
+    AddResizeNode(node_name, input, scales, /*sizes=*/"", mode, output);
+    return;
+  }
+
+  // The sizes path: the new sizes for the two resample axes are provided as a
+  // runtime operand. ONNX Resize wants a 4-element int64 `sizes` tensor, so the
+  // two user-provided sizes are scattered into the runtime input shape.
+  const std::string user_sizes = GetOperandNameById(*op.sizes_operand_id);
 
   // Step 1: Get the input shape at runtime, as an int64[4] tensor.
   const std::string input_shape = GenerateOperandName();
@@ -4257,9 +4355,10 @@ void GraphBuilderOrt::AddDynamicResample2dOperation(
   }
 
   // Step 2: Cast the user-provided sizes to int64 if needed. ONNX Resize's
-  // `sizes` input must be int64.
+  // `sizes` input must be int64, but the WebNN sizes operand is uint32 (WebNN
+  // dimensions are uint32).
   const OperandDataType sizes_data_type =
-      GetOperand(op.sizes_operand_id).descriptor.data_type();
+      GetOperand(*op.sizes_operand_id).descriptor.data_type();
   std::string sizes_int64 = user_sizes;
   if (sizes_data_type != OperandDataType::kInt64) {
     sizes_int64 =
@@ -4290,17 +4389,6 @@ void GraphBuilderOrt::AddDynamicResample2dOperation(
                           scatter_inputs, scatter_outputs, scatter_attributes);
   }
 
-  // Step 4: Emit the Resize node.
-  std::string mode;
-  switch (op.mode) {
-    case mojom::Resample2d::InterpolationMode::kLinear:
-      mode = "linear";
-      break;
-    case mojom::Resample2d::InterpolationMode::kNearestNeighbor:
-      mode = "nearest";
-      break;
-  }
-
   AddResizeNode(node_name, input, /*scales=*/"", sizes_4, mode, output);
 }
 
@@ -4310,8 +4398,8 @@ void GraphBuilderOrt::AddDynamicTileOperation(const mojom::DynamicTile& op) {
   const std::string repetitions = GetOperandNameById(op.repetitions_operand_id);
   const std::string output = GetOperandNameById(op.output_operand_id);
 
-  // ONNX Tile's `repeats` input must be int64, but the WebNN operand may be
-  // int32 (preferred for backends like CoreML that lack int64). Cast if needed.
+  // ONNX Tile's `repeats` input must be int64, but the WebNN repetitions
+  // operand is uint32 (WebNN dimensions are uint32). Cast if needed.
   std::string repeats_int64 = repetitions;
   if (GetOperand(op.repetitions_operand_id).descriptor.data_type() !=
       OperandDataType::kInt64) {

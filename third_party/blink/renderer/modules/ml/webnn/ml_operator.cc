@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_transpose_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_cumulative_sum_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gemm_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gru_cell_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gru_options.h"
@@ -492,6 +493,14 @@ void MLOperator::AddOptionalInputs(
       }
       break;
     }
+    case webnn::mojom::blink::Operation::Tag::kDynamicResample2d: {
+      auto* options = static_cast<MLDynamicResample2dOptions*>(options_.Get());
+      // sizes is an optional operand (the dynamic path); scales is a constant.
+      if (options->hasSizes()) {
+        inputs.push_back(options->sizes());
+      }
+      break;
+    }
     case webnn::mojom::blink::Operation::Tag::kArgMinMax:
     case webnn::mojom::blink::Operation::Tag::kClamp:
     case webnn::mojom::blink::Operation::Tag::kConcat:
@@ -544,7 +553,6 @@ void MLOperator::AddOptionalInputs(
     case webnn::mojom::blink::Operation::Tag::kDynamicSlice:
     case webnn::mojom::blink::Operation::Tag::kDynamicPad:
     case webnn::mojom::blink::Operation::Tag::kDynamicSplit:
-    case webnn::mojom::blink::Operation::Tag::kDynamicResample2d:
     case webnn::mojom::blink::Operation::Tag::kDynamicTile: {
       break;
     }

@@ -501,52 +501,41 @@ ShapeFoldingInterpreter::InterpretOperation(
     return Evaluate(reshape_op.input_operand_id);
   }
 
-  // dynamic_slice — extract a sub-range with dynamic starts/ends/strides.
+  // dynamic_slice — extract a sub-range with dynamic starts/sizes. Like the
+  // static slice operator, `sizes` is the window span (the sliced range is
+  // [start, start + size)) and strides is a build-time constant attribute.
   if (operation.is_dynamic_slice()) {
     const auto& slice_op = *operation.get_dynamic_slice();
     auto values = Evaluate(slice_op.input_operand_id);
     auto starts = Evaluate(slice_op.starts_operand_id);
-    auto ends = Evaluate(slice_op.ends_operand_id);
-    if (!values || !starts || !ends) {
+    auto sizes = Evaluate(slice_op.sizes_operand_id);
+    if (!values || !starts || !sizes) {
       return std::nullopt;
     }
     // Only support 1-D inputs (typical for shape tensors).
-    if (starts->size() != 1 || ends->size() != 1) {
+    if (starts->size() != 1 || sizes->size() != 1) {
       return std::nullopt;
     }
     int64_t stride = 1;
-    if (slice_op.strides_operand_id.has_value()) {
-      auto strides = Evaluate(*slice_op.strides_operand_id);
-      if (!strides || strides->size() != 1) {
+    if (!slice_op.strides.empty()) {
+      if (slice_op.strides.size() != 1) {
         return std::nullopt;
       }
-      stride = (*strides)[0];
+      stride = slice_op.strides[0];
     }
-    if (stride == 0) {
+    if (stride <= 0) {
       return std::nullopt;
     }
+    // starts and sizes are uint32 (non-negative); no negative-index handling.
     int64_t dim_size = static_cast<int64_t>(values->size());
     int64_t start = (*starts)[0];
-    int64_t end = (*ends)[0];
-    // Normalize negative indices.
-    if (start < 0) {
-      start += dim_size;
-    }
-    if (end < 0) {
-      end += dim_size;
-    }
+    int64_t end = start + (*sizes)[0];
     start = std::clamp(start, int64_t{0}, dim_size);
     end = std::clamp(end, int64_t{0}, dim_size);
 
     std::vector<int64_t> result;
-    if (stride > 0) {
-      for (int64_t i = start; i < end; i += stride) {
-        result.push_back((*values)[static_cast<size_t>(i)]);
-      }
-    } else {
-      for (int64_t i = start; i > end; i += stride) {
-        result.push_back((*values)[static_cast<size_t>(i)]);
-      }
+    for (int64_t i = start; i < end; i += stride) {
+      result.push_back((*values)[static_cast<size_t>(i)]);
     }
     return result;
   }

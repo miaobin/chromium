@@ -26,6 +26,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_conv_transpose_2d_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_cumulative_sum_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_resample_2d_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_ml_dynamic_slice_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_elu_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_flatten_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_gather_options.h"
@@ -1401,14 +1402,18 @@ OperationPtr CreateDynamicSliceOperation(
   auto mojo = blink_mojom::DynamicSlice::New();
   mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
   mojo->starts_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
-  mojo->ends_operand_id = GetOperatorInputId(op, operand_to_id_map, 2);
+  mojo->sizes_operand_id = GetOperatorInputId(op, operand_to_id_map, 2);
   // Optional axes at index 3.
   if (op->Inputs().size() > 3 && op->Inputs()[3]) {
     mojo->axes_operand_id = GetOperatorInputId(op, operand_to_id_map, 3);
   }
-  // Optional strides at index 4.
-  if (op->Inputs().size() > 4 && op->Inputs()[4]) {
-    mojo->strides_operand_id = GetOperatorInputId(op, operand_to_id_map, 4);
+  // Like the static slice operator, strides is a build-time constant attribute
+  // (not an operand). An empty sequence means the default of all 1s, which the
+  // service backend fills in.
+  const auto* options =
+      static_cast<const blink::MLDynamicSliceOptions*>(op->Options());
+  if (options->hasStrides()) {
+    mojo->strides = options->strides();
   }
   mojo->output_operand_id = GetOperatorOutputId(op, operand_to_id_map);
   mojo->label = op->Options()->label();
@@ -1468,7 +1473,14 @@ OperationPtr CreateDynamicResample2dOperation(
       static_cast<const MLDynamicResample2dOptions*>(op->Options());
   auto mojo = blink_mojom::DynamicResample2d::New();
   mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
-  mojo->sizes_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+
+  // Exactly one of sizes (a runtime operand) or scales (a build-time constant)
+  // is present; the Blink builder enforces this.
+  if (options->hasSizes()) {
+    mojo->sizes_operand_id = operand_to_id_map.at(options->sizes());
+  } else if (options->hasScales()) {
+    mojo->scales = options->scales();
+  }
 
   // `axes` default is [2, 3] per the WebNN spec.
   Vector<uint32_t> axes = {2u, 3u};

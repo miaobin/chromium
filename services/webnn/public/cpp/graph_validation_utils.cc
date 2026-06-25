@@ -3111,13 +3111,15 @@ base::expected<OperandDescriptor, std::string> ValidateShapeAndInferOutput(
                    input, context_properties.data_type_limits.shape_input)));
   }
 
+  // WebNN dimensions are uint32, so the shape output is a uint32 tensor. The
+  // backend casts to int64 when lowering to ONNX (whose Shape op emits int64).
   if (!context_properties.data_type_limits.shape_output.data_types.Has(
-          OperandDataType::kInt64)) {
+          OperandDataType::kUint32)) {
     return base::unexpected(ErrorWithLabel(
-        label, NotSupportedOpOutputTypeError(
-                   OperandDataType::kInt64,
-                   context_properties.data_type_limits.shape_output
-                       .data_types)));
+        label,
+        NotSupportedOpOutputTypeError(
+            OperandDataType::kUint32,
+            context_properties.data_type_limits.shape_output.data_types)));
   }
 
   // Output is a 1-D tensor with size equal to the rank of the input. When the
@@ -3127,13 +3129,13 @@ base::expected<OperandDescriptor, std::string> ValidateShapeAndInferOutput(
   if (!input.HasRank()) {
     std::array<Dimension, 1> dynamic_output_shape{DynamicDimension{}};
     return OperandDescriptor::Create(context_properties,
-                                     OperandDataType::kInt64,
+                                     OperandDataType::kUint32,
                                      dynamic_output_shape, label);
   }
 
   // Output is a 1-D tensor with size equal to the rank of the input.
   std::vector<uint32_t> output_shape{input.Rank().value()};
-  return OperandDescriptor::Create(context_properties, OperandDataType::kInt64,
+  return OperandDescriptor::Create(context_properties, OperandDataType::kUint32,
                                    output_shape, label);
 }
 
