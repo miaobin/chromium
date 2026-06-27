@@ -74,7 +74,7 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphBuilderImpl
       const std::vector<mojom::OperationPtr>& operations,
       const base::flat_set<OperandId>& processed_operands,
       const base::flat_map<OperandId, std::vector<uint8_t>>&
-          integer_constant_data,
+          shape_constant_data,
       const base::flat_map<std::string, uint32_t>& dim_name_to_value = {});
 
  protected:

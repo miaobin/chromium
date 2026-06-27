@@ -121,7 +121,7 @@ WebNNGraphImpl::ComputeResourceInfo::ComputeResourceInfo(
     std::vector<mojom::OperandPtr> graph_operands,
     std::vector<mojom::OperationPtr> graph_operations,
     std::vector<OperandId> graph_input_operand_ids,
-    base::flat_map<OperandId, std::vector<uint8_t>> integer_constant_data,
+    base::flat_map<OperandId, std::vector<uint8_t>> shape_constant_data,
     base::PassKey<WebNNGraphBuilderImpl> pass_key)
     : input_names_to_descriptors(std::move(input_names_to_descriptors)),
       output_names_to_descriptors(std::move(output_names_to_descriptors)),
@@ -133,7 +133,7 @@ WebNNGraphImpl::ComputeResourceInfo::ComputeResourceInfo(
       graph_operands(std::move(graph_operands)),
       graph_operations(std::move(graph_operations)),
       graph_input_operand_ids(std::move(graph_input_operand_ids)),
-      integer_constant_data(std::move(integer_constant_data)) {}
+      shape_constant_data(std::move(shape_constant_data)) {}
 
 WebNNGraphImpl::ComputeResourceInfo::ComputeResourceInfo(
     ComputeResourceInfo&&) = default;
@@ -324,7 +324,7 @@ WebNNGraphImpl::InferConcreteOutputShapes(
   if (!WebNNGraphBuilderImpl::InferAndValidateConcreteShapes(
           context_->properties(), concrete_operands,
           resource_info.graph_operations, processed_operands,
-          resource_info.integer_constant_data, dim_name_to_value)) {
+          resource_info.shape_constant_data, dim_name_to_value)) {
     return base::unexpected(
         "Failed to infer concrete output shapes from the given input shapes.");
   }

@@ -9,6 +9,7 @@
 
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
+#include "base/numerics/byte_conversions.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/cpp/range.h"
 #include "services/webnn/public/cpp/webnn_types.h"
@@ -57,6 +58,31 @@ std::vector<uint8_t> Int64ToBytes(const std::vector<int64_t>& values) {
 
 std::vector<uint8_t> Uint32ToBytes(const std::vector<uint32_t>& values) {
   return ToBytes(base::span(values));
+}
+
+// Floating-point types are intentionally excluded from base::as_bytes (they
+// lack a unique object representation), so serialize element by element via
+// the byte-conversion helpers, matching the native-endian reads the
+// interpreter performs.
+std::vector<uint8_t> Float32ToBytes(const std::vector<float>& values) {
+  std::vector<uint8_t> bytes;
+  bytes.reserve(values.size() * sizeof(float));
+  for (float v : values) {
+    auto chunk = base::FloatToNativeEndian(v);
+    bytes.insert(bytes.end(), chunk.begin(), chunk.end());
+  }
+  return bytes;
+}
+
+// Serializes raw IEEE half-precision bit patterns (one uint16 per value).
+std::vector<uint8_t> Float16BitsToBytes(const std::vector<uint16_t>& bits) {
+  std::vector<uint8_t> bytes;
+  bytes.reserve(bits.size() * sizeof(uint16_t));
+  for (uint16_t v : bits) {
+    auto chunk = base::U16ToNativeEndian(v);
+    bytes.insert(bytes.end(), chunk.begin(), chunk.end());
+  }
+  return bytes;
 }
 
 // Helper to build a Shape operation.
@@ -164,7 +190,7 @@ OperationPtr MakeTransposeOp(OperandId input_id,
 class ShapeFoldingInterpreterTest : public testing::Test {
  protected:
   // Convenience method to set up and evaluate an operand.
-  std::optional<std::vector<int64_t>> Evaluate(
+  std::optional<std::vector<double>> Evaluate(
       const std::vector<OperandPtr>& operands,
       const std::vector<OperationPtr>& operations,
       const base::flat_map<OperandId, size_t>& operand_to_producing_operation,
@@ -192,7 +218,7 @@ TEST_F(ShapeFoldingInterpreterTest, ConstantInt32) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(0));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{10, 20, 30}));
+  EXPECT_EQ(*result, (std::vector<double>{10, 20, 30}));
 }
 
 // Test evaluating a constant operand with int64 values.
@@ -210,8 +236,7 @@ TEST_F(ShapeFoldingInterpreterTest, ConstantInt64) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(0));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result,
-            (std::vector<int64_t>{100000000000LL, -200000000000LL}));
+  EXPECT_EQ(*result, (std::vector<double>{100000000000LL, -200000000000LL}));
 }
 
 // Test evaluating a constant operand with uint32 values.
@@ -228,11 +253,11 @@ TEST_F(ShapeFoldingInterpreterTest, ConstantUint32) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(0));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{42, 100}));
+  EXPECT_EQ(*result, (std::vector<double>{42, 100}));
 }
 
-// Test that float constant operands return nullopt (non-integer).
-TEST_F(ShapeFoldingInterpreterTest, ConstantFloatReturnsNullopt) {
+// Test evaluating a float32 constant operand (read as doubles).
+TEST_F(ShapeFoldingInterpreterTest, ConstantFloat32) {
   std::vector<OperandPtr> operands;
   operands.push_back(
       CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat32, {2}));
@@ -240,13 +265,12 @@ TEST_F(ShapeFoldingInterpreterTest, ConstantFloatReturnsNullopt) {
   std::vector<OperationPtr> operations;
   base::flat_map<OperandId, size_t> op_map;
   base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
-  // Float data — ReadIntegerValues won't know how to interpret it.
-  // Provide bytes of the right size (8 bytes for 2 x float32).
-  constant_data[OperandId(0)] = std::vector<uint8_t>(8, 0);
+  constant_data[OperandId(0)] = Float32ToBytes({1.5f, -2.25f});
 
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(0));
-  EXPECT_FALSE(result.has_value());
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, (std::vector<double>{1.5, -2.25}));
 }
 
 // Test that input operands return nullopt (values not known at build time).
@@ -287,7 +311,7 @@ TEST_F(ShapeFoldingInterpreterTest, ShapeOp) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(1));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{2, 3, 4}));
+  EXPECT_EQ(*result, (std::vector<double>{2, 3, 4}));
 }
 
 // Test gather: pick specific elements from a 1-D shape tensor.
@@ -317,7 +341,7 @@ TEST_F(ShapeFoldingInterpreterTest, GatherFromConstant) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(2));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{20, 40}));
+  EXPECT_EQ(*result, (std::vector<double>{20, 40}));
 }
 
 // Test gather with out-of-bounds index returns nullopt.
@@ -373,7 +397,7 @@ TEST_F(ShapeFoldingInterpreterTest, ConcatConstants) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(2));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{1, 2, 3, 4, 5}));
+  EXPECT_EQ(*result, (std::vector<double>{1, 2, 3, 4, 5}));
 }
 
 // Test a typical shape computation chain: shape → gather → concat.
@@ -424,7 +448,7 @@ TEST_F(ShapeFoldingInterpreterTest, ShapeGatherConcatChain) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(5));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{4, 28, 28}));
+  EXPECT_EQ(*result, (std::vector<double>{4, 28, 28}));
 }
 
 // Test element-wise binary: add.
@@ -452,7 +476,7 @@ TEST_F(ShapeFoldingInterpreterTest, BinaryAdd) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(2));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{11, 22, 33}));
+  EXPECT_EQ(*result, (std::vector<double>{11, 22, 33}));
 }
 
 // Test element-wise binary: sub, mul, div.
@@ -482,7 +506,7 @@ TEST_F(ShapeFoldingInterpreterTest, BinarySubMulDiv) {
     auto result = Evaluate(operands, operations, op_map, constant_data,
                            OperandId(2));
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(*result, (std::vector<int64_t>{7, 15}));
+    EXPECT_EQ(*result, (std::vector<double>{7, 15}));
   }
 
   // Mul: [2, 3] * [4, 5] = [8, 15]
@@ -510,7 +534,7 @@ TEST_F(ShapeFoldingInterpreterTest, BinarySubMulDiv) {
     auto result = Evaluate(operands, operations, op_map, constant_data,
                            OperandId(2));
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(*result, (std::vector<int64_t>{8, 15}));
+    EXPECT_EQ(*result, (std::vector<double>{8, 15}));
   }
 
   // Div: [20, 15] / [4, 3] = [5, 5]
@@ -538,7 +562,7 @@ TEST_F(ShapeFoldingInterpreterTest, BinarySubMulDiv) {
     auto result = Evaluate(operands, operations, op_map, constant_data,
                            OperandId(2));
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(*result, (std::vector<int64_t>{5, 5}));
+    EXPECT_EQ(*result, (std::vector<double>{5, 5}));
   }
 }
 
@@ -596,7 +620,7 @@ TEST_F(ShapeFoldingInterpreterTest, BinaryBroadcastScalar) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(2));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{10, 20, 30}));
+  EXPECT_EQ(*result, (std::vector<double>{10, 20, 30}));
 }
 
 // Test mod operation.
@@ -624,7 +648,7 @@ TEST_F(ShapeFoldingInterpreterTest, BinaryMod) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(2));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{1, 3, 0}));
+  EXPECT_EQ(*result, (std::vector<double>{1, 3, 0}));
 }
 
 // Test max and min binary operations.
@@ -660,12 +684,12 @@ TEST_F(ShapeFoldingInterpreterTest, BinaryMaxMin) {
   auto max_result = Evaluate(operands, operations, op_map, constant_data,
                              OperandId(2));
   ASSERT_TRUE(max_result.has_value());
-  EXPECT_EQ(*max_result, (std::vector<int64_t>{5, 7, 8}));
+  EXPECT_EQ(*max_result, (std::vector<double>{5, 7, 8}));
 
   auto min_result = Evaluate(operands, operations, op_map, constant_data,
                              OperandId(3));
   ASSERT_TRUE(min_result.has_value());
-  EXPECT_EQ(*min_result, (std::vector<int64_t>{3, 2, 1}));
+  EXPECT_EQ(*min_result, (std::vector<double>{3, 2, 1}));
 }
 
 // Test reshape: values stay the same, only shape changes.
@@ -689,7 +713,7 @@ TEST_F(ShapeFoldingInterpreterTest, ReshapePassthrough) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(1));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{1, 2, 3, 4, 5, 6}));
+  EXPECT_EQ(*result, (std::vector<double>{1, 2, 3, 4, 5, 6}));
 }
 
 // Test reverse: reverses 1-D values.
@@ -712,7 +736,7 @@ TEST_F(ShapeFoldingInterpreterTest, Reverse1D) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(1));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{4, 3, 2, 1}));
+  EXPECT_EQ(*result, (std::vector<double>{4, 3, 2, 1}));
 }
 
 // Test transpose: for 1-D, returns same values.
@@ -735,7 +759,7 @@ TEST_F(ShapeFoldingInterpreterTest, Transpose1D) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(1));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{10, 20, 30}));
+  EXPECT_EQ(*result, (std::vector<double>{10, 20, 30}));
 }
 
 // Test slice: extract a sub-range from 1-D.
@@ -759,7 +783,7 @@ TEST_F(ShapeFoldingInterpreterTest, Slice1D) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(1));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{20, 30, 40}));
+  EXPECT_EQ(*result, (std::vector<double>{20, 30, 40}));
 }
 
 // Test slice out of bounds returns nullopt.
@@ -808,7 +832,7 @@ TEST_F(ShapeFoldingInterpreterTest, UnaryAbsNeg) {
     auto result = Evaluate(operands, operations, op_map, constant_data,
                            OperandId(1));
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(*result, (std::vector<int64_t>{5, 3, 1}));
+    EXPECT_EQ(*result, (std::vector<double>{5, 3, 1}));
   }
 
   // Neg
@@ -832,7 +856,7 @@ TEST_F(ShapeFoldingInterpreterTest, UnaryAbsNeg) {
     auto result = Evaluate(operands, operations, op_map, constant_data,
                            OperandId(1));
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(*result, (std::vector<int64_t>{-5, 3, 0}));
+    EXPECT_EQ(*result, (std::vector<double>{-5, 3, 0}));
   }
 }
 
@@ -859,15 +883,15 @@ TEST_F(ShapeFoldingInterpreterTest, CastToInteger) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(1));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{42, -7}));
+  EXPECT_EQ(*result, (std::vector<double>{42, -7}));
 }
 
-// Test cast to float type returns nullopt.
-TEST_F(ShapeFoldingInterpreterTest, CastToFloatReturnsNullopt) {
+// Test cast from integer to float type: values pass through unchanged.
+TEST_F(ShapeFoldingInterpreterTest, CastIntToFloat) {
   std::vector<OperandPtr> operands;
   operands.push_back(
       CreateOperand(Operand::Kind::kConstant, OperandDataType::kInt32, {2}));
-  // Cast to float32 — should fail
+  // Cast to float32 — values pass through (used by float resize chains).
   operands.push_back(
       CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
 
@@ -883,18 +907,44 @@ TEST_F(ShapeFoldingInterpreterTest, CastToFloatReturnsNullopt) {
 
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(1));
-  EXPECT_FALSE(result.has_value());
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, (std::vector<double>{1, 2}));
 }
 
-// Test floor and ceil on integer values (no-op).
-TEST_F(ShapeFoldingInterpreterTest, FloorCeilNoOp) {
+// Test cast from float to integer type: values truncate toward zero.
+TEST_F(ShapeFoldingInterpreterTest, CastFloatToIntTruncates) {
   std::vector<OperandPtr> operands;
   operands.push_back(
-      CreateOperand(Operand::Kind::kConstant, OperandDataType::kInt32, {2}));
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat32, {3}));
   operands.push_back(
-      CreateOperand(Operand::Kind::kOutput, OperandDataType::kInt32, {2}));
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kInt32, {3}));
+
+  std::vector<OperationPtr> operations;
+  operations.push_back(
+      MakeUnaryOp(ElementWiseUnary::Kind::kCast, OperandId(0), OperandId(1)));
+
+  base::flat_map<OperandId, size_t> op_map;
+  op_map[OperandId(1)] = 0;
+
+  base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
+  constant_data[OperandId(0)] = Float32ToBytes({2.9f, -2.9f, 5.0f});
+
+  auto result =
+      Evaluate(operands, operations, op_map, constant_data, OperandId(1));
+  ASSERT_TRUE(result.has_value());
+  // Truncation toward zero: 2.9 -> 2, -2.9 -> -2, 5.0 -> 5.
+  EXPECT_EQ(*result, (std::vector<double>{2, -2, 5}));
+}
+
+// Test floor and ceil actually round float values.
+TEST_F(ShapeFoldingInterpreterTest, FloorCeilFloat) {
+  std::vector<OperandPtr> operands;
   operands.push_back(
-      CreateOperand(Operand::Kind::kOutput, OperandDataType::kInt32, {2}));
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat32, {2}));
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
 
   std::vector<OperationPtr> operations;
   operations.push_back(MakeUnaryOp(ElementWiseUnary::Kind::kFloor,
@@ -907,17 +957,17 @@ TEST_F(ShapeFoldingInterpreterTest, FloorCeilNoOp) {
   op_map[OperandId(2)] = 1;
 
   base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
-  constant_data[OperandId(0)] = Int32ToBytes({7, -3});
+  constant_data[OperandId(0)] = Float32ToBytes({2.7f, -1.2f});
 
   auto floor_result = Evaluate(operands, operations, op_map, constant_data,
                                OperandId(1));
   ASSERT_TRUE(floor_result.has_value());
-  EXPECT_EQ(*floor_result, (std::vector<int64_t>{7, -3}));
+  EXPECT_EQ(*floor_result, (std::vector<double>{2, -2}));
 
   auto ceil_result = Evaluate(operands, operations, op_map, constant_data,
                               OperandId(2));
   ASSERT_TRUE(ceil_result.has_value());
-  EXPECT_EQ(*ceil_result, (std::vector<int64_t>{7, -3}));
+  EXPECT_EQ(*ceil_result, (std::vector<double>{3, -1}));
 }
 
 // Test unsupported unary operation (e.g., sqrt) returns nullopt.
@@ -1043,7 +1093,7 @@ TEST_F(ShapeFoldingInterpreterTest, ComplexChainShapeGatherAdd) {
                          OperandId(5));
   ASSERT_TRUE(result.has_value());
   // height=32 + 10 = 42
-  EXPECT_EQ(*result, (std::vector<int64_t>{42}));
+  EXPECT_EQ(*result, (std::vector<double>{42}));
 }
 
 // Test gather with negative index.
@@ -1071,7 +1121,189 @@ TEST_F(ShapeFoldingInterpreterTest, GatherNegativeIndex) {
   auto result = Evaluate(operands, operations, op_map, constant_data,
                          OperandId(2));
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(*result, (std::vector<int64_t>{40}));
+  EXPECT_EQ(*result, (std::vector<double>{40}));
+}
+
+// Test evaluating a float16 constant operand (read as doubles).
+TEST_F(ShapeFoldingInterpreterTest, ConstantFloat16) {
+  std::vector<OperandPtr> operands;
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat16, {2}));
+
+  std::vector<OperationPtr> operations;
+  base::flat_map<OperandId, size_t> op_map;
+  base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
+  // 1.5 and 0.5 in IEEE half precision: 0x3E00 and 0x3800.
+  constant_data[OperandId(0)] = Float16BitsToBytes({0x3E00, 0x3800});
+
+  auto result =
+      Evaluate(operands, operations, op_map, constant_data, OperandId(0));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, (std::vector<double>{1.5, 0.5}));
+}
+
+// Test reciprocal on float values.
+TEST_F(ShapeFoldingInterpreterTest, ReciprocalFloat) {
+  std::vector<OperandPtr> operands;
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat32, {2}));
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
+
+  std::vector<OperationPtr> operations;
+  operations.push_back(MakeUnaryOp(ElementWiseUnary::Kind::kReciprocal,
+                                   OperandId(0), OperandId(1)));
+
+  base::flat_map<OperandId, size_t> op_map;
+  op_map[OperandId(1)] = 0;
+
+  base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
+  constant_data[OperandId(0)] = Float32ToBytes({2.0f, 4.0f});
+
+  auto result =
+      Evaluate(operands, operations, op_map, constant_data, OperandId(1));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, (std::vector<double>{0.5, 0.25}));
+}
+
+// Test reciprocal of zero returns nullopt.
+TEST_F(ShapeFoldingInterpreterTest, ReciprocalZeroReturnsNullopt) {
+  std::vector<OperandPtr> operands;
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat32, {2}));
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
+
+  std::vector<OperationPtr> operations;
+  operations.push_back(MakeUnaryOp(ElementWiseUnary::Kind::kReciprocal,
+                                   OperandId(0), OperandId(1)));
+
+  base::flat_map<OperandId, size_t> op_map;
+  op_map[OperandId(1)] = 0;
+
+  base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
+  constant_data[OperandId(0)] = Float32ToBytes({1.0f, 0.0f});
+
+  auto result =
+      Evaluate(operands, operations, op_map, constant_data, OperandId(1));
+  EXPECT_FALSE(result.has_value());
+}
+
+// Test integer division keeps integer (truncating) semantics even though
+// values are carried as doubles.
+TEST_F(ShapeFoldingInterpreterTest, IntegerDivisionTruncates) {
+  std::vector<OperandPtr> operands;
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kInt32, {2}));
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kInt32, {2}));
+  // Integer output operand → integer division semantics.
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kInt32, {2}));
+
+  std::vector<OperationPtr> operations;
+  operations.push_back(MakeBinaryOp(ElementWiseBinary::Kind::kDiv, OperandId(0),
+                                    OperandId(1), OperandId(2)));
+
+  base::flat_map<OperandId, size_t> op_map;
+  op_map[OperandId(2)] = 0;
+
+  base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
+  constant_data[OperandId(0)] = Int32ToBytes({7, 9});
+  constant_data[OperandId(1)] = Int32ToBytes({2, 2});
+
+  auto result =
+      Evaluate(operands, operations, op_map, constant_data, OperandId(2));
+  ASSERT_TRUE(result.has_value());
+  // 7 / 2 -> 3, 9 / 2 -> 4 (truncated), not 3.5 / 4.5.
+  EXPECT_EQ(*result, (std::vector<double>{3, 4}));
+}
+
+// Test float division produces a fractional result.
+TEST_F(ShapeFoldingInterpreterTest, FloatDivisionKeepsFraction) {
+  std::vector<OperandPtr> operands;
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat32, {2}));
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat32, {2}));
+  // Float output operand → real division.
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
+
+  std::vector<OperationPtr> operations;
+  operations.push_back(MakeBinaryOp(ElementWiseBinary::Kind::kDiv, OperandId(0),
+                                    OperandId(1), OperandId(2)));
+
+  base::flat_map<OperandId, size_t> op_map;
+  op_map[OperandId(2)] = 0;
+
+  base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
+  constant_data[OperandId(0)] = Float32ToBytes({7.0f, 9.0f});
+  constant_data[OperandId(1)] = Float32ToBytes({2.0f, 2.0f});
+
+  auto result =
+      Evaluate(operands, operations, op_map, constant_data, OperandId(2));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, (std::vector<double>{3.5, 4.5}));
+}
+
+// Test a Resize-style size chain: floor(dim * scale). This is the pattern that
+// integer-only folding could not express (the scale is fractional), and the
+// reason floating-point support was added. Mirrors depth-anything's
+// dynamicResample2d sizes chain shape -> cast -> mul(scale) -> floor.
+TEST_F(ShapeFoldingInterpreterTest, FloorDimTimesScaleChain) {
+  std::vector<OperandPtr> operands;
+  // operand 0: input [1, 3, 5, 5] — H = W = 5 known at dispatch time.
+  operands.push_back(CreateOperand(
+      Operand::Kind::kInput, OperandDataType::kFloat32, {1, 3, 5, 5}, "input"));
+  // operand 1: shape() output [4] int64 -> {1, 3, 5, 5}.
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kInt64, {4}));
+  // operand 2: constant indices [2] = {2, 3} (gather H and W).
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kInt32, {2}));
+  // operand 3: gather output [2] int64 -> {5, 5}.
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kInt64, {2}));
+  // operand 4: cast output [2] float32 -> {5.0, 5.0}.
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
+  // operand 5: constant scales [2] float32 = {2.5, 2.5}.
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kFloat32, {2}));
+  // operand 6: mul output [2] float32 -> {12.5, 12.5}.
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
+  // operand 7: floor output [2] float32 -> {12.0, 12.0}.
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kFloat32, {2}));
+
+  std::vector<OperationPtr> operations;
+  operations.push_back(MakeShapeOp(OperandId(0), OperandId(1)));
+  operations.push_back(MakeGatherOp(OperandId(1), OperandId(2), OperandId(3)));
+  operations.push_back(
+      MakeUnaryOp(ElementWiseUnary::Kind::kCast, OperandId(3), OperandId(4)));
+  operations.push_back(MakeBinaryOp(ElementWiseBinary::Kind::kMul, OperandId(4),
+                                    OperandId(5), OperandId(6)));
+  operations.push_back(
+      MakeUnaryOp(ElementWiseUnary::Kind::kFloor, OperandId(6), OperandId(7)));
+
+  base::flat_map<OperandId, size_t> op_map;
+  op_map[OperandId(1)] = 0;
+  op_map[OperandId(3)] = 1;
+  op_map[OperandId(4)] = 2;
+  op_map[OperandId(6)] = 3;
+  op_map[OperandId(7)] = 4;
+
+  base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
+  constant_data[OperandId(2)] = Int32ToBytes({2, 3});
+  constant_data[OperandId(5)] = Float32ToBytes({2.5f, 2.5f});
+
+  auto result =
+      Evaluate(operands, operations, op_map, constant_data, OperandId(7));
+  ASSERT_TRUE(result.has_value());
+  // floor(5 * 2.5) = floor(12.5) = 12.
+  EXPECT_EQ(*result, (std::vector<double>{12.0, 12.0}));
 }
 
 }  // namespace

@@ -10,13 +10,12 @@
 
 #include "base/check_is_test.h"
 #include "base/containers/fixed_flat_map.h"
-#include "base/containers/span.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/stack_allocated.h"
-#include "base/numerics/byte_conversions.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/bind_post_task.h"
@@ -637,6 +636,302 @@ std::vector<OperandId> GetOperationOutputs(const mojom::Operation& operation) {
   }
 }
 
+// Returns every input operand referenced by `operation`. This is the dual of
+// GetOperationOutputs() and, like it, is an exhaustive switch (no default) so
+// that adding a new operation forces this list to be updated at compile time.
+//
+// Used by the dispatch-time shape-folding constant collector to walk the graph
+// backward from shape operands. The collector takes the conservative superset
+// (all inputs of every producing op, regardless of semantics): this can never
+// miss a constant the interpreter would read, stays correct as the interpreter
+// gains handlers, and does not pull in large weights because the collector
+// caps per-constant element count. Optional inputs are emitted only when set.
+std::vector<OperandId> GetOperationInputs(const mojom::Operation& operation) {
+  switch (operation.which()) {
+    case mojom::Operation::Tag::kArgMinMax:
+      return {operation.get_arg_min_max()->input_operand_id};
+    case mojom::Operation::Tag::kBatchNormalization: {
+      const auto& op = *operation.get_batch_normalization();
+      std::vector<OperandId> inputs = {op.input_operand_id, op.mean_operand_id,
+                                       op.variance_operand_id};
+      if (op.scale_operand_id) {
+        inputs.push_back(*op.scale_operand_id);
+      }
+      if (op.bias_operand_id) {
+        inputs.push_back(*op.bias_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kClamp:
+      return {operation.get_clamp()->input_operand_id};
+    case mojom::Operation::Tag::kConcat:
+      return operation.get_concat()->input_operand_ids;
+    case mojom::Operation::Tag::kConv2d: {
+      const auto& op = *operation.get_conv2d();
+      std::vector<OperandId> inputs = {op.input_operand_id,
+                                       op.filter_operand_id};
+      if (op.bias_operand_id) {
+        inputs.push_back(*op.bias_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kCumulativeSum:
+      return {operation.get_cumulative_sum()->input_operand_id};
+    case mojom::Operation::Tag::kDequantizeLinear: {
+      const auto& op = *operation.get_dequantize_linear();
+      return {op.input_operand_id, op.scale_operand_id,
+              op.zero_point_operand_id};
+    }
+    case mojom::Operation::Tag::kElementWiseBinary: {
+      const auto& op = *operation.get_element_wise_binary();
+      return {op.lhs_operand_id, op.rhs_operand_id};
+    }
+    case mojom::Operation::Tag::kElu:
+      return {operation.get_elu()->input_operand_id};
+    case mojom::Operation::Tag::kElementWiseUnary:
+      return {operation.get_element_wise_unary()->input_operand_id};
+    case mojom::Operation::Tag::kExpand:
+      return {operation.get_expand()->input_operand_id};
+    case mojom::Operation::Tag::kGather: {
+      const auto& op = *operation.get_gather();
+      return {op.input_operand_id, op.indices_operand_id};
+    }
+    case mojom::Operation::Tag::kGatherElements: {
+      const auto& op = *operation.get_gather_elements();
+      return {op.input_operand_id, op.indices_operand_id};
+    }
+    case mojom::Operation::Tag::kGatherNd: {
+      const auto& op = *operation.get_gather_nd();
+      return {op.input_operand_id, op.indices_operand_id};
+    }
+    case mojom::Operation::Tag::kGelu:
+      return {operation.get_gelu()->input_operand_id};
+    case mojom::Operation::Tag::kGemm: {
+      const auto& op = *operation.get_gemm();
+      std::vector<OperandId> inputs = {op.a_operand_id, op.b_operand_id};
+      if (op.c_operand_id) {
+        inputs.push_back(*op.c_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kGru: {
+      const auto& op = *operation.get_gru();
+      std::vector<OperandId> inputs = {op.input_operand_id,
+                                       op.weight_operand_id,
+                                       op.recurrent_weight_operand_id};
+      if (op.bias_operand_id) {
+        inputs.push_back(*op.bias_operand_id);
+      }
+      if (op.recurrent_bias_operand_id) {
+        inputs.push_back(*op.recurrent_bias_operand_id);
+      }
+      if (op.initial_hidden_state_operand_id) {
+        inputs.push_back(*op.initial_hidden_state_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kGruCell: {
+      const auto& op = *operation.get_gru_cell();
+      std::vector<OperandId> inputs = {
+          op.input_operand_id, op.weight_operand_id,
+          op.recurrent_weight_operand_id, op.hidden_state_operand_id};
+      if (op.bias_operand_id) {
+        inputs.push_back(*op.bias_operand_id);
+      }
+      if (op.recurrent_bias_operand_id) {
+        inputs.push_back(*op.recurrent_bias_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kHardSigmoid:
+      return {operation.get_hard_sigmoid()->input_operand_id};
+    case mojom::Operation::Tag::kHardSwish:
+      return {operation.get_hard_swish()->input_operand_id};
+    case mojom::Operation::Tag::kLayerNormalization: {
+      const auto& op = *operation.get_layer_normalization();
+      std::vector<OperandId> inputs = {op.input_operand_id};
+      if (op.scale_operand_id) {
+        inputs.push_back(*op.scale_operand_id);
+      }
+      if (op.bias_operand_id) {
+        inputs.push_back(*op.bias_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kInstanceNormalization: {
+      const auto& op = *operation.get_instance_normalization();
+      std::vector<OperandId> inputs = {op.input_operand_id};
+      if (op.scale_operand_id) {
+        inputs.push_back(*op.scale_operand_id);
+      }
+      if (op.bias_operand_id) {
+        inputs.push_back(*op.bias_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kLeakyRelu:
+      return {operation.get_leaky_relu()->input_operand_id};
+    case mojom::Operation::Tag::kLinear:
+      return {operation.get_linear()->input_operand_id};
+    case mojom::Operation::Tag::kLstm: {
+      const auto& op = *operation.get_lstm();
+      std::vector<OperandId> inputs = {op.input_operand_id,
+                                       op.weight_operand_id,
+                                       op.recurrent_weight_operand_id};
+      if (op.bias_operand_id) {
+        inputs.push_back(*op.bias_operand_id);
+      }
+      if (op.recurrent_bias_operand_id) {
+        inputs.push_back(*op.recurrent_bias_operand_id);
+      }
+      if (op.peephole_weight_operand_id) {
+        inputs.push_back(*op.peephole_weight_operand_id);
+      }
+      if (op.initial_hidden_state_operand_id) {
+        inputs.push_back(*op.initial_hidden_state_operand_id);
+      }
+      if (op.initial_cell_state_operand_id) {
+        inputs.push_back(*op.initial_cell_state_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kLstmCell: {
+      const auto& op = *operation.get_lstm_cell();
+      std::vector<OperandId> inputs = {
+          op.input_operand_id, op.weight_operand_id,
+          op.recurrent_weight_operand_id, op.hidden_state_operand_id,
+          op.cell_state_operand_id};
+      if (op.bias_operand_id) {
+        inputs.push_back(*op.bias_operand_id);
+      }
+      if (op.recurrent_bias_operand_id) {
+        inputs.push_back(*op.recurrent_bias_operand_id);
+      }
+      if (op.peephole_weight_operand_id) {
+        inputs.push_back(*op.peephole_weight_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kMatmul: {
+      const auto& op = *operation.get_matmul();
+      return {op.a_operand_id, op.b_operand_id};
+    }
+    case mojom::Operation::Tag::kPad:
+      return {operation.get_pad()->input_operand_id};
+    case mojom::Operation::Tag::kPool2d:
+      return {operation.get_pool2d()->input_operand_id};
+    case mojom::Operation::Tag::kPrelu: {
+      const auto& op = *operation.get_prelu();
+      return {op.input_operand_id, op.slope_operand_id};
+    }
+    case mojom::Operation::Tag::kQuantizeLinear: {
+      const auto& op = *operation.get_quantize_linear();
+      return {op.input_operand_id, op.scale_operand_id,
+              op.zero_point_operand_id};
+    }
+    case mojom::Operation::Tag::kRange: {
+      const auto& op = *operation.get_range();
+      return {op.start_operand_id, op.limit_operand_id, op.delta_operand_id};
+    }
+    case mojom::Operation::Tag::kReduce:
+      return {operation.get_reduce()->input_operand_id};
+    case mojom::Operation::Tag::kRelu:
+      return {operation.get_relu()->input_operand_id};
+    case mojom::Operation::Tag::kResample2d:
+      return {operation.get_resample2d()->input_operand_id};
+    case mojom::Operation::Tag::kReshape:
+      return {operation.get_reshape()->input_operand_id};
+    case mojom::Operation::Tag::kReverse:
+      return {operation.get_reverse()->input_operand_id};
+    case mojom::Operation::Tag::kScatterElements: {
+      const auto& op = *operation.get_scatter_elements();
+      return {op.input_operand_id, op.indices_operand_id,
+              op.updates_operand_id};
+    }
+    case mojom::Operation::Tag::kScatterNd: {
+      const auto& op = *operation.get_scatter_nd();
+      return {op.input_operand_id, op.indices_operand_id,
+              op.updates_operand_id};
+    }
+    case mojom::Operation::Tag::kShape:
+      return {operation.get_shape()->input_operand_id};
+    case mojom::Operation::Tag::kSigmoid:
+      return {operation.get_sigmoid()->input_operand_id};
+    case mojom::Operation::Tag::kSlice:
+      return {operation.get_slice()->input_operand_id};
+    case mojom::Operation::Tag::kSoftmax:
+      return {operation.get_softmax()->input_operand_id};
+    case mojom::Operation::Tag::kSoftplus:
+      return {operation.get_softplus()->input_operand_id};
+    case mojom::Operation::Tag::kSoftsign:
+      return {operation.get_softsign()->input_operand_id};
+    case mojom::Operation::Tag::kSplit:
+      return {operation.get_split()->input_operand_id};
+    case mojom::Operation::Tag::kTanh:
+      return {operation.get_tanh()->input_operand_id};
+    case mojom::Operation::Tag::kTile:
+      return {operation.get_tile()->input_operand_id};
+    case mojom::Operation::Tag::kTranspose:
+      return {operation.get_transpose()->input_operand_id};
+    case mojom::Operation::Tag::kTriangular:
+      return {operation.get_triangular()->input_operand_id};
+    case mojom::Operation::Tag::kWhere: {
+      const auto& op = *operation.get_where();
+      return {op.condition_operand_id, op.true_value_operand_id,
+              op.false_value_operand_id};
+    }
+    case mojom::Operation::Tag::kDynamicReshape: {
+      const auto& op = *operation.get_dynamic_reshape();
+      return {op.input_operand_id, op.new_shape_operand_id};
+    }
+    case mojom::Operation::Tag::kDynamicExpand: {
+      const auto& op = *operation.get_dynamic_expand();
+      return {op.input_operand_id, op.new_shape_operand_id};
+    }
+    case mojom::Operation::Tag::kDynamicSlice: {
+      const auto& op = *operation.get_dynamic_slice();
+      std::vector<OperandId> inputs = {
+          op.input_operand_id, op.starts_operand_id, op.sizes_operand_id};
+      if (op.axes_operand_id) {
+        inputs.push_back(*op.axes_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kDynamicPad: {
+      const auto& op = *operation.get_dynamic_pad();
+      std::vector<OperandId> inputs = {op.input_operand_id,
+                                       op.beginning_padding_operand_id,
+                                       op.ending_padding_operand_id};
+      if (op.constant_value_operand_id) {
+        inputs.push_back(*op.constant_value_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kDynamicSplit: {
+      const auto& op = *operation.get_dynamic_split();
+      return {op.input_operand_id, op.splits_operand_id};
+    }
+    case mojom::Operation::Tag::kDynamicResample2d: {
+      const auto& op = *operation.get_dynamic_resample_2d();
+      std::vector<OperandId> inputs = {op.input_operand_id};
+      if (op.sizes_operand_id) {
+        inputs.push_back(*op.sizes_operand_id);
+      }
+      return inputs;
+    }
+    case mojom::Operation::Tag::kDynamicTile: {
+      const auto& op = *operation.get_dynamic_tile();
+      return {op.input_operand_id, op.repetitions_operand_id};
+    }
+    case mojom::Operation::Tag::kSqueeze:
+      return {operation.get_squeeze()->input_operand_id};
+    case mojom::Operation::Tag::kUnsqueeze:
+      return {operation.get_unsqueeze()->input_operand_id};
+    case mojom::Operation::Tag::kFlatten:
+      return {operation.get_flatten()->input_operand_id};
+  }
+}
+
 // Helper class to validate a operations with the members passed to the
 // constructor as context.
 class OperationValidationContext {
@@ -668,7 +963,7 @@ class OperationValidationContext {
       std::vector<mojom::OperandPtr>& operands,
       base::flat_set<OperandId> processed_operands,
       const base::flat_map<OperandId, std::vector<uint8_t>>&
-          integer_constant_data,
+          shape_constant_data,
       const base::flat_map<std::string, uint32_t>& dim_name_to_value);
 
  private:
@@ -682,22 +977,21 @@ class OperationValidationContext {
     Init();
   }
 
-  OperationValidationContext(const ContextProperties& context_properties,
-                             std::vector<mojom::OperandPtr>& operands,
-                             base::flat_set<OperandId> processed_operands,
-                             const std::vector<mojom::OperationPtr>& operations,
-                             const base::flat_map<OperandId,
-                                                  std::vector<uint8_t>>&
-                                 integer_constant_data,
-                             const base::flat_map<std::string, uint32_t>&
-                                 dim_name_to_value)
+  OperationValidationContext(
+      const ContextProperties& context_properties,
+      std::vector<mojom::OperandPtr>& operands,
+      base::flat_set<OperandId> processed_operands,
+      const std::vector<mojom::OperationPtr>& operations,
+      const base::flat_map<OperandId, std::vector<uint8_t>>&
+          shape_constant_data,
+      const base::flat_map<std::string, uint32_t>& dim_name_to_value)
       : context_properties_(context_properties),
         operands_(operands),
         mutable_operands_(&operands),
         infer_output_shapes_(true),
         processed_operands_(std::move(processed_operands)),
         operations_for_folding_(&operations),
-        integer_constant_data_(&integer_constant_data),
+        shape_constant_data_(&shape_constant_data),
         dim_name_to_value_(dim_name_to_value) {
     Init();
   }
@@ -891,7 +1185,7 @@ class OperationValidationContext {
   raw_ptr<const std::vector<mojom::OperationPtr>> operations_for_folding_ =
       nullptr;
   raw_ptr<const base::flat_map<OperandId, std::vector<uint8_t>>>
-      integer_constant_data_ = nullptr;
+      shape_constant_data_ = nullptr;
 
   // Maps DynamicDimension names to their concrete dispatch-time values.
   // Only populated in infer mode.
@@ -907,21 +1201,61 @@ class OperationValidationContext {
   // Lazily created shape folding interpreter for dynamic* ops.
   std::optional<ShapeFoldingInterpreter> shape_folding_interpreter_;
 
-  // Evaluate a shape operand via the ShapeFoldingInterpreter. Returns nullopt
-  // if the value cannot be determined.
-  std::optional<std::vector<int64_t>> EvaluateShapeOperand(
+  // Evaluates a shape operand via the ShapeFoldingInterpreter, returning its
+  // raw folded values as doubles (float chains keep fractional values).
+  // Returns nullopt if the value cannot be determined.
+  std::optional<std::vector<double>> EvaluateShapeOperandAsDoubles(
       OperandId operand_id,
       std::string_view op_name = "",
       std::string_view operand_role = "") {
     CHECK(infer_output_shapes_);
     CHECK(operations_for_folding_);
-    CHECK(integer_constant_data_);
+    CHECK(shape_constant_data_);
     if (!shape_folding_interpreter_) {
-      shape_folding_interpreter_.emplace(
-          operands_, *operations_for_folding_,
-          operand_to_producing_operation_, *integer_constant_data_);
+      shape_folding_interpreter_.emplace(operands_, *operations_for_folding_,
+                                         operand_to_producing_operation_,
+                                         *shape_constant_data_);
     }
     return shape_folding_interpreter_->Evaluate(operand_id);
+  }
+
+  // Evaluates a shape operand and converts each folded value to an integer at
+  // this single boundary. Shape operands carry integral values; a value that
+  // is non-finite or not integral (e.g. a stray fractional from a float chain
+  // that was not floored) cannot be a concrete dimension, so the whole
+  // evaluation fails. The returned int64 values are still validated for sign
+  // and uint32 range at each call site. Returns nullopt if the operand cannot
+  // be evaluated or any value is not a finite integer in int64 range.
+  //
+  // This non-integrality check is also the safety net for the interpreter's
+  // integer-semantics contract (see ShapeFoldingInterpreter::IsIntegerOperand):
+  // a handler that forgot to truncate an integer result produces a fraction
+  // that gets rejected here rather than reaching a dimension. It is only a net,
+  // not a substitute -- a wrong-but-still-integral result (an off-by-one from
+  // missing truncation) would pass, so handlers must still honor the contract.
+  std::optional<std::vector<int64_t>> EvaluateShapeOperand(
+      OperandId operand_id,
+      std::string_view op_name = "",
+      std::string_view operand_role = "") {
+    auto values =
+        EvaluateShapeOperandAsDoubles(operand_id, op_name, operand_role);
+    if (!values) {
+      return std::nullopt;
+    }
+    std::vector<int64_t> int_values;
+    int_values.reserve(values->size());
+    for (double v : *values) {
+      // Reject non-finite or non-integral values, and values outside int64
+      // range. This is the single double -> integer conversion point; never
+      // cast a double directly to a dimension type elsewhere.
+      if (!std::isfinite(v) || v != std::trunc(v) ||
+          v < static_cast<double>(std::numeric_limits<int64_t>::min()) ||
+          v >= 9223372036854775808.0 /* 2^63, exclusive upper bound */) {
+        return std::nullopt;
+      }
+      int_values.push_back(static_cast<int64_t>(v));
+    }
+    return int_values;
   }
 };
 
@@ -984,13 +1318,11 @@ bool OperationValidationContext::InferAndValidateConcreteShapes(
     const ContextProperties& context_properties,
     std::vector<mojom::OperandPtr>& operands,
     base::flat_set<OperandId> processed_operands,
-    const base::flat_map<OperandId, std::vector<uint8_t>>&
-        integer_constant_data,
+    const base::flat_map<OperandId, std::vector<uint8_t>>& shape_constant_data,
     const base::flat_map<std::string, uint32_t>& dim_name_to_value) {
   OperationValidationContext context(context_properties, operands,
-                                     std::move(processed_operands),
-                                     operations, integer_constant_data,
-                                     dim_name_to_value);
+                                     std::move(processed_operands), operations,
+                                     shape_constant_data, dim_name_to_value);
 
   for (size_t i = 0; i < operations.size(); i++) {
     if (!context.ValidateOperation(*operations[i], /*operation_id=*/i)) {
@@ -3214,39 +3546,14 @@ bool OperationValidationContext::ValidateRange(const mojom::RangeOp& range,
   // and write it back.
   if (infer_output_shapes_ && !output->descriptor.StaticShape().has_value()) {
     // Range output size = max(0, ceil((limit - start) / delta)).
-    // The inputs may be constants or computed intermediate values (e.g.,
-    // from Shape ops). Use the shape folding interpreter for int types
-    // (handles both constants and computation chains), and read directly
-    // from constant data for float types.
+    // The inputs may be integer or float constants, or computed intermediate
+    // values (e.g. from Shape ops). The shape folding interpreter handles all
+    // of these uniformly and returns scalar values as doubles.
     auto eval_scalar = [&](OperandId id,
                            std::string_view role) -> std::optional<double> {
-      const auto* operand = GetMojoOperand(id);
-      if (!operand) {
-        return std::nullopt;
-      }
-
-      // For integer types, use the shape folding interpreter which can
-      // trace computation chains (Shape → Gather → etc.).
-      if (operand->descriptor.data_type() == OperandDataType::kInt64 ||
-          operand->descriptor.data_type() == OperandDataType::kInt32) {
-        auto values = EvaluateShapeOperand(id, "range", role);
-        if (values && values->size() == 1) {
-          return static_cast<double>((*values)[0]);
-        }
-        return std::nullopt;
-      }
-
-      // For float types, read directly from constant data.
-      if (integer_constant_data_) {
-        auto it = integer_constant_data_->find(id);
-        if (it != integer_constant_data_->end()) {
-          auto byte_span = base::as_byte_span(it->second);
-          if (operand->descriptor.data_type() == OperandDataType::kFloat32 &&
-              byte_span.size() >= sizeof(float)) {
-            return static_cast<double>(
-                base::FloatFromLittleEndian(byte_span.first<4u>()));
-          }
-        }
+      auto values = EvaluateShapeOperandAsDoubles(id, "range", role);
+      if (values && values->size() == 1 && std::isfinite((*values)[0])) {
+        return (*values)[0];
       }
       return std::nullopt;
     };
@@ -4259,12 +4566,11 @@ bool WebNNGraphBuilderImpl::InferAndValidateConcreteShapes(
     std::vector<mojom::OperandPtr>& operands,
     const std::vector<mojom::OperationPtr>& operations,
     const base::flat_set<OperandId>& processed_operands,
-    const base::flat_map<OperandId, std::vector<uint8_t>>&
-        integer_constant_data,
+    const base::flat_map<OperandId, std::vector<uint8_t>>& shape_constant_data,
     const base::flat_map<std::string, uint32_t>& dim_name_to_value) {
   return OperationValidationContext::InferAndValidateConcreteShapes(
       operations, context_properties, operands, processed_operands,
-      integer_constant_data, dim_name_to_value);
+      shape_constant_data, dim_name_to_value);
 }
 
 WebNNGraphBuilderImpl::ValidateGraphSuccessResult::ValidateGraphSuccessResult(
@@ -4670,25 +4976,131 @@ WebNNGraphBuilderImpl::ValidateGraphImpl(
     }
   }
 
-  // Extract integer constant data for dispatch-time shape folding.
-  // Only needed when the graph has dynamic inputs (Phase B Step 2).
-  base::flat_map<OperandId, std::vector<uint8_t>> integer_constant_data;
+  // Collect the constant operand data the dispatch-time shape-folding
+  // interpreter may read, for graphs with dynamic inputs (Phase B Step 2).
+  //
+  // The interpreter folds shape arithmetic by walking backward from a dynamic
+  // op's shape operand to the constants that feed it. We mirror that walk to
+  // copy only the constants on those chains, rather than copying every
+  // constant by data type. That distinction matters now that float constants
+  // participate in shape folding: copying all float constants would duplicate
+  // multi-megabyte/gigabyte weight tensors. A weight feeds conv/matmul, which
+  // are never on a shape-operand chain, so the walk excludes them.
+  //
+  // Two guards keep this bounded and safe against an adversarial renderer:
+  //   - The walk visits each operand at most once (`visited` indexed by id).
+  //   - Each constant is copied only if its element count is within
+  //     `kMaxShapeConstantElements`; a larger constant on a chain just makes
+  //     that fold fail (a graceful "cannot infer shape"), not OOM.
+  base::flat_map<OperandId, std::vector<uint8_t>> shape_constant_data;
   if (any_input_dynamic) {
+    // A shape vector describes a tensor of at most kMaxRank (8) dimensions, so
+    // a shape operand holds at most 8 values. ONNX Pad lowers to a single
+    // length-2*rank `pads` constant, so allow up to 16 to keep those foldable.
+    constexpr size_t kMaxShapeConstantElements = 16;
+
+    // Index the constants by id for O(log n) lookup during the walk.
+    base::flat_map<OperandId, const WebNNConstantOperand*> constants_by_id;
+    constants_by_id.reserve(graph_constants.size());
     for (const auto& [operand_id, constant_operand] : graph_constants) {
-      if (!constant_operand) {
+      if (constant_operand) {
+        constants_by_id.emplace(operand_id, constant_operand.get());
+      }
+    }
+
+    // Seed the walk with the shape operands actually evaluated by the
+    // interpreter (the operands passed to EvaluateShapeOperand at dispatch
+    // time). Seeding precisely here avoids walking the unrelated data-tensor
+    // path; the walk itself (below) is a conservative superset.
+    std::vector<OperandId> worklist;
+    auto add_seed = [&worklist](OperandId id) { worklist.push_back(id); };
+    for (const auto& operation : graph_info.operations) {
+      switch (operation->which()) {
+        case mojom::Operation::Tag::kRange: {
+          const auto& op = *operation->get_range();
+          add_seed(op.start_operand_id);
+          add_seed(op.limit_operand_id);
+          add_seed(op.delta_operand_id);
+          break;
+        }
+        case mojom::Operation::Tag::kDynamicReshape:
+          add_seed(operation->get_dynamic_reshape()->new_shape_operand_id);
+          break;
+        case mojom::Operation::Tag::kDynamicExpand:
+          add_seed(operation->get_dynamic_expand()->new_shape_operand_id);
+          break;
+        case mojom::Operation::Tag::kDynamicSlice: {
+          const auto& op = *operation->get_dynamic_slice();
+          add_seed(op.starts_operand_id);
+          add_seed(op.sizes_operand_id);
+          if (op.axes_operand_id) {
+            add_seed(*op.axes_operand_id);
+          }
+          break;
+        }
+        case mojom::Operation::Tag::kDynamicPad: {
+          const auto& op = *operation->get_dynamic_pad();
+          add_seed(op.beginning_padding_operand_id);
+          add_seed(op.ending_padding_operand_id);
+          break;
+        }
+        case mojom::Operation::Tag::kDynamicTile:
+          add_seed(operation->get_dynamic_tile()->repetitions_operand_id);
+          break;
+        case mojom::Operation::Tag::kDynamicSplit:
+          add_seed(operation->get_dynamic_split()->splits_operand_id);
+          break;
+        case mojom::Operation::Tag::kDynamicResample2d: {
+          const auto& op = *operation->get_dynamic_resample_2d();
+          if (op.sizes_operand_id) {
+            add_seed(*op.sizes_operand_id);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+
+    // Walk backward from the seeds. At a constant, copy its bytes (subject to
+    // the size guard). Otherwise follow the producing operation to all of its
+    // inputs (conservative superset): this stays correct regardless of which
+    // operations the interpreter supports, since it can only over-collect, and
+    // over-collection is bounded by the size guard.
+    std::vector<bool> visited(graph_info.operands.size(), false);
+    while (!worklist.empty()) {
+      OperandId operand_id = worklist.back();
+      worklist.pop_back();
+      if (operand_id.value() >= visited.size() || visited[operand_id.value()]) {
         continue;
       }
-      OperandDataType dtype = constant_operand->descriptor().data_type();
-      if (dtype == OperandDataType::kInt32 ||
-          dtype == OperandDataType::kUint32 ||
-          dtype == OperandDataType::kInt64 ||
-          dtype == OperandDataType::kUint64 ||
-          dtype == OperandDataType::kInt8 ||
-          dtype == OperandDataType::kUint8) {
-        auto byte_span = constant_operand->ByteSpan();
-        integer_constant_data.emplace(
-            operand_id,
-            std::vector<uint8_t>(byte_span.begin(), byte_span.end()));
+      visited[operand_id.value()] = true;
+
+      auto const_it = constants_by_id.find(operand_id);
+      if (const_it != constants_by_id.end()) {
+        const WebNNConstantOperand* constant_operand = const_it->second;
+        std::optional<size_t> element_count =
+            constant_operand->descriptor().NumberOfElements();
+        if (element_count && *element_count <= kMaxShapeConstantElements) {
+          auto byte_span = constant_operand->ByteSpan();
+          shape_constant_data.emplace(
+              operand_id,
+              std::vector<uint8_t>(byte_span.begin(), byte_span.end()));
+        }
+        continue;
+      }
+
+      auto producer_it =
+          result->operand_to_producing_operation.find(operand_id);
+      if (producer_it == result->operand_to_producing_operation.end()) {
+        continue;
+      }
+      const mojom::Operation& producing_op =
+          *graph_info.operations[producer_it->second];
+      for (OperandId input_id : GetOperationInputs(producing_op)) {
+        if (input_id.value() < visited.size() && !visited[input_id.value()]) {
+          worklist.push_back(input_id);
+        }
       }
     }
   }
@@ -4699,8 +5111,7 @@ WebNNGraphBuilderImpl::ValidateGraphImpl(
           std::move(result->operand_to_dependent_operations),
           std::move(result->operand_to_producing_operation),
           std::move(cloned_operands), std::move(cloned_operations),
-          std::move(input_operand_ids),
-          std::move(integer_constant_data),
+          std::move(input_operand_ids), std::move(shape_constant_data),
           base::PassKey<WebNNGraphBuilderImpl>()),
       std::move(graph_constants)};
 }

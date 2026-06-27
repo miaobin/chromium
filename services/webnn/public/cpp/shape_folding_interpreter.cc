@@ -6,12 +6,24 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include "base/containers/span.h"
 #include "base/containers/span_reader.h"
 #include "base/numerics/checked_math.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom.h"
+
+// The fp16.h header triggers narrowing and sign conversion warnings.
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#pragma clang diagnostic ignored "-Wimplicit-int-conversion"
+#endif
+#include "third_party/fp16/src/include/fp16.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 namespace webnn {
 
@@ -34,11 +46,13 @@ bool IsIntegerDataType(OperandDataType dtype) {
   }
 }
 
-// Reads integer values from raw bytes, converting to int64.
-std::optional<std::vector<int64_t>> ReadIntegerValues(
+// Reads constant values from raw bytes as doubles. Integer types convert
+// exactly (WebNN dimensions are <= uint32, within double's 53-bit exact
+// range); float32/float16 decode to their real values.
+std::optional<std::vector<double>> ReadConstantValuesAsDouble(
     OperandDataType dtype,
     base::span<const uint8_t> bytes) {
-  std::vector<int64_t> values;
+  std::vector<double> values;
   base::SpanReader reader(bytes);
 
   switch (dtype) {
@@ -48,7 +62,7 @@ std::optional<std::vector<int64_t>> ReadIntegerValues(
         if (!reader.ReadI8NativeEndian(v)) {
           return std::nullopt;
         }
-        values.push_back(static_cast<int64_t>(v));
+        values.push_back(static_cast<double>(v));
       }
       break;
     }
@@ -58,7 +72,7 @@ std::optional<std::vector<int64_t>> ReadIntegerValues(
         if (!reader.ReadU8NativeEndian(v)) {
           return std::nullopt;
         }
-        values.push_back(static_cast<int64_t>(v));
+        values.push_back(static_cast<double>(v));
       }
       break;
     }
@@ -68,7 +82,7 @@ std::optional<std::vector<int64_t>> ReadIntegerValues(
         if (!reader.ReadI32NativeEndian(v)) {
           return std::nullopt;
         }
-        values.push_back(static_cast<int64_t>(v));
+        values.push_back(static_cast<double>(v));
       }
       break;
     }
@@ -78,7 +92,7 @@ std::optional<std::vector<int64_t>> ReadIntegerValues(
         if (!reader.ReadU32NativeEndian(v)) {
           return std::nullopt;
         }
-        values.push_back(static_cast<int64_t>(v));
+        values.push_back(static_cast<double>(v));
       }
       break;
     }
@@ -88,7 +102,7 @@ std::optional<std::vector<int64_t>> ReadIntegerValues(
         if (!reader.ReadI64NativeEndian(v)) {
           return std::nullopt;
         }
-        values.push_back(v);
+        values.push_back(static_cast<double>(v));
       }
       break;
     }
@@ -98,10 +112,27 @@ std::optional<std::vector<int64_t>> ReadIntegerValues(
         if (!reader.ReadU64NativeEndian(v)) {
           return std::nullopt;
         }
-        if (v > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        values.push_back(static_cast<double>(v));
+      }
+      break;
+    }
+    case OperandDataType::kFloat32: {
+      while (reader.remaining() > 0) {
+        float v;
+        if (!reader.ReadFloatNativeEndian(v)) {
           return std::nullopt;
         }
-        values.push_back(static_cast<int64_t>(v));
+        values.push_back(static_cast<double>(v));
+      }
+      break;
+    }
+    case OperandDataType::kFloat16: {
+      while (reader.remaining() > 0) {
+        uint16_t v;
+        if (!reader.ReadU16NativeEndian(v)) {
+          return std::nullopt;
+        }
+        values.push_back(static_cast<double>(fp16_ieee_to_fp32_value(v)));
       }
       break;
     }
@@ -126,7 +157,7 @@ ShapeFoldingInterpreter::ShapeFoldingInterpreter(
 
 ShapeFoldingInterpreter::~ShapeFoldingInterpreter() = default;
 
-std::optional<std::vector<int64_t>> ShapeFoldingInterpreter::Evaluate(
+std::optional<std::vector<double>> ShapeFoldingInterpreter::Evaluate(
     OperandId operand_id) {
   auto cache_it = cache_.find(operand_id);
   if (cache_it != cache_.end()) {
@@ -143,7 +174,7 @@ std::optional<std::vector<int64_t>> ShapeFoldingInterpreter::Evaluate(
   return result;
 }
 
-std::optional<std::vector<int64_t>> ShapeFoldingInterpreter::ReadConstantValues(
+std::optional<std::vector<double>> ShapeFoldingInterpreter::ReadConstantValues(
     OperandId operand_id) const {
   auto data_it = constant_data_->find(operand_id);
   if (data_it == constant_data_->end()) {
@@ -154,10 +185,20 @@ std::optional<std::vector<int64_t>> ShapeFoldingInterpreter::ReadConstantValues(
     return std::nullopt;
   }
   const auto& operand = operands_[operand_id.value()];
-  return ReadIntegerValues(operand->descriptor.data_type(), data_it->second);
+  return ReadConstantValuesAsDouble(operand->descriptor.data_type(),
+                                    data_it->second);
 }
 
-std::optional<std::vector<int64_t>> ShapeFoldingInterpreter::EvaluateImpl(
+bool ShapeFoldingInterpreter::IsIntegerOperand(OperandId operand_id) const {
+  if (operand_id.value() >= operands_.size() ||
+      !operands_[operand_id.value()]) {
+    return false;
+  }
+  return IsIntegerDataType(
+      operands_[operand_id.value()]->descriptor.data_type());
+}
+
+std::optional<std::vector<double>> ShapeFoldingInterpreter::EvaluateImpl(
     OperandId operand_id) {
   if (operand_id.value() >= operands_.size() ||
       !operands_[operand_id.value()]) {
@@ -191,11 +232,10 @@ std::optional<std::vector<int64_t>> ShapeFoldingInterpreter::EvaluateImpl(
   return InterpretOperation(*(*operations_)[op_id], operand_id);
 }
 
-std::optional<std::vector<int64_t>>
-ShapeFoldingInterpreter::InterpretOperation(
+std::optional<std::vector<double>> ShapeFoldingInterpreter::InterpretOperation(
     const mojom::Operation& operation,
     OperandId output_operand_id) {
-  // shape() — returns input tensor dimensions as int64 values.
+  // shape() — returns input tensor dimensions.
   if (operation.is_shape()) {
     const auto& shape_op = *operation.get_shape();
     if (shape_op.input_operand_id.value() >= operands_.size() ||
@@ -204,14 +244,14 @@ ShapeFoldingInterpreter::InterpretOperation(
     }
     const auto& input_operand = operands_[shape_op.input_operand_id.value()];
     const auto& shape = input_operand->descriptor.shape();
-    std::vector<int64_t> values;
+    std::vector<double> values;
     values.reserve(shape.size());
     for (const auto& dim : shape) {
       if (!std::holds_alternative<uint32_t>(dim)) {
         // Input shape should be concrete at this point in infer mode.
         return std::nullopt;
       }
-      values.push_back(static_cast<int64_t>(std::get<uint32_t>(dim)));
+      values.push_back(static_cast<double>(std::get<uint32_t>(dim)));
     }
     return values;
   }
@@ -219,7 +259,7 @@ ShapeFoldingInterpreter::InterpretOperation(
   // concat — concatenate evaluated inputs along axis.
   if (operation.is_concat()) {
     const auto& concat_op = *operation.get_concat();
-    std::vector<int64_t> result;
+    std::vector<double> result;
     // For 1-D shape tensors, concat just appends values.
     // For multi-dimensional concat, we need axis handling, but shape tensors
     // are typically 1-D so axis=0 concatenation is the common case.
@@ -242,9 +282,14 @@ ShapeFoldingInterpreter::InterpretOperation(
       return std::nullopt;
     }
     // For 1-D data (typical shape tensor), gather just indexes into it.
-    std::vector<int64_t> result;
+    std::vector<double> result;
     result.reserve(indices_values->size());
-    for (int64_t idx : *indices_values) {
+    for (double idx_d : *indices_values) {
+      // Indices are integral; reject non-finite or non-integer values.
+      if (!std::isfinite(idx_d) || idx_d != std::trunc(idx_d)) {
+        return std::nullopt;
+      }
+      int64_t idx = static_cast<int64_t>(idx_d);
       // Handle negative indices.
       if (idx < 0) {
         idx += static_cast<int64_t>(data_values->size());
@@ -257,7 +302,9 @@ ShapeFoldingInterpreter::InterpretOperation(
     return result;
   }
 
-  // Element-wise binary arithmetic on integers.
+  // Element-wise binary arithmetic. Division and modulo follow the output
+  // operand's data type: integer operands keep integer (truncating) semantics,
+  // float operands use real arithmetic.
   if (operation.is_element_wise_binary()) {
     const auto& binary_op = *operation.get_element_wise_binary();
     auto lhs_values = Evaluate(binary_op.lhs_operand_id);
@@ -266,9 +313,15 @@ ShapeFoldingInterpreter::InterpretOperation(
       return std::nullopt;
     }
 
+    // See IsIntegerOperand's contract: div/mod below diverge between integer
+    // and real arithmetic, so they must restore integer semantics for integer
+    // outputs. add/sub/mul/min/max are exact over doubles for integral inputs
+    // and need no gating.
+    const bool is_integer = IsIntegerOperand(output_operand_id);
+
     // Handle broadcasting: if sizes differ, one must be scalar (size 1).
-    const std::vector<int64_t>* a = &*lhs_values;
-    const std::vector<int64_t>* b = &*rhs_values;
+    const std::vector<double>* a = &*lhs_values;
+    const std::vector<double>* b = &*rhs_values;
     size_t result_size = std::max(a->size(), b->size());
     if (a->size() != result_size && a->size() != 1) {
       return std::nullopt;
@@ -277,12 +330,12 @@ ShapeFoldingInterpreter::InterpretOperation(
       return std::nullopt;
     }
 
-    std::vector<int64_t> result;
+    std::vector<double> result;
     result.reserve(result_size);
     for (size_t i = 0; i < result_size; ++i) {
-      int64_t av = (*a)[a->size() == 1 ? 0 : i];
-      int64_t bv = (*b)[b->size() == 1 ? 0 : i];
-      int64_t rv;
+      double av = (*a)[a->size() == 1 ? 0 : i];
+      double bv = (*b)[b->size() == 1 ? 0 : i];
+      double rv;
       switch (binary_op.kind) {
         case mojom::ElementWiseBinary::Kind::kAdd:
           rv = av + bv;
@@ -297,7 +350,9 @@ ShapeFoldingInterpreter::InterpretOperation(
           if (bv == 0) {
             return std::nullopt;
           }
-          rv = av / bv;
+          // Integer operands truncate toward zero (matching C++ integer
+          // division); float operands use real division.
+          rv = is_integer ? std::trunc(av / bv) : (av / bv);
           break;
         case mojom::ElementWiseBinary::Kind::kMax:
           rv = std::max(av, bv);
@@ -309,42 +364,44 @@ ShapeFoldingInterpreter::InterpretOperation(
           if (bv == 0) {
             return std::nullopt;
           }
-          rv = av % bv;
+          // std::fmod truncates toward zero, matching C++ integer % for the
+          // integral values shape arithmetic uses.
+          rv = std::fmod(av, bv);
           break;
         // Comparison and logical ops produce a boolean (0/1) result. These are
         // common in shape computations (e.g. Equal/Where chains that resolve a
         // -1 or dynamic dimension).
         case mojom::ElementWiseBinary::Kind::kEqual:
-          rv = (av == bv) ? 1 : 0;
+          rv = (av == bv) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kNotEqual:
-          rv = (av != bv) ? 1 : 0;
+          rv = (av != bv) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kGreater:
-          rv = (av > bv) ? 1 : 0;
+          rv = (av > bv) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kGreaterOrEqual:
-          rv = (av >= bv) ? 1 : 0;
+          rv = (av >= bv) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kLesser:
-          rv = (av < bv) ? 1 : 0;
+          rv = (av < bv) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kLesserOrEqual:
-          rv = (av <= bv) ? 1 : 0;
+          rv = (av <= bv) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kLogicalAnd:
-          rv = (av != 0 && bv != 0) ? 1 : 0;
+          rv = (av != 0 && bv != 0) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kLogicalOr:
-          rv = (av != 0 || bv != 0) ? 1 : 0;
+          rv = (av != 0 || bv != 0) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kLogicalXor:
-          rv = ((av != 0) != (bv != 0)) ? 1 : 0;
+          rv = ((av != 0) != (bv != 0)) ? 1.0 : 0.0;
           break;
         case mojom::ElementWiseBinary::Kind::kPow:
         default:
-          // kPow and any future kinds are not folded (integer pow risks
-          // overflow and is essentially absent from shape arithmetic).
+          // kPow and any future kinds are not folded (essentially absent from
+          // shape arithmetic).
           return std::nullopt;
       }
       result.push_back(rv);
@@ -407,12 +464,13 @@ ShapeFoldingInterpreter::InterpretOperation(
     if (static_cast<size_t>(start) + size > values->size()) {
       return std::nullopt;
     }
-    return std::vector<int64_t>(values->begin() + start,
-                                values->begin() + start + size);
+    return std::vector<double>(values->begin() + start,
+                               values->begin() + start + size);
   }
 
-  // Element-wise unary — support cast to integer and floor/ceil (no-op on
-  // integers).
+  // Element-wise unary — cast, floor/ceil, reciprocal, abs, neg. These are the
+  // operations Resize/interpolate size chains use, e.g. floor(dim * scale) or
+  // floor(side / max(H, W) * target).
   if (operation.is_element_wise_unary()) {
     const auto& unary_op = *operation.get_element_wise_unary();
     auto input_values = Evaluate(unary_op.input_operand_id);
@@ -421,34 +479,64 @@ ShapeFoldingInterpreter::InterpretOperation(
     }
     switch (unary_op.kind) {
       case mojom::ElementWiseUnary::Kind::kCast: {
-        // Verify the output type is integer.
-        if (output_operand_id.value() >= operands_.size() ||
-            !operands_[output_operand_id.value()]) {
-          return std::nullopt;
+        // Cast is a type-level operation; values are already double. If the
+        // output type is integer, truncate toward zero (matching an integer
+        // cast); a cast to a float type passes the values through unchanged.
+        // This is the integer-semantics restoration point for cast; see
+        // IsIntegerOperand's contract.
+        if (IsIntegerOperand(output_operand_id)) {
+          std::vector<double> result;
+          result.reserve(input_values->size());
+          for (double v : *input_values) {
+            // A non-finite value cannot become a concrete integer.
+            if (!std::isfinite(v)) {
+              return std::nullopt;
+            }
+            result.push_back(std::trunc(v));
+          }
+          return result;
         }
-        if (!IsIntegerDataType(
-                operands_[output_operand_id.value()]->descriptor.data_type())) {
-          return std::nullopt;
-        }
-        // Values are already int64 — cast is a type-level operation.
         return input_values;
       }
-      case mojom::ElementWiseUnary::Kind::kFloor:
-      case mojom::ElementWiseUnary::Kind::kCeil:
-        // No-op on integers.
-        return input_values;
-      case mojom::ElementWiseUnary::Kind::kAbs: {
-        std::vector<int64_t> result;
+      case mojom::ElementWiseUnary::Kind::kFloor: {
+        std::vector<double> result;
         result.reserve(input_values->size());
-        for (int64_t v : *input_values) {
+        for (double v : *input_values) {
+          result.push_back(std::floor(v));
+        }
+        return result;
+      }
+      case mojom::ElementWiseUnary::Kind::kCeil: {
+        std::vector<double> result;
+        result.reserve(input_values->size());
+        for (double v : *input_values) {
+          result.push_back(std::ceil(v));
+        }
+        return result;
+      }
+      case mojom::ElementWiseUnary::Kind::kReciprocal: {
+        std::vector<double> result;
+        result.reserve(input_values->size());
+        for (double v : *input_values) {
+          if (v == 0.0) {
+            return std::nullopt;
+          }
+          result.push_back(1.0 / v);
+        }
+        return result;
+      }
+      case mojom::ElementWiseUnary::Kind::kAbs: {
+        std::vector<double> result;
+        result.reserve(input_values->size());
+        for (double v : *input_values) {
           result.push_back(std::abs(v));
         }
         return result;
       }
       case mojom::ElementWiseUnary::Kind::kNeg: {
-        std::vector<int64_t> result;
+        std::vector<double> result;
         result.reserve(input_values->size());
-        for (int64_t v : *input_values) {
+        for (double v : *input_values) {
           result.push_back(-v);
         }
         return result;
@@ -458,7 +546,8 @@ ShapeFoldingInterpreter::InterpretOperation(
     }
   }
 
-  // range — generate integer sequence [start, start+delta, ...) up to limit.
+  // range — generate a sequence [start, start+delta, ...) up to limit. Inputs
+  // are integral for shape arithmetic.
   if (operation.is_range()) {
     const auto& range_op = *operation.get_range();
     auto start_values = Evaluate(range_op.start_operand_id);
@@ -467,30 +556,29 @@ ShapeFoldingInterpreter::InterpretOperation(
     if (!start_values || !limit_values || !delta_values) {
       return std::nullopt;
     }
-    // All inputs must be scalar.
+    // All inputs must be scalar and finite.
     if (start_values->size() != 1 || limit_values->size() != 1 ||
         delta_values->size() != 1) {
       return std::nullopt;
     }
-    int64_t start = (*start_values)[0];
-    int64_t limit = (*limit_values)[0];
-    int64_t delta = (*delta_values)[0];
-    if (delta == 0) {
+    double start = (*start_values)[0];
+    double limit = (*limit_values)[0];
+    double delta = (*delta_values)[0];
+    if (!std::isfinite(start) || !std::isfinite(limit) ||
+        !std::isfinite(delta) || delta == 0.0) {
       return std::nullopt;
     }
-    double count_d =
-        std::ceil(static_cast<double>(limit - start) /
-                  static_cast<double>(delta));
+    double count_d = std::ceil((limit - start) / delta);
     int64_t count = static_cast<int64_t>(std::max(0.0, count_d));
     // Safety limit to prevent huge allocations during shape folding.
     constexpr int64_t kMaxRangeElements = 100000;
     if (count > kMaxRangeElements) {
       return std::nullopt;
     }
-    std::vector<int64_t> result;
+    std::vector<double> result;
     result.reserve(static_cast<size_t>(count));
     for (int64_t i = 0; i < count; ++i) {
-      result.push_back(start + i * delta);
+      result.push_back(start + static_cast<double>(i) * delta);
     }
     return result;
   }
@@ -526,14 +614,21 @@ ShapeFoldingInterpreter::InterpretOperation(
     if (stride <= 0) {
       return std::nullopt;
     }
-    // starts and sizes are uint32 (non-negative); no negative-index handling.
+    // starts and sizes are uint32 (non-negative) integral indices; no
+    // negative-index handling.
+    double start_d = (*starts)[0];
+    double size_d = (*sizes)[0];
+    if (!std::isfinite(start_d) || start_d != std::trunc(start_d) ||
+        !std::isfinite(size_d) || size_d != std::trunc(size_d)) {
+      return std::nullopt;
+    }
     int64_t dim_size = static_cast<int64_t>(values->size());
-    int64_t start = (*starts)[0];
-    int64_t end = start + (*sizes)[0];
+    int64_t start = static_cast<int64_t>(start_d);
+    int64_t end = start + static_cast<int64_t>(size_d);
     start = std::clamp(start, int64_t{0}, dim_size);
     end = std::clamp(end, int64_t{0}, dim_size);
 
-    std::vector<int64_t> result;
+    std::vector<double> result;
     for (int64_t i = start; i < end; i += stride) {
       result.push_back((*values)[static_cast<size_t>(i)]);
     }
@@ -565,22 +660,30 @@ ShapeFoldingInterpreter::InterpretOperation(
           reduce_op.axes.empty() ||
           (reduce_op.axes.size() == 1 && reduce_op.axes[0] == 0);
       if (reduces_axis_0) {
-        int64_t acc = 0;
+        // Only kMean diverges between integer and real arithmetic here (it
+        // averages); sum/product/min/max are exact over doubles for integral
+        // inputs. See IsIntegerOperand's contract.
+        const bool is_integer = IsIntegerOperand(output_operand_id);
+        double acc = 0;
         switch (reduce_op.kind) {
           case mojom::Reduce::Kind::kSum:
-            for (int64_t v : *input_values) {
+            for (double v : *input_values) {
               acc += v;
             }
             break;
           case mojom::Reduce::Kind::kMean:
-            for (int64_t v : *input_values) {
+            for (double v : *input_values) {
               acc += v;
             }
-            acc /= static_cast<int64_t>(input_values->size());
+            acc /= static_cast<double>(input_values->size());
+            // Integer mean truncates toward zero (matches integer division).
+            if (is_integer) {
+              acc = std::trunc(acc);
+            }
             break;
           case mojom::Reduce::Kind::kProduct:
             acc = 1;
-            for (int64_t v : *input_values) {
+            for (double v : *input_values) {
               acc *= v;
             }
             break;
@@ -599,10 +702,9 @@ ShapeFoldingInterpreter::InterpretOperation(
           default:
             return std::nullopt;
         }
-        if (reduce_op.keep_dimensions) {
-          return std::vector<int64_t>{acc};
-        }
-        return std::vector<int64_t>{acc};
+        // keep_dimensions does not change the single reduced value for a 1-D
+        // full reduction.
+        return std::vector<double>{acc};
       }
     }
 
@@ -634,13 +736,12 @@ ShapeFoldingInterpreter::InterpretOperation(
       return std::nullopt;
     }
 
-    std::vector<int64_t> result;
+    std::vector<double> result;
     result.reserve(result_size);
     for (size_t i = 0; i < result_size; ++i) {
-      int64_t cond =
-          (*condition_values)[condition_values->size() == 1 ? 0 : i];
-      int64_t tv = (*true_values)[true_values->size() == 1 ? 0 : i];
-      int64_t fv = (*false_values)[false_values->size() == 1 ? 0 : i];
+      double cond = (*condition_values)[condition_values->size() == 1 ? 0 : i];
+      double tv = (*true_values)[true_values->size() == 1 ? 0 : i];
+      double fv = (*false_values)[false_values->size() == 1 ? 0 : i];
       result.push_back(cond != 0 ? tv : fv);
     }
     return result;
@@ -672,7 +773,7 @@ ShapeFoldingInterpreter::InterpretOperation(
       return input_values;  // Identity broadcast.
     }
     if (input_values->size() == 1) {
-      return std::vector<int64_t>(target, (*input_values)[0]);
+      return std::vector<double>(target, (*input_values)[0]);
     }
     return std::nullopt;
   }
@@ -750,7 +851,7 @@ ShapeFoldingInterpreter::InterpretOperation(
     if (offset + target_size > input_values->size()) {
       return std::nullopt;
     }
-    std::vector<int64_t> result;
+    std::vector<double> result;
     result.reserve(target_size);
     for (size_t i = 0; i < target_size; ++i) {
       result.push_back((*input_values)[offset + i]);

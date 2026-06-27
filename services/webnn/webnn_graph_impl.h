@@ -55,7 +55,7 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphImpl
         std::vector<mojom::OperandPtr> graph_operands,
         std::vector<mojom::OperationPtr> graph_operations,
         std::vector<OperandId> graph_input_operand_ids,
-        base::flat_map<OperandId, std::vector<uint8_t>> integer_constant_data,
+        base::flat_map<OperandId, std::vector<uint8_t>> shape_constant_data,
         base::PassKey<WebNNGraphBuilderImpl> pass_key);
     ~ComputeResourceInfo();
 
@@ -81,9 +81,11 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphImpl
     std::vector<mojom::OperationPtr> graph_operations;
     std::vector<OperandId> graph_input_operand_ids;
 
-    // Raw byte data of integer constant operands, for dispatch-time shape
-    // folding (Phase B Step 2). Only populated when has_dynamic_inputs is true.
-    base::flat_map<OperandId, std::vector<uint8_t>> integer_constant_data;
+    // Raw byte data of the constant operands on a shape-computation chain
+    // (integer or float), for dispatch-time shape folding (Phase B Step 2).
+    // Collected by walking back from dynamic ops' shape operands, so weight
+    // tensors are excluded. Only populated when has_dynamic_inputs is true.
+    base::flat_map<OperandId, std::vector<uint8_t>> shape_constant_data;
   };
 
   // Constructs a graph where the receiver and implementation are owned by the
