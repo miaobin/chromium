@@ -7431,6 +7431,24 @@ TEST_F(WebNNGraphImplTest, UnrankedInputRejectedByFixedRankOp) {
   EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
 }
 
+// A graph input must have a known rank. An unranked input is an internal
+// intermediate state, never a valid input, and is rejected at build time
+// (rather than crashing the service when downstream code reads its rank).
+TEST_F(WebNNGraphImplTest, UnrankedGraphInputRejected) {
+  auto context_properties = GetContextPropertiesForTesting();
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+
+  const OperandId input_id =
+      builder.BuildUnrankedInput("input", OperandDataType::kFloat32);
+  const OperandId output_id =
+      builder.BuildUnrankedIntermediateOperand(OperandDataType::kFloat32);
+  builder.BuildRelu(input_id, output_id);
+  builder.AddOutput("output", output_id);
+
+  EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
+}
+
 struct UnsqueezeTester {
   OperandInfo input;
   std::vector<uint32_t> axes;

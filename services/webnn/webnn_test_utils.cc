@@ -68,6 +68,18 @@ OperandId GraphInfoBuilder::BuildUnrankedIntermediateOperand(
   return OperandId(graph_info_->operands.size() - 1);
 }
 
+OperandId GraphInfoBuilder::BuildUnrankedInput(const std::string& name,
+                                               OperandDataType type) {
+  mojom::OperandPtr operand = mojom::Operand::New();
+  operand->descriptor = OperandDescriptor::CreateUnranked(type);
+  operand->kind = mojom::Operand::Kind::kInput;
+  operand->name = name;
+  graph_info_->operands.push_back(std::move(operand));
+  OperandId operand_id(graph_info_->operands.size() - 1);
+  graph_info_->input_operands.push_back(operand_id);
+  return operand_id;
+}
+
 OperandId GraphInfoBuilder::BuildInput(const std::string& name,
                                        const std::vector<uint32_t>& dimensions,
                                        OperandDataType type) {

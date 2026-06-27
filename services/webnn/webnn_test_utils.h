@@ -53,6 +53,11 @@ class GraphInfoBuilder final {
                               const std::vector<Dimension>& dimensions,
                               OperandDataType type);
 
+  // Builds an unranked (rank-unknown) graph input. Only used by tests that
+  // verify such an input is rejected at build time; a real graph input always
+  // has a known rank.
+  OperandId BuildUnrankedInput(const std::string& name, OperandDataType type);
+
   // Optionally provide `handle` to identify this constant operand; otherwise a
   // handle will be generated automatically.
   OperandId BuildConstant(

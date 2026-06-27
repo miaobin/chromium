@@ -331,6 +331,13 @@ ValidateNormalizationOperandIsCompatibleWithInput(
              " operand: the data type doesn't match the input data type."})));
   }
 
+  // An unranked operand (rank only known at dispatch) has no shape() to check;
+  // skip this size-compatibility check and defer it to dispatch, when the
+  // operand is concrete. The operand's role is otherwise unaffected.
+  if (!operand.HasRank()) {
+    return base::ok();
+  }
+
   if (DimensionsAreDefinitelyUnequal(operand.shape()[0], input_size_on_axis)) {
     return base::unexpected(ErrorWithLabel(
         label,
@@ -1718,7 +1725,11 @@ base::expected<OperandDescriptor, std::string> ValidateGemmAndInferOutput(
           "The third input data type doesn't match other inputs' data type."));
     }
 
-    if (!BroadcastShapes(attributes.c_operand->shape(), output_shape,
+    // An unranked bias (rank only known at dispatch) has no shape() to
+    // broadcast-check here; defer the check to dispatch, when c is concrete.
+    // The 2-D output shape [M, N] is determined by a and b regardless.
+    if (attributes.c_operand->HasRank() &&
+        !BroadcastShapes(attributes.c_operand->shape(), output_shape,
                          /*bidirectional=*/false)) {
       return base::unexpected(ErrorWithLabel(
           label,
@@ -2119,7 +2130,10 @@ ValidateLayerNormalizationAndInferOutput(
           "For scale operand: the data type doesn't match the input data "
           "type."));
     }
-    if (shape_definitely_mismatches(attributes.scale->shape())) {
+    // An unranked scale (rank only known at dispatch) has no shape() to check;
+    // defer to dispatch, when it is concrete.
+    if (attributes.scale->HasRank() &&
+        shape_definitely_mismatches(attributes.scale->shape())) {
       return base::unexpected(ErrorWithLabel(
           label,
           "For scale operand: the shape doesn't match the axis dimensions of "
@@ -2135,7 +2149,10 @@ ValidateLayerNormalizationAndInferOutput(
                          "For bias operand: the data type doesn't match the "
                          "input data type."));
     }
-    if (shape_definitely_mismatches(attributes.bias->shape())) {
+    // An unranked bias (rank only known at dispatch) has no shape() to check;
+    // defer to dispatch, when it is concrete.
+    if (attributes.bias->HasRank() &&
+        shape_definitely_mismatches(attributes.bias->shape())) {
       return base::unexpected(ErrorWithLabel(
           label,
           "For bias operand: the shape doesn't match the axis dimensions of "
@@ -3258,9 +3275,11 @@ base::expected<OperandDescriptor, std::string> ValidateScatterNDAndInferOutput(
                        "input data type."));
   }
 
-  // The output has the same shape as the input; when the input or indices is
-  // unranked the rank-dependent checks cannot run, so defer to dispatch.
-  if (!input.HasRank() || !indices.HasRank()) {
+  // The output has the same shape as the input; when the input, indices, or
+  // updates is unranked the rank-dependent checks cannot run, so defer to
+  // dispatch. updates is dereferenced below (via its data type and, at
+  // dispatch, its shape), so it must be guarded here too.
+  if (!input.HasRank() || !indices.HasRank() || !updates.HasRank()) {
     return OperandDescriptor::CreateUnranked(input.data_type());
   }
 

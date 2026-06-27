@@ -1340,6 +1340,17 @@ bool OperationValidationContext::VerifyOrWriteBackOutput(
     auto& operand = (*mutable_operands_)[output_operand_id.value()];
     CHECK(operand);
 
+    // Residual-unranked gate. At dispatch the graph inputs are concrete
+    // (unranked inputs are rejected at build time), so forward inference must
+    // resolve every operand's rank. If an operand is still unranked here, this
+    // implementation cannot determine its rank, and letting it flow into the
+    // shape-folding interpreter or the backend would dereference an absent
+    // rank. Fail cleanly instead. Legitimate dynamic graphs never reach this:
+    // a ranked input yields a ranked output for every supported operator.
+    if (!inferred_descriptor.HasRank()) {
+      return false;
+    }
+
     // Before overwriting, record resolved DynamicDimension name → concrete
     // value mappings. The old descriptor has DynamicDimension names from build
     // time; the inferred descriptor has concrete uint32_t values from dispatch.
@@ -3805,6 +3816,12 @@ bool OperationValidationContext::ValidateDynamicSlice(
       return false;
     }
 
+    // starts/sizes are per-axis, so the output rank equals the input rank; an
+    // unranked input cannot be sliced (dispatch-time inference should have
+    // resolved it). Fail cleanly rather than dereferencing an absent rank.
+    if (!input->descriptor.HasRank()) {
+      return false;
+    }
     const size_t rank = input->descriptor.Rank().value();
 
     // Like the static slice operator, strides is a build-time constant
@@ -3947,6 +3964,13 @@ bool OperationValidationContext::ValidateDynamicPad(
       return false;
     }
 
+    // The padding vectors are per-axis, so the output rank equals the input
+    // rank; an unranked input cannot be validated against them (dispatch-time
+    // inference should have resolved it). Fail cleanly rather than
+    // dereferencing an absent rank.
+    if (!input->descriptor.HasRank()) {
+      return false;
+    }
     const size_t rank = input->descriptor.Rank().value();
     if (beginning_values->size() != rank || ending_values->size() != rank) {
       return false;
@@ -4012,6 +4036,12 @@ bool OperationValidationContext::ValidateDynamicTile(
       return false;
     }
 
+    // The output rank equals the input rank; an unranked input cannot be tiled
+    // (the dispatch-time forward pass should have resolved it). Fail cleanly
+    // rather than dereferencing an absent rank.
+    if (!input->descriptor.HasRank()) {
+      return false;
+    }
     const size_t rank = input->descriptor.Rank().value();
     if (repetitions_values->size() != rank) {
       return false;
@@ -4797,6 +4827,13 @@ WebNNGraphBuilderImpl::ValidateGraphImpl(
       case mojom::Operand::Kind::kInput: {
         if (!name || name.value().empty()) {
           // The name of input is empty.
+          return std::nullopt;
+        }
+        if (!operand->descriptor.HasRank()) {
+          // A graph input must have a known rank. Unranked operands are an
+          // internal intermediate state (e.g. from a no-axes squeeze) that is
+          // resolved at dispatch; they are never a valid graph input, and
+          // accepting one would let downstream code dereference an absent rank.
           return std::nullopt;
         }
         if (!inputs.try_emplace(*name, operand->descriptor).second) {
