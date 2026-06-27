@@ -302,7 +302,8 @@ class GraphBuilderOrt {
   void AddCastOperation(const mojom::ElementWiseUnary& cast);
   void AddClampOperation(const mojom::Clamp& clamp);
   void AddConcatOperation(const mojom::Concat& concat);
-  void AddConv2dOperation(const mojom::Conv2d& conv2d);
+  base::expected<void, mojom::ErrorPtr> AddConv2dOperation(
+      const mojom::Conv2d& conv2d);
   void AddCumulativeSumOperation(const mojom::CumulativeSum& cumulative_sum);
   template <typename T>
     requires(std::is_same_v<T, mojom::DequantizeLinear> ||
@@ -344,7 +345,8 @@ class GraphBuilderOrt {
   void AddPreluOperation(const mojom::Prelu& prelu);
   void AddReduceOperation(const mojom::Reduce& reduce);
   void AddResample2dOperation(const mojom::Resample2d& resample2d);
-  void AddReshapeOperation(const mojom::Reshape& reshape);
+  base::expected<void, mojom::ErrorPtr> AddReshapeOperation(
+      const mojom::Reshape& reshape);
   void AddReverseOperation(const mojom::Reverse& reverse);
   void AddShapeOperation(const mojom::Shape& shape);
   void AddScatterElementsOperation(

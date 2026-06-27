@@ -454,18 +454,29 @@ std::optional<std::vector<double>> ShapeFoldingInterpreter::InterpretOperation(
     if (!values) {
       return std::nullopt;
     }
-    // For 1-D slicing: starts[0] and sizes[0].
+    // For 1-D slicing: ranges[0] gives the start, window size and stride.
     if (slice_op.ranges.size() != 1) {
       // Multi-dimensional slice on shape tensor is uncommon; bail out.
       return std::nullopt;
     }
     uint32_t start = slice_op.ranges[0].start;
     uint32_t size = slice_op.ranges[0].size;
+    uint32_t stride = slice_op.ranges[0].stride;
+    if (stride == 0) {
+      return std::nullopt;
+    }
     if (static_cast<size_t>(start) + size > values->size()) {
       return std::nullopt;
     }
-    return std::vector<double>(values->begin() + start,
-                               values->begin() + start + size);
+    // Slice subsamples the [start, start + size) window by stride, matching the
+    // dynamic_slice handler (and the mojom Range semantics). Iterate by stride
+    // rather than copying the contiguous range, so the folded count is correct
+    // (ceil(size / stride)) whenever stride > 1.
+    std::vector<double> result;
+    for (uint32_t offset = 0; offset < size; offset += stride) {
+      result.push_back((*values)[start + offset]);
+    }
+    return result;
   }
 
   // Element-wise unary — cast, floor/ceil, reciprocal, abs, neg. These are the

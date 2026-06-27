@@ -18,6 +18,7 @@
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
@@ -116,6 +117,13 @@ class MODULES_EXPORT MLGraph : public ScriptWrappable {
   // The `WebNNGraph` is a compiled graph. This remote is lifecycle-only:
   // pipe disconnect signals graph destruction in the service.
   HeapMojoRemote<webnn::mojom::blink::WebNNGraph> remote_graph_;
+
+  // Unresolved computeShapes() resolvers, rejected if the graph pipe is
+  // unexpectedly disconnected so the promise never hangs. Mirrors the
+  // pending-resolver tracking in MLTensor/MLContext.
+  HeapHashSet<
+      Member<ScriptPromiseResolver<IDLRecord<IDLString, MLOperandDescriptor>>>>
+      pending_compute_shapes_resolvers_;
 
   // Devices that will be used when dispatching the graph.
   Vector<V8MLDeviceType> devices_;

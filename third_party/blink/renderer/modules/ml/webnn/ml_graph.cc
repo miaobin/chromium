@@ -79,6 +79,7 @@ void MLGraph::Dispose() {
 void MLGraph::Trace(Visitor* visitor) const {
   visitor->Trace(ml_context_);
   visitor->Trace(remote_graph_);
+  visitor->Trace(pending_compute_shapes_resolvers_);
   ScriptWrappable::Trace(visitor);
 }
 
@@ -268,6 +269,9 @@ ScriptPromise<IDLRecord<IDLString, MLOperandDescriptor>> MLGraph::computeShapes(
       ScriptPromiseResolver<IDLRecord<IDLString, MLOperandDescriptor>>>(
       script_state, exception_state.GetContext());
   auto promise = resolver->Promise();
+  // Track the resolver so it is rejected (rather than left hanging) if the
+  // graph pipe disconnects before the reply arrives.
+  pending_compute_shapes_resolvers_.insert(resolver);
   remote_graph_->ComputeShapes(
       std::move(named_input_shapes),
       blink::BindOnce(&MLGraph::DidComputeShapes, WrapPersistent(this),
@@ -279,6 +283,9 @@ void MLGraph::DidComputeShapes(
     ScriptPromiseResolver<IDLRecord<IDLString, MLOperandDescriptor>>* resolver,
     base::expected<webnn::mojom::blink::ComputeShapesSuccessPtr,
                    webnn::mojom::blink::ErrorPtr> result) {
+  // The reply arrived; this resolver is no longer pending on disconnect.
+  pending_compute_shapes_resolvers_.erase(resolver);
+
   ScriptState* script_state = resolver->GetScriptState();
   if (!script_state->ContextIsValid()) {
     return;
@@ -318,6 +325,14 @@ const MLContext* MLGraph::Context() const {
 
 void MLGraph::OnConnectionError() {
   remote_graph_.reset();
+
+  // Reject any in-flight computeShapes() promises so they do not hang forever
+  // when the service/GPU process is lost mid-call.
+  for (const auto& resolver : pending_compute_shapes_resolvers_) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "Context is lost.");
+  }
+  pending_compute_shapes_resolvers_.clear();
 }
 
 }  // namespace blink

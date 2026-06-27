@@ -164,14 +164,15 @@ OperationPtr MakeReverseOp(OperandId input_id,
 OperationPtr MakeSliceOp(OperandId input_id,
                          OperandId output_id,
                          uint32_t start,
-                         uint32_t size) {
+                         uint32_t size,
+                         uint32_t stride = 1) {
   auto slice_op = mojom::Slice::New();
   slice_op->input_operand_id = input_id;
   slice_op->output_operand_id = output_id;
   Range range;
   range.start = start;
   range.size = size;
-  range.stride = 1;
+  range.stride = stride;
   slice_op->ranges.push_back(range);
   return Operation::NewSlice(std::move(slice_op));
 }
@@ -784,6 +785,30 @@ TEST_F(ShapeFoldingInterpreterTest, Slice1D) {
                          OperandId(1));
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, (std::vector<double>{20, 30, 40}));
+}
+
+// Test slice with stride > 1 subsamples the window (count = ceil(size/stride)).
+TEST_F(ShapeFoldingInterpreterTest, Slice1DWithStride) {
+  std::vector<OperandPtr> operands;
+  operands.push_back(
+      CreateOperand(Operand::Kind::kConstant, OperandDataType::kInt32, {6}));
+  operands.push_back(
+      CreateOperand(Operand::Kind::kOutput, OperandDataType::kInt32, {2}));
+
+  std::vector<OperationPtr> operations;
+  // slice from start=1, size=4, stride=2 → indices 1,3 → values 20,40.
+  operations.push_back(MakeSliceOp(OperandId(0), OperandId(1), 1, 4, 2));
+
+  base::flat_map<OperandId, size_t> op_map;
+  op_map[OperandId(1)] = 0;
+
+  base::flat_map<OperandId, std::vector<uint8_t>> constant_data;
+  constant_data[OperandId(0)] = Int32ToBytes({10, 20, 30, 40, 50, 60});
+
+  auto result =
+      Evaluate(operands, operations, op_map, constant_data, OperandId(1));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, (std::vector<double>{20, 40}));
 }
 
 // Test slice out of bounds returns nullopt.

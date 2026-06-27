@@ -1493,7 +1493,8 @@ void GraphBuilderOrt::AddCastOperation(const mojom::ElementWiseUnary& cast) {
   AddCastNode(node_name, input, output, WebnnToOnnxDataType(output_data_type));
 }
 
-void GraphBuilderOrt::AddConv2dOperation(const mojom::Conv2d& conv2d) {
+base::expected<void, mojom::ErrorPtr> GraphBuilderOrt::AddConv2dOperation(
+    const mojom::Conv2d& conv2d) {
   const std::string node_name = GenerateNodeName(conv2d.label);
   const std::string input = GetOperandNameById(conv2d.input_operand_id);
   const std::string filter = GetOperandNameById(conv2d.filter_operand_id);
@@ -1560,12 +1561,26 @@ void GraphBuilderOrt::AddConv2dOperation(const mojom::Conv2d& conv2d) {
       // input/filter/output_shape[2] and input/filter/output_shape[3] are used
       // here to access the height and width dimensions of the
       // input/filter/output_shape tensor shape.
-      // Filter dims are always static. For input/output spatial dims, use the
-      // static value if known, otherwise 0 (a dynamic dim is handled at
-      // runtime).
+      //
+      // `output_padding` is reverse-derived from the spatial sizes because the
+      // Conv2d mojo struct does not carry it. That derivation needs concrete
+      // height/width values; if any input or output spatial dim is dynamic
+      // there is nothing to derive it from, and feeding a placeholder size into
+      // CalculateOutputPaddingSize would produce a meaningless (often negative)
+      // attribute that ONNX rejects. Reject this combination cleanly. Batch and
+      // channel dims may still be dynamic — only the spatial dims matter here.
+      auto is_static = [](const webnn::Dimension& dim) {
+        return std::holds_alternative<uint32_t>(dim);
+      };
+      if (!is_static(input_shape[2]) || !is_static(input_shape[3]) ||
+          !is_static(output_shape[2]) || !is_static(output_shape[3])) {
+        return base::unexpected(mojom::Error::New(
+            mojom::Error::Code::kNotSupportedError,
+            "convTranspose2d with a dynamic height or width dimension is not "
+            "supported."));
+      }
       auto get_size = [](const webnn::Dimension& dim) -> int64_t {
-        const uint32_t* val = std::get_if<uint32_t>(&dim);
-        return val ? base::checked_cast<int64_t>(*val) : 0;
+        return base::checked_cast<int64_t>(std::get<uint32_t>(dim));
       };
       std::array<int64_t, 2> input_size = {
           get_size(input_shape[2]), get_size(input_shape[3])};
@@ -1590,6 +1605,7 @@ void GraphBuilderOrt::AddConv2dOperation(const mojom::Conv2d& conv2d) {
                             attributes);
       break;
   }
+  return base::ok();
 }
 
 void GraphBuilderOrt::AddCumulativeSumOperation(
@@ -3501,7 +3517,8 @@ void GraphBuilderOrt::AddResample2dOperation(
   AddResizeNode(node_name, input, scales, sizes, mode, output);
 }
 
-void GraphBuilderOrt::AddReshapeOperation(const mojom::Reshape& reshape) {
+base::expected<void, mojom::ErrorPtr> GraphBuilderOrt::AddReshapeOperation(
+    const mojom::Reshape& reshape) {
   const std::string node_name = GenerateNodeName(reshape.label);
   const std::string input = GetOperandNameById(reshape.input_operand_id);
   const std::string output = GetOperandNameById(reshape.output_operand_id);
@@ -3518,7 +3535,7 @@ void GraphBuilderOrt::AddReshapeOperation(const mojom::Reshape& reshape) {
   if (static_output_shape.has_value()) {
     // All dimensions are static, use the simple path.
     AddReshapeNode(node_name, input, output, *static_output_shape);
-    return;
+    return base::ok();
   }
 
   // Output shape has dynamic dimensions. Build the shape tensor at runtime
@@ -3585,10 +3602,18 @@ void GraphBuilderOrt::AddReshapeOperation(const mojom::Reshape& reshape) {
         dimension_names.push_back(std::move(gather_output));
       } else {
         // Derived dynamic dimension (not in input shape): will be computed
-        // after the loop from the input shape. At most one inferred dimension
-        // is allowed per reshape.
-        CHECK_EQ(inferred_dim_index, output_shape.size())
-            << "Only one inferred dimension is allowed per reshape";
+        // after the loop from the input shape. We can emit at most one ONNX
+        // "-1" inferred dimension per reshape. Unlike ONNX, WebNN reshape has
+        // no "at most one unresolved dim" rule, so a renderer-supplied output
+        // such as [null, null] can legitimately reach here with two derived
+        // dims; the service validator defers (rather than rejects) the
+        // multi-unresolved case. Fail gracefully instead of CHECK-crashing.
+        if (inferred_dim_index != output_shape.size()) {
+          return base::unexpected(mojom::Error::New(
+              mojom::Error::Code::kNotSupportedError,
+              "Reshape with more than one dynamic output dimension that "
+              "cannot be derived from the input shape is not supported."));
+        }
         inferred_dim_index = i;
         dimension_names.push_back(std::string());  // placeholder
       }
@@ -3634,6 +3659,7 @@ void GraphBuilderOrt::AddReshapeOperation(const mojom::Reshape& reshape) {
   std::array<const char*, 1> reshape_outputs = {output.c_str()};
   model_editor_.AddNode(kOpTypeReshape, node_name, reshape_inputs,
                         reshape_outputs);
+  return base::ok();
 }
 
 void GraphBuilderOrt::AddReverseOperation(const mojom::Reverse& reverse) {
@@ -4676,7 +4702,10 @@ GraphBuilderOrt::BuildModel() {
         break;
       }
       case mojom::Operation::Tag::kConv2d: {
-        AddConv2dOperation(*operation->get_conv2d());
+        auto result = AddConv2dOperation(*operation->get_conv2d());
+        if (!result.has_value()) {
+          return base::unexpected(std::move(result.error()));
+        }
         break;
       }
       case mojom::Operation::Tag::kCumulativeSum: {
@@ -4838,7 +4867,10 @@ GraphBuilderOrt::BuildModel() {
         break;
       }
       case mojom::Operation::Tag::kReshape: {
-        AddReshapeOperation(*operation->get_reshape());
+        auto result = AddReshapeOperation(*operation->get_reshape());
+        if (!result.has_value()) {
+          return base::unexpected(std::move(result.error()));
+        }
         break;
       }
       case mojom::Operation::Tag::kReverse: {
