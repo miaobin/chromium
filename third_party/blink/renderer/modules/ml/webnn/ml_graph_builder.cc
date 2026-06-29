@@ -1542,9 +1542,15 @@ Vector<webnn::OperandId> GetInputs(const blink_mojom::Operation& operation) {
       }
       return ids;
     }
-    case blink_mojom::Operation::Tag::kDynamicSplit:
-      return {operation.get_dynamic_split()->input_operand_id,
-              operation.get_dynamic_split()->splits_operand_id};
+    case blink_mojom::Operation::Tag::kDynamicSplit: {
+      Vector<webnn::OperandId> ids = {
+          operation.get_dynamic_split()->input_operand_id};
+      // splits is an optional operand (absent for the equal-split form).
+      if (operation.get_dynamic_split()->splits_operand_id) {
+        ids.push_back(*operation.get_dynamic_split()->splits_operand_id);
+      }
+      return ids;
+    }
     case blink_mojom::Operation::Tag::kDynamicResample2d: {
       Vector<webnn::OperandId> ids = {
           operation.get_dynamic_resample_2d()->input_operand_id};
@@ -4047,9 +4053,44 @@ MLOperand* MLGraphBuilder::dynamicTile(MLOperand* input,
 
 HeapVector<Member<MLOperand>> MLGraphBuilder::dynamicSplit(
     MLOperand* input,
+    const uint32_t splits,
+    MLSplitOptions* options,
+    ExceptionState& exception_state) {
+  THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(),
+                            HeapVector<Member<MLOperand>>());
+  THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInput(input),
+                                 HeapVector<Member<MLOperand>>());
+
+  // The equal-split form shares the static split's output inference: an
+  // unranked input yields unranked outputs, a static split axis yields static
+  // per-part sizes (divisibility checked now), and a dynamic split axis yields
+  // an anonymous dynamic per-part size (divisibility deferred to dispatch).
+  auto validated_outputs = webnn::ValidateSplitAndInferOutput(
+      ml_context_->GetProperties(), input->Descriptor(),
+      {.splits = splits,
+       .axis = options->axis(),
+       .label = options->label().Utf8()});
+  if (!validated_outputs.has_value()) {
+    exception_state.ThrowTypeError(String::FromUtf8(validated_outputs.error()));
+    return {};
+  }
+
+  auto* op = MakeGarbageCollected<MLOperator>(
+      this, blink_mojom::Operation::Tag::kDynamicSplit, options);
+  HeapVector<Member<MLOperand>> outputs;
+  outputs.reserve(validated_outputs->size());
+  for (auto& validated_output : *validated_outputs) {
+    outputs.push_back(
+        MLOperand::CreateOutput(this, std::move(validated_output), op));
+  }
+  op->Connect({input}, outputs);
+  return outputs;
+}
+
+HeapVector<Member<MLOperand>> MLGraphBuilder::dynamicSplit(
+    MLOperand* input,
     MLOperand* splits,
-    uint32_t num_outputs,
-    MLOperatorOptions* options,
+    MLSplitOptions* options,
     ExceptionState& exception_state) {
   THROW_AND_RETURN_IF_ERROR(ValidateGraphBuilderState(),
                             HeapVector<Member<MLOperand>>());
@@ -4058,41 +4099,70 @@ HeapVector<Member<MLOperand>> MLGraphBuilder::dynamicSplit(
   THROW_AND_RETURN_TYPE_IF_ERROR(ValidateInputs(inputs),
                                  HeapVector<Member<MLOperand>>());
 
-  // splits must be a 1-D uint32 tensor. WebNN dimensions are uint32; the
-  // backend casts to int64 when lowering to ONNX Split.
-  if (splits->Descriptor().Rank().value() != 1 ||
+  // splits must be a 1-D uint32 tensor whose length is statically known: the
+  // number of outputs is fixed at build time, so the split count cannot be a
+  // dynamic dimension. WebNN dimensions are uint32; the backend casts to int64
+  // when lowering to ONNX Split.
+  if (!splits->Descriptor().HasRank() ||
+      splits->Descriptor().Rank().value() != 1 ||
       splits->Descriptor().data_type() != webnn::OperandDataType::kUint32) {
     exception_state.ThrowTypeError(
         "The splits operand must be a 1-D uint32 tensor.");
     return {};
   }
-  if (num_outputs == 0) {
-    exception_state.ThrowTypeError("numOutputs must be greater than 0.");
+  const auto* num_outputs =
+      std::get_if<uint32_t>(&splits->Descriptor().shape()[0]);
+  if (!num_outputs) {
+    exception_state.ThrowTypeError(
+        "The length of the splits operand must be statically known.");
     return {};
   }
+  if (*num_outputs == 0) {
+    exception_state.ThrowTypeError(
+        "The length of the splits operand must be greater than 0.");
+    return {};
+  }
+
+  // The split axis cannot be range-checked against an unranked input; defer to
+  // dispatch by emitting unranked outputs in that case.
+  if (!input->Descriptor().HasRank()) {
+    auto* op = MakeGarbageCollected<MLOperator>(
+        this, blink_mojom::Operation::Tag::kDynamicSplit, options);
+    HeapVector<Member<MLOperand>> outputs;
+    outputs.reserve(*num_outputs);
+    for (uint32_t i = 0; i < *num_outputs; ++i) {
+      outputs.push_back(
+          MLOperand::CreateOutput(this,
+                                  webnn::OperandDescriptor::CreateUnranked(
+                                      input->Descriptor().data_type()),
+                                  op));
+    }
+    op->Connect(std::move(inputs), outputs);
+    return outputs;
+  }
+
+  if (options->axis() >= input->Descriptor().Rank().value()) {
+    exception_state.ThrowTypeError(
+        "The axis must be in the range [0, N-1] where N is the rank of the "
+        "input tensor.");
+    return {};
+  }
+
   auto* op = MakeGarbageCollected<MLOperator>(
       this, blink_mojom::Operation::Tag::kDynamicSplit, options);
 
-  // Each output has the same rank as input but with the split axis dynamic.
-  // Per-call unique name so each dynamicSplit() instance gets its own dynamic
-  // dim symbols across all of its outputs.
-  const uint64_t inst = dynamic_dim_counter_++;
+  // Each output mirrors the input shape with only the split axis made dynamic;
+  // the explicit per-part sizes are runtime values resolved at dispatch. The
+  // dynamic dimension is anonymous (like the static split's dynamic axis): the
+  // parts are unrelated runtime sizes that must not be conflated.
   HeapVector<Member<MLOperand>> outputs;
-  outputs.reserve(num_outputs);
-  for (uint32_t i = 0; i < num_outputs; ++i) {
-    std::vector<webnn::Dimension> output_shape;
-    output_shape.reserve(input->Descriptor().Rank().value());
-    for (uint32_t d = 0; d < input->Descriptor().Rank().value(); ++d) {
-      output_shape.push_back(webnn::DynamicDimension{
-          .name = "dynamic_split_" + base::NumberToString(inst) + "_out_" +
-                  base::NumberToString(i) + "_dim_" +
-                  base::NumberToString(d)});
-    }
-    auto output_descriptor_result =
-        webnn::OperandDescriptor::Create(ml_context_->GetProperties(),
-                                         input->Descriptor().data_type(),
-                                         output_shape,
-                                         options->label().Utf8());
+  outputs.reserve(*num_outputs);
+  for (uint32_t i = 0; i < *num_outputs; ++i) {
+    std::vector<webnn::Dimension> output_shape = input->Descriptor().shape();
+    output_shape[options->axis()] = webnn::DynamicDimension{};
+    auto output_descriptor_result = webnn::OperandDescriptor::Create(
+        ml_context_->GetProperties(), input->Descriptor().data_type(),
+        output_shape, options->label().Utf8());
     if (!output_descriptor_result.has_value()) {
       exception_state.ThrowTypeError(
           String::FromUtf8(output_descriptor_result.error()));

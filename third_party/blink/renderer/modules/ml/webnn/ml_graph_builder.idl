@@ -458,7 +458,8 @@ dictionary MLTriangularOptions : MLOperatorOptions {
 
   [RaisesException] MLOperand dynamicPad(MLOperand input, MLOperand beginningPadding, MLOperand endingPadding, optional MLOperatorOptions options = {});
 
-  [RaisesException] sequence<MLOperand> dynamicSplit(MLOperand input, MLOperand splits, unsigned long numOutputs, optional MLOperatorOptions options = {});
+  [RaisesException] sequence<MLOperand> dynamicSplit(MLOperand input, [EnforceRange] unsigned long splits, optional MLSplitOptions options = {});
+  [RaisesException] sequence<MLOperand> dynamicSplit(MLOperand input, MLOperand splits, optional MLSplitOptions options = {});
 
   [RaisesException] MLOperand dynamicResample2d(MLOperand input, optional MLDynamicResample2dOptions options = {});
 

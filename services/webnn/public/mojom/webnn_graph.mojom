@@ -1485,12 +1485,18 @@ struct DynamicTile {
   string label;
 };
 
-// Represents a dynamic split operation where the split sizes are provided
-// as an operand rather than static attributes.
+// Represents a dynamic split operation that mirrors the static `Split` but
+// allows the input's split axis to be dynamic. Two mutually exclusive forms,
+// matching ONNX Split's `split` input vs `num_outputs` attribute:
+//   * `splits_operand_id` is set: the runtime 1-D uint32 tensor specifies the
+//     size of each part along `axis` (explicit per-part sizes).
+//   * `splits_operand_id` is null: the input is split into
+//     `output_operand_ids.size()` equal parts along `axis`.
 struct DynamicSplit {
   OperandId input_operand_id;
-  // 1-D int64 tensor specifying the size of each split along axis.
-  OperandId splits_operand_id;
+  // 1-D uint32 tensor specifying the size of each split along axis. Null for
+  // the equal-split form, where the number of parts is the number of outputs.
+  OperandId? splits_operand_id;
   // Axis along which to split.
   uint32 axis;
   // The ids of output operands.

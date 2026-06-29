@@ -1456,13 +1456,21 @@ OperationPtr CreateDynamicSplitOperation(
     const MLOperator* op) {
   auto mojo = blink_mojom::DynamicSplit::New();
   mojo->input_operand_id = GetOperatorInputId(op, operand_to_id_map, 0);
-  mojo->splits_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
-  mojo->axis = 0;
+  // The explicit-sizes overload connects a second `splits` operand; the
+  // equal-split overload connects only the input and leaves `splits_operand_id`
+  // null (the number of parts is the number of outputs).
+  if (op->PositionalInputs().size() == 2) {
+    mojo->splits_operand_id = GetOperatorInputId(op, operand_to_id_map, 1);
+  }
+  const auto* options = static_cast<const MLSplitOptions*>(op->Options());
+  if (options->hasAxis()) {
+    mojo->axis = options->axis();
+  }
   for (uint32_t i = 0; i < op->Outputs().size(); ++i) {
     mojo->output_operand_ids.push_back(
         GetOperatorOutputId(op, operand_to_id_map, i));
   }
-  mojo->label = op->Options()->label();
+  mojo->label = options->label();
   return blink_mojom::Operation::NewDynamicSplit(std::move(mojo));
 }
 

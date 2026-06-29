@@ -586,9 +586,12 @@ class MODULES_EXPORT MLGraphBuilder final : public ScriptWrappable {
                          ExceptionState& exception_state);
 
   HeapVector<Member<MLOperand>> dynamicSplit(MLOperand* input,
+                                             const uint32_t splits,
+                                             MLSplitOptions* options,
+                                             ExceptionState& exception_state);
+  HeapVector<Member<MLOperand>> dynamicSplit(MLOperand* input,
                                              MLOperand* splits,
-                                             uint32_t num_outputs,
-                                             MLOperatorOptions* options,
+                                             MLSplitOptions* options,
                                              ExceptionState& exception_state);
 
   MLOperand* dynamicResample2d(MLOperand* input,

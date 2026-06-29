@@ -7211,6 +7211,54 @@ TEST_F(WebNNGraphImplTest, ValidateSplitTest) {
   }
 }
 
+// Build-time validation of dynamicSplit's two mutually exclusive forms: an
+// explicit per-part `splits` operand, and the equal-split form where the
+// number of parts is the number of outputs (`splits_operand_id` is null).
+TEST_F(WebNNGraphImplTest, ValidateDynamicSplitTest) {
+  using OperandDataType::kFloat32;
+  using OperandDataType::kUint32;
+  const DynamicDimension dyn{};
+
+  auto build = [&](bool explicit_splits, uint32_t splits_len, uint32_t axis,
+                   size_t num_outputs) {
+    auto context_properties = GetContextPropertiesForTesting();
+    mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+    GraphInfoBuilder builder(remote);
+    // Input [batch, 6] with a dynamic split axis is the headline case.
+    const OperandId input_id = builder.BuildDynamicInput(
+        "input", {DynamicDimension{/*name=*/"batch"}, Dimension(6u)}, kFloat32);
+
+    std::optional<OperandId> splits_id;
+    if (explicit_splits) {
+      splits_id = builder.BuildInput("splits", {splits_len}, kUint32);
+    }
+
+    std::vector<OperandId> output_ids;
+    for (size_t i = 0; i < num_outputs; ++i) {
+      output_ids.push_back(builder.BuildDynamicOutput(
+          "output" + base::NumberToString(i),
+          {DynamicDimension{/*name=*/"batch"}, dyn}, kFloat32));
+    }
+    builder.BuildDynamicSplit(input_id, splits_id, output_ids, axis);
+    return builder.IsValidGraphForTesting(context_properties);
+  };
+
+  // Equal-split form: 3 outputs along axis 1, no splits operand. Valid.
+  EXPECT_TRUE(build(/*explicit_splits=*/false, /*splits_len=*/0, /*axis=*/1,
+                    /*num_outputs=*/3));
+  // Equal-split form with no outputs is rejected (the part count is the
+  // number of outputs, which must be >= 1).
+  EXPECT_FALSE(build(/*explicit_splits=*/false, /*splits_len=*/0, /*axis=*/1,
+                     /*num_outputs=*/0));
+  // Explicit-splits form: a 1-D uint32 splits operand. Valid.
+  EXPECT_TRUE(build(/*explicit_splits=*/true, /*splits_len=*/3, /*axis=*/1,
+                    /*num_outputs=*/3));
+  // The split axis must be within the input rank in both forms (the renderer
+  // is untrusted, so this is rejected at build time).
+  EXPECT_FALSE(build(/*explicit_splits=*/false, /*splits_len=*/0, /*axis=*/2,
+                     /*num_outputs=*/2));
+}
+
 struct TileTester {
   OperandInfo input;
   std::vector<uint32_t> repetitions;
@@ -8399,6 +8447,78 @@ TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicReshapeTest) {
   EXPECT_TRUE(dispatch_and_validate({16, 784}, {16, 28, 28}));
   // Valid: batch=20 is accepted; a dynamic dim has no upper bound.
   EXPECT_TRUE(dispatch_and_validate({20, 784}, {20, 28, 28}));
+}
+
+// dynamicSplit's equal-split form divides a dynamic axis into equal parts at
+// dispatch (lowered to ONNX Split's `num_outputs`). The concrete axis size must
+// be divisible by the number of parts; otherwise dispatch rejects it.
+TEST_F(WebNNGraphImplTest, ValidateDispatchDynamicSplitEqualTest) {
+  auto context_properties = GetContextPropertiesForTesting();
+  const OperandDataType kDataType = OperandDataType::kFloat32;
+
+  mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+  GraphInfoBuilder builder(remote);
+
+  const DynamicDimension width_dim{/*name=*/"width"};
+
+  // Input [2, width]; split into 2 equal parts along the dynamic axis 1.
+  const std::vector<Dimension> kInputShape = {Dimension(2u), width_dim};
+  const OperandId input_id =
+      builder.BuildDynamicInput("input", kInputShape, kDataType);
+
+  // Two outputs [2, ?]: the per-part size is a dynamic dim resolved at
+  // dispatch.
+  const std::vector<Dimension> kOutputShape = {Dimension(2u),
+                                               DynamicDimension{}};
+  std::vector<OperandId> output_ids = {
+      builder.BuildDynamicOutput("output0", kOutputShape, kDataType),
+      builder.BuildDynamicOutput("output1", kOutputShape, kDataType)};
+  builder.BuildDynamicSplit(input_id, /*splits_operand_id=*/std::nullopt,
+                            output_ids, /*axis=*/1);
+
+  ASSERT_TRUE(builder.IsValidGraphForTesting(context_properties));
+
+  base::test::TestFuture<
+      base::expected<mojom::CreateGraphSuccessPtr, mojom::ErrorPtr>>
+      create_graph_future;
+  remote->CreateGraph(builder.TakeGraphInfo(),
+                      create_graph_future.GetCallback());
+  auto create_graph_result = create_graph_future.Take();
+  ASSERT_TRUE(create_graph_result.has_value());
+  mojo::Remote<mojom::WebNNGraph> webnn_graph;
+  webnn_graph.Bind(std::move(create_graph_result.value()->graph_remote));
+  blink::WebNNGraphToken graph_token = create_graph_result.value()->graph_token;
+
+  auto dispatch_and_validate =
+      [&](const std::vector<uint32_t>& input_shape,
+          const std::vector<uint32_t>& part_shape) -> bool {
+    auto input_tensor =
+        CreateWebNNTensor(webnn_context(), kDataType, input_shape);
+    auto output0_tensor =
+        CreateWebNNTensor(webnn_context(), kDataType, part_shape);
+    auto output1_tensor =
+        CreateWebNNTensor(webnn_context(), kDataType, part_shape);
+
+    bool valid = true;
+    mojo::SetDefaultProcessErrorHandler(base::BindLambdaForTesting(
+        [&](const std::string& error_message) { valid = false; }));
+
+    webnn_context().FlushForTesting();
+    webnn_context()->Dispatch(graph_token,
+                              {{"input", input_tensor.webnn_handle}},
+                              {{"output0", output0_tensor.webnn_handle},
+                               {"output1", output1_tensor.webnn_handle}});
+    webnn_context().FlushForTesting();
+    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
+    return valid;
+  };
+
+  // Even split: width=6 → two [2, 3] parts.
+  EXPECT_TRUE(dispatch_and_validate({2, 6}, {2, 3}));
+  // Even split: width=10 → two [2, 5] parts.
+  EXPECT_TRUE(dispatch_and_validate({2, 10}, {2, 5}));
+  // Odd width=5 is not divisible by 2: rejected at dispatch (option A).
+  EXPECT_FALSE(dispatch_and_validate({2, 5}, {2, 2}));
 }
 
 // ComputeShapes() resolves the concrete output shape of an element-wise graph

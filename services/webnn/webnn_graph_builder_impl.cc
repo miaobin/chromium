@@ -909,7 +909,11 @@ std::vector<OperandId> GetOperationInputs(const mojom::Operation& operation) {
     }
     case mojom::Operation::Tag::kDynamicSplit: {
       const auto& op = *operation.get_dynamic_split();
-      return {op.input_operand_id, op.splits_operand_id};
+      std::vector<OperandId> inputs = {op.input_operand_id};
+      if (op.splits_operand_id) {
+        inputs.push_back(*op.splits_operand_id);
+      }
+      return inputs;
     }
     case mojom::Operation::Tag::kDynamicResample2d: {
       const auto& op = *operation.get_dynamic_resample_2d();
@@ -4090,25 +4094,45 @@ bool OperationValidationContext::ValidateDynamicTile(
 bool OperationValidationContext::ValidateDynamicSplit(
     const mojom::DynamicSplit& op,
     OperationId operation_id) {
-  if (!IsProcessedOperand(op.input_operand_id) ||
-      !IsProcessedOperand(op.splits_operand_id)) {
+  if (!IsProcessedOperand(op.input_operand_id)) {
     return false;
   }
   NoteInputDependency(op.input_operand_id, operation_id);
-  NoteInputDependency(op.splits_operand_id, operation_id);
 
   auto* input = GetMojoOperand(op.input_operand_id);
-  auto* splits = GetMojoOperand(op.splits_operand_id);
-  if (!input || !splits) {
+  if (!input) {
     return false;
   }
 
-  // splits is a 1-D uint32 tensor (WebNN dimensions are uint32). The renderer
-  // is untrusted, so validate dtype here rather than relying on the Blink-side
-  // check.
-  if (!context_properties_->data_type_limits.dynamic_split_splits.Supports(
-          splits->descriptor)) {
-    return false;
+  // Two mutually exclusive forms (mirroring ONNX Split's `split` input vs
+  // `num_outputs` attribute): an explicit per-part `splits` operand, or the
+  // equal-split form where the number of parts is the number of outputs.
+  const bool has_explicit_splits = op.splits_operand_id.has_value();
+
+  const mojom::Operand* splits = nullptr;
+  if (has_explicit_splits) {
+    if (!IsProcessedOperand(*op.splits_operand_id)) {
+      return false;
+    }
+    NoteInputDependency(*op.splits_operand_id, operation_id);
+    splits = GetMojoOperand(*op.splits_operand_id);
+    if (!splits) {
+      return false;
+    }
+    // splits is a 1-D uint32 tensor (WebNN dimensions are uint32). The renderer
+    // is untrusted, so validate dtype here rather than relying on the
+    // Blink-side check.
+    if (!context_properties_->data_type_limits.dynamic_split_splits.Supports(
+            splits->descriptor)) {
+      return false;
+    }
+  } else {
+    // The equal-split form carries the number of parts only as the number of
+    // outputs; reject an empty output list (the per-count upper bound is
+    // enforced by ValidateSplitAndInferOutput when shapes are inferred).
+    if (op.output_operand_ids.empty()) {
+      return false;
+    }
   }
 
   for (const auto& output_id : op.output_operand_ids) {
@@ -4118,27 +4142,46 @@ bool OperationValidationContext::ValidateDynamicSplit(
     }
   }
 
+  // The axis is range-checked against the input rank at build time (the
+  // renderer is untrusted). With an unranked input the rank is unknown, so the
+  // check is deferred to dispatch where the input has a concrete rank.
+  if (input->descriptor.HasRank() &&
+      op.axis >= input->descriptor.Rank().value()) {
+    return false;
+  }
+
   if (infer_output_shapes_) {
-    auto splits_values = EvaluateShapeOperand(
-        op.splits_operand_id, "dynamicSplit", "splits");
-    if (!splits_values) {
-      return false;
-    }
-
-    // Convert int64 split sizes to uint32.
-    std::vector<uint32_t> split_sizes;
-    split_sizes.reserve(splits_values->size());
-    for (int64_t val : *splits_values) {
-      if (val <= 0 || !base::IsValueInRangeForNumericType<uint32_t>(val)) {
-        return false;
-      }
-      split_sizes.push_back(base::checked_cast<uint32_t>(val));
-    }
-
     SplitAttribute attributes;
-    attributes.splits = base::span<const uint32_t>(split_sizes);
     attributes.axis = op.axis;
     attributes.label = op.label;
+
+    // Storage for the explicit per-part sizes, kept alive across the call to
+    // ValidateSplitAndInferOutput (which borrows it as a span).
+    std::vector<uint32_t> split_sizes;
+    uint32_t equal_split_count = 0;
+    if (has_explicit_splits) {
+      auto splits_values =
+          EvaluateShapeOperand(*op.splits_operand_id, "dynamicSplit", "splits");
+      if (!splits_values) {
+        return false;
+      }
+
+      // Convert int64 split sizes to uint32.
+      split_sizes.reserve(splits_values->size());
+      for (int64_t val : *splits_values) {
+        if (val <= 0 || !base::IsValueInRangeForNumericType<uint32_t>(val)) {
+          return false;
+        }
+        split_sizes.push_back(base::checked_cast<uint32_t>(val));
+      }
+      attributes.splits = base::span<const uint32_t>(split_sizes);
+    } else {
+      // Equal split into `output_operand_ids.size()` parts. The scalar form
+      // also enforces divisibility of a static axis and the per-count bound.
+      equal_split_count =
+          base::checked_cast<uint32_t>(op.output_operand_ids.size());
+      attributes.splits = equal_split_count;
+    }
 
     auto validated_outputs = ValidateSplitAndInferOutput(
         *context_properties_, input->descriptor, attributes);
@@ -5085,7 +5128,9 @@ WebNNGraphBuilderImpl::ValidateGraphImpl(
           add_seed(operation->get_dynamic_tile()->repetitions_operand_id);
           break;
         case mojom::Operation::Tag::kDynamicSplit:
-          add_seed(operation->get_dynamic_split()->splits_operand_id);
+          if (operation->get_dynamic_split()->splits_operand_id) {
+            add_seed(*operation->get_dynamic_split()->splits_operand_id);
+          }
           break;
         case mojom::Operation::Tag::kDynamicResample2d: {
           const auto& op = *operation->get_dynamic_resample_2d();

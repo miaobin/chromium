@@ -4305,17 +4305,6 @@ void GraphBuilderOrt::AddDynamicSplitOperation(
     const mojom::DynamicSplit& op) {
   const std::string node_name = GenerateNodeName(op.label);
   const std::string input = GetOperandNameById(op.input_operand_id);
-  const std::string splits = GetOperandNameById(op.splits_operand_id);
-
-  // ONNX Split's `split` input must be int64, but the WebNN splits operand is
-  // uint32 (WebNN dimensions are uint32). Cast if needed.
-  std::string splits_int64 = splits;
-  if (GetOperand(op.splits_operand_id).descriptor.data_type() !=
-      OperandDataType::kInt64) {
-    splits_int64 = CreateCastNode(splits, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
-  }
-
-  std::array<const char*, 2> inputs = {input.c_str(), splits_int64.c_str()};
 
   std::vector<std::string> output_names;
   output_names.reserve(op.output_operand_ids.size());
@@ -4328,9 +4317,38 @@ void GraphBuilderOrt::AddDynamicSplitOperation(
     outputs_arr.push_back(name.c_str());
   }
 
-  std::array<ScopedOrtOpAttr, 1> attributes = {model_editor_.CreateAttribute(
-      kAttrAxis, base::checked_cast<int64_t>(op.axis))};
+  // Two mutually exclusive ONNX Split forms, selected by whether explicit
+  // per-part sizes were provided (mirroring the static split lowering):
+  //   * `splits_operand_id` set -> feed the runtime `split` input tensor.
+  //   * `splits_operand_id` null -> set the `num_outputs` attribute and let ORT
+  //     divide the (possibly dynamic) axis into equal parts at dispatch.
+  if (op.splits_operand_id) {
+    const std::string splits = GetOperandNameById(*op.splits_operand_id);
 
+    // ONNX Split's `split` input must be int64, but the WebNN splits operand is
+    // uint32 (WebNN dimensions are uint32). Cast if needed.
+    std::string splits_int64 = splits;
+    if (GetOperand(*op.splits_operand_id).descriptor.data_type() !=
+        OperandDataType::kInt64) {
+      splits_int64 =
+          CreateCastNode(splits, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+    }
+
+    std::array<const char*, 2> inputs = {input.c_str(), splits_int64.c_str()};
+    std::array<ScopedOrtOpAttr, 1> attributes = {model_editor_.CreateAttribute(
+        kAttrAxis, base::checked_cast<int64_t>(op.axis))};
+    model_editor_.AddNode(kOpTypeSplit, node_name, inputs, outputs_arr,
+                          attributes);
+    return;
+  }
+
+  std::array<const char*, 1> inputs = {input.c_str()};
+  std::array<ScopedOrtOpAttr, 2> attributes = {
+      model_editor_.CreateAttribute(kAttrAxis,
+                                    base::checked_cast<int64_t>(op.axis)),
+      model_editor_.CreateAttribute(
+          kAttrNumOutputs,
+          base::checked_cast<int64_t>(op.output_operand_ids.size()))};
   model_editor_.AddNode(kOpTypeSplit, node_name, inputs, outputs_arr,
                         attributes);
 }

@@ -608,6 +608,13 @@ class GraphInfoBuilder final {
                           OperandId new_shape_operand_id,
                           OperandId output_operand_id);
 
+  // `splits_operand_id` is null for the equal-split form (the number of parts
+  // is the number of outputs) and set for the explicit per-part-sizes form.
+  void BuildDynamicSplit(OperandId input_operand_id,
+                         std::optional<OperandId> splits_operand_id,
+                         const std::vector<OperandId>& output_operand_ids,
+                         uint32_t axis);
+
   const mojom::GraphInfo& GetGraphInfo() const { return *graph_info_; }
 
   // Prefer `TakeGraphInfo()` when possible. Cloning can be expensive and should

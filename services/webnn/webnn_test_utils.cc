@@ -509,6 +509,20 @@ void GraphInfoBuilder::BuildDynamicExpand(OperandId input_operand_id,
       mojom::Operation::NewDynamicExpand(std::move(dynamic_expand)));
 }
 
+void GraphInfoBuilder::BuildDynamicSplit(
+    OperandId input_operand_id,
+    std::optional<OperandId> splits_operand_id,
+    const std::vector<OperandId>& output_operand_ids,
+    uint32_t axis) {
+  auto dynamic_split = mojom::DynamicSplit::New();
+  dynamic_split->input_operand_id = input_operand_id;
+  dynamic_split->splits_operand_id = splits_operand_id;
+  dynamic_split->output_operand_ids = output_operand_ids;
+  dynamic_split->axis = axis;
+  graph_info_->operations.push_back(
+      mojom::Operation::NewDynamicSplit(std::move(dynamic_split)));
+}
+
 void GraphInfoBuilder::BuildScatterElements(OperandId input_operand_id,
                                             OperandId indices_operand_id,
                                             OperandId updates_operand_id,
