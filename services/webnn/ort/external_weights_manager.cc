@@ -39,12 +39,17 @@ ExternalWeightsManager::ExternalWeightsManager() {
   };
 }
 
-ExternalWeightsManager::~ExternalWeightsManager() {
-  // `ExternalWeightsManager` must be destroyed after all the external weights
-  // have been released, otherwise `FreeImpl()` will be called by ORT on a
-  // destroyed object.
-  CHECK(external_weights_.empty());
-}
+// `external_weights_` may still hold entries at destruction when graph
+// construction fails before a session is created (e.g.
+// `GraphBuilderOrt::BuildModel()` returns an error after some initializers were
+// registered): in that case ORT never took ownership of `this` as an allocator,
+// so it will never call `FreeImpl()`, and the remaining `base::HeapArray`s
+// simply free themselves as the set is destroyed. The dangerous case this used
+// to guard against -- the session outliving the manager and ORT calling
+// `FreeImpl()` on a destroyed object -- is instead prevented structurally: in
+// `ComputeResources` the session is declared after (and therefore destroyed
+// before) the manager.
+ExternalWeightsManager::~ExternalWeightsManager() = default;
 
 ScopedOrtValue ExternalWeightsManager::CreateInitializer(
     base::HeapArray<uint8_t> data,
